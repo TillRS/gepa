@@ -115,7 +115,7 @@ def test_run_runtime_canary_cycles_all_four_tools_for_twenty_attempts(monkeypatc
     api_base = "http://127.0.0.1:8000/v1"
     summary = runtime_canary.run_runtime_canary(model, api_base, 20)
 
-    resolve_kwargs.assert_called_once_with(model, api_base, "scientific")
+    resolve_kwargs.assert_called_once_with(model, api_base)
     lm_factory.assert_called_once_with(model, temperature=1.0, timeout=600)
     ordinary_probe.assert_called_once_with(lm)
     continuation_probe.assert_called_once_with(lm)

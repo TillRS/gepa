@@ -312,7 +312,7 @@ def run_runtime_canary(model: str, api_base: str, attempts: int) -> dict[str, ob
         raise RuntimeCanaryError(
             f"The fail-closed runtime gate requires at least {_MINIMUM_ATTEMPTS} repetitions; received {attempts}."
         )
-    lm_kwargs = resolve_hotpotqa_lm_kwargs(model, api_base, "scientific")
+    lm_kwargs = resolve_hotpotqa_lm_kwargs(model, api_base)
     lm_kwargs["timeout"] = _CANARY_TIMEOUT_SECONDS
     lm = LM(model, **lm_kwargs)
     _ordinary_completion_probe(lm)

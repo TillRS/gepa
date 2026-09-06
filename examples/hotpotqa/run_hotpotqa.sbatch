@@ -666,7 +666,7 @@ from gepa.lm import LM
 
 model = sys.argv[1]
 api_base = sys.argv[2] or None
-kwargs = resolve_hotpotqa_lm_kwargs(model, api_base, "scientific")
+kwargs = resolve_hotpotqa_lm_kwargs(model, api_base)
 completion = LM(model, **kwargs).complete_with_tools(
     [{"role": "user", "content": "Call the echo function exactly once with value ready."}],
     [
