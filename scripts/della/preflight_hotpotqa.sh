@@ -2,8 +2,8 @@
 # Steps 1-4 of examples/hotpotqa/DELLA_CAMPAIGN.md as one check: local
 # prerequisites, exact source commit and clean tree, scripts/della/.env,
 # non-interactive SSH to both Della hosts, and the serving prerequisites
-# (apptainer, CUDA module, model storage, serving venv vs. lock) on the
-# visualization node. Read-only; run before build_env.sh.
+# (CUDA module, model storage, serving venv vs. lock) on the visualization
+# node. Read-only; run before build_env.sh.
 #
 # Usage:
 #   HOTPOTQA_SOURCE_COMMIT=<sha> scripts/della/preflight_hotpotqa.sh
@@ -61,8 +61,6 @@ ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_VIS_HOST}" bash -s -- \
     "${SERVING_VENV_DIR}" "${SERVING_LOCK_SHA256}" "${MIN_VLLM}" "${MODEL_STORAGE}" <<'REMOTE'
 set -euo pipefail
 serving_venv="$1"; lock_sha="$2"; min_vllm="$3"; model_storage="$4"
-command -v apptainer >/dev/null && echo "apptainer $(apptainer --version | awk '{print $NF}')" \
-    || { echo "FAIL: apptainer missing on vis node"; exit 1; }
 source /usr/share/Modules/init/bash 2>/dev/null || true
 if module avail cudatoolkit/13.0 2>&1 | grep -q 'cudatoolkit/13.0'; then
     echo "cudatoolkit/13.0 module ok"

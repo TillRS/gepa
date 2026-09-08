@@ -1,6 +1,8 @@
 <!-- Source: Gilad Morad, https://gist.github.com/gilad12-coder/b0142ad28de98c47487ea9847686206a (fetched 2026-09-02).
-     Adapted in this checkout: the Qwen arm no longer depends on an external POSIT checkout; this repo builds its own
-     hash-locked vLLM serving venv (section 4). Everything else follows the gist. -->
+     Adapted in this checkout: the second arm is DeepSeek-V4-Flash-0731 (GLM-5.3-Flash is dropped for now); neither
+     arm depends on an external POSIT checkout or an SGLang container; this repo builds one hash-locked vLLM serving
+     venv that serves both models (section 4); and there is no canary job, only a manual one-time serving check
+     (section 5). Everything else follows the gist. -->
 
 # Running the HotPotQA campaign on Della
 
@@ -12,7 +14,7 @@ The code is in [PR #59](https://github.com/zbambergerNLP/gepa/pull/59), and [Gra
 169ddda125b1abe305c7714bbb5b3fc38b21b587
 ```
 
-We are running six configurations with Qwen3.8-27B and six with GLM-5.3-Flash. Each run uses one model for the student, proposer, and Controller.
+We are running six configurations with Qwen3.8-27B and six with DeepSeek-V4-Flash-0731 (`deepseek-ai/DeepSeek-V4-Flash-0731`, the official release with enhanced agentic capabilities). Each run uses one model for the student, proposer, and Controller.
 
 ## 1. Run the launcher locally
 
@@ -114,11 +116,26 @@ test "$(stat -f '%Lp' scripts/della/.env 2>/dev/null || stat -c '%a' scripts/del
 
 ## 4. Check the serving prerequisites
 
-The Qwen arm is served by a vLLM environment that this repository builds itself from
+Both arms are served by one vLLM environment that this repository builds itself from
 `examples/hotpotqa/serving/requirements.in` and its hash-locked resolution
 `examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt` (regenerate with
 `scripts/della/lock_serving_env.sh` after changing the `.in` file, and commit the lock).
-No other project's checkout or virtual environment is used.
+No other project's checkout, virtual environment, or container image is used.
+
+The pinned vLLM 0.25.1 already registers DeepSeek V4 (`DeepseekV4ForCausalLM`, its
+`deepseek_v4` reasoning and tool-call parsers, and its native prompt encoding), so the
+DeepSeek arm needs no pin change, FlashInfer change, or torch bump. Every job still fails
+closed at the architecture check in `run_hotpotqa.sbatch` if the frozen vLLM does not
+register the checkpoint's architecture.
+
+The DeepSeek arm serves one TP8/EP8 replica per node with the same single-sequence
+determinism contract as Qwen (`--max-num-seqs 1`, `--seed 0`, no prefix caching, no
+batch-invariant mode, one API server, no speculative decoding: neither the MTP head nor
+the DSpark draft module is loaded). Two settings are forced by vLLM's DeepSeek V4
+sparse-MLA path rather than chosen: the KV cache is FP8 (`fp8_ds_mla`, the only layout it
+supports) and KV blocks are 256 tokens. The checkpoint ships FP8 attention/dense weights
+with MXFP4 experts; on the H200 (SM90) vLLM cannot use the DeepGEMM MegaMoE backend from
+the model card (SM100 only) and falls back to its Hopper MXFP4 MoE kernels.
 
 Run the read-only preflight from your laptop; it covers steps 1-4:
 
@@ -127,11 +144,11 @@ scripts/della/preflight_hotpotqa.sh
 ```
 
 It checks the local tools, the exact commit and clean tree, `scripts/della/.env`,
-non-interactive SSH to both hosts, and on `della-vis1`: Apptainer, the `cudatoolkit/13.0`
-module, a writable `MODEL_STORAGE`, the home quota, and (once built) that the serving venv
-matches the committed lock. The pinned vLLM is 0.25.1 on torch 2.11 / CUDA 13.0, which
-satisfies the 0.17.0 floor with the data-parallel, multi-API-server, and native tool-call
-options.
+non-interactive SSH to both hosts, and on `della-vis1`: the `cudatoolkit/13.0` module, a
+writable `MODEL_STORAGE`, the home quota, and (once built) that the serving venv matches
+the committed lock. The pinned vLLM is 0.25.1 on torch 2.11 / CUDA 13.0, which satisfies
+the 0.17.0 floor with the data-parallel, multi-API-server, expert-parallel, and native
+tool-call options the sbatch requires.
 
 Della requires an SSH key **and** a password step; the launcher scripts use `BatchMode=yes`,
 so open the persistent master connections once per laptop session:
@@ -151,51 +168,72 @@ scripts/della/build_env.sh
 `build_env.sh` runs the downloads on `della-vis1`. It also:
 
 - builds the frozen Python 3.11.13 and uv 0.9.13 GEPA environment;
-- builds the hash-locked vLLM serving venv at `$REMOTE_DIR/.serving-venv` and freezes its manifest;
+- builds the hash-locked vLLM serving venv at `$REMOTE_DIR/.serving-venv` (shared by both arms) and freezes its manifest;
 - builds and verifies the frozen Wiki-2017 BM25 index;
-- caches the exact HotPotQA 150/300/300 split;
-- downloads and byte-verifies both pinned model checkpoints; and
-- builds and verifies the pinned GLM SGLang Apptainer image.
+- caches the exact HotPotQA 150/300/300 split; and
+- downloads and byte-verifies both pinned model checkpoints.
+
+Disk prerequisite: the DeepSeek-V4-Flash-0731 checkpoint is 48 safetensors shards
+totalling about 167 GB (155 GiB) at the pinned revision, on top of Qwen3.8-27B. Check
+that `MODEL_STORAGE` has roughly 200 GB free before the first build (`checkquota` or
+`df -h "$MODEL_STORAGE"` on `della-vis1`); the download also stages transfer metadata
+under `.cache` inside the checkpoint directory.
 
 The shared files will be at:
 
 ```text
 $MODEL_STORAGE/Qwen3.8-27B
-$MODEL_STORAGE/GLM-5.3-Flash
-$MODEL_STORAGE/runtimes/sglang-glm-5.3-flash-x86_64.sif
+$MODEL_STORAGE/DeepSeek-V4-Flash-0731
 ```
 
-Model and runtime revisions:
+Model revisions:
 
 ```text
 Qwen/Qwen3.8-27B
 revision 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
 
-zai-org/GLM-5.3-Flash
-revision 04c4e9e95c5da8862dced7e5056455116f83a7e0
-
-docker://lmsysorg/sglang@sha256:0836f0160fa785e424e68d13ef88ddd548f87e6e11ad9f0e4de982e4f9188aaf
+deepseek-ai/DeepSeek-V4-Flash-0731
+revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
 ```
 
 Use `build_env.sh` rather than `huggingface-cli download`. The launcher requires the `.gepa-model-integrity.json` manifests generated during this build. Existing valid files are reused and verified.
 
-After the build succeeds, check that the three files are present:
+After the build succeeds, check that both manifests are present:
 
 ```bash
 source scripts/della/.env
 
 ssh "${REMOTE_USER}@${REMOTE_VIS_HOST}" \
   "test -s '${MODEL_STORAGE}/Qwen3.8-27B/.gepa-model-integrity.json' &&
-   test -s '${MODEL_STORAGE}/GLM-5.3-Flash/.gepa-model-integrity.json' &&
-   test -s '${MODEL_STORAGE}/runtimes/sglang-glm-5.3-flash-x86_64.sif' &&
-   echo 'All pinned model/runtime artifacts are present.'"
+   test -s '${MODEL_STORAGE}/DeepSeek-V4-Flash-0731/.gepa-model-integrity.json' &&
+   echo 'All pinned model artifacts are present.'"
 ```
 
 The byte-level verification runs inside `build_env.sh`.
 
+### Verify the DeepSeek serving stack once (manual)
+
+Before submitting the DeepSeek chain the first time, run the standalone serving check
+yourself, once, on an allocated eight-H200 node. It is not part of any campaign job, is
+not an `sbatch` dependency, and writes no marker or lock files; it serves the checkpoint
+with exactly the `vllm serve` invocation the sbatch uses, waits for health, then exercises
+an ordinary completion, a native tool call plus its tool-result continuation, and one ReAct
+V2 proposal per edit tool (DELETE_TEXT, INSERT_TEXT, MOVE_TEXT, REPLACE_TEXT), printing a
+PASS/FAIL report and exiting non-zero on failure. From a Della shell:
+
+```bash
+salloc --partition=ailab --nodes=1 --gres=gpu:8 --cpus-per-task=64 --mem=768G --time=02:00:00
+cd "$REMOTE_DIR"
+scripts/della/verify_deepseek_serving.sh
+```
+
+`VERIFY_ATTEMPTS` (default 4, one per tool) raises the number of edit attempts for a longer
+soak. Do not submit the DeepSeek chain until this prints `RESULT: PASS`; keep the vLLM log
+it names if it fails.
+
 ## 6. Experiment matrix
 
-The launcher enforces this order separately for Qwen and GLM:
+The launcher enforces this order separately for Qwen and DeepSeek:
 
 | Order | Tree | Code condition | Metric-call budget |
 |---:|---|---|---:|
@@ -206,9 +244,9 @@ The launcher enforces this order separately for Qwen and GLM:
 | 5 | Expanded | `vanilla` | 13,742 |
 | 6 | Expanded | `react_v2` | 13,742 |
 
-Each job uses `afterok` on the previous job. Within a model arm, the four standard-tree runs finish before either expanded-tree run starts. The Qwen and GLM arms are independent and can occupy two nodes at once.
+Each job uses `afterok` on the previous job. Within a model arm, the four standard-tree runs finish before either expanded-tree run starts. The Qwen and DeepSeek arms are independent and can occupy two nodes at once.
 
-The GLM submission starts with a four-hour, 20-attempt native multi-tool canary. Its experiment jobs depend on that canary. Each Qwen job runs a native tool-call check before optimization.
+Every job, Qwen or DeepSeek, verifies the frozen serving environment, checks that the pinned vLLM registers the checkpoint's architecture, and runs a native tool-call check before optimization. There is no separate canary job; the one-time manual serving check is described in section 5.
 
 ## 7. Submit the jobs
 
@@ -222,17 +260,17 @@ HOTPOTQA_CAMPAIGN_ID=hotpotqa-final-v1 \
 scripts/della/submit_hotpotqa.sh
 ```
 
-Launch the GLM chain:
+Launch the DeepSeek chain (after the one-time manual serving check in section 5 has passed):
 
 ```bash
-MODEL_PROFILE=glm-5.3-flash \
+MODEL_PROFILE=deepseek-v4-flash \
 BUDGET_PROFILE=campaign \
 CONDITION=all \
 HOTPOTQA_CAMPAIGN_ID=hotpotqa-final-v1 \
 scripts/della/submit_hotpotqa.sh
 ```
 
-The Qwen command submits six jobs. The GLM command submits a canary followed by six jobs. The campaign produces 12 result cells.
+Each command submits six jobs. The campaign produces 12 result cells.
 
 The launcher stages the source at:
 
@@ -242,7 +280,7 @@ $REMOTE_DIR/sources/169ddda125b1abe305c7714bbb5b3fc38b21b587
 
 The jobs load the checkpoints from Della storage and set Hugging Face and Transformers to offline mode. They do not use OpenRouter or another hosted model API.
 
-The Slurm time limits are safety caps, not runtime estimates: Qwen standard jobs receive 72 hours, Qwen expanded jobs 144 hours, GLM campaign jobs 144 hours, and the GLM canary 4 hours.
+The Slurm time limits are safety caps, not runtime estimates: Qwen standard jobs receive 72 hours, Qwen expanded jobs 144 hours, and DeepSeek campaign jobs 144 hours.
 
 ## 8. Monitor the jobs
 
@@ -263,13 +301,7 @@ gepa-hp-qwen3.8-27b-expanded-vanilla
 gepa-hp-qwen3.8-27b-expanded-react_v2
 ```
 
-GLM starts with:
-
-```text
-gepa-hp-glm-canary
-```
-
-The six GLM experiment jobs use the same standard-first order with the `glm-5.3-flash` profile.
+The six DeepSeek jobs use the same standard-first order with the `deepseek-v4-flash` profile.
 
 Inspect the dependency and state of one job:
 
@@ -315,17 +347,17 @@ HOTPOTQA_CAMPAIGN_ID=hotpotqa-final-v1 \
 scripts/della/submit_hotpotqa.sh
 ```
 
-Example: resume GLM expanded ReAct V2:
+Example: resume DeepSeek expanded ReAct V2:
 
 ```bash
-MODEL_PROFILE=glm-5.3-flash \
+MODEL_PROFILE=deepseek-v4-flash \
 BUDGET_PROFILE=expanded \
 CONDITION=react_v2 \
 HOTPOTQA_CAMPAIGN_ID=hotpotqa-final-v1 \
 scripts/della/submit_hotpotqa.sh
 ```
 
-A targeted GLM resubmission adds a new canary before the run. When an `afterok` parent fails, its old dependent jobs cannot run. Cancel those job IDs and submit the missing runs explicitly. Do not submit the `.sbatch` file directly.
+When an `afterok` parent fails, its old dependent jobs cannot run. Cancel those job IDs and submit the missing runs explicitly. Do not submit the `.sbatch` file directly.
 
 ## 10. Fetch the results
 
@@ -371,7 +403,7 @@ runs = json.loads(analysis.read_text())["runs"]
 
 models = {
     "hosted_vllm/Qwen/Qwen3.8-27B",
-    "hosted_vllm/zai-org/GLM-5.3-Flash",
+    "hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731",
 }
 cells = {
     (6871, "vanilla"),
@@ -422,7 +454,7 @@ Confirm these items before using the results:
 - The source commit is exactly `169ddda125b1abe305c7714bbb5b3fc38b21b587`.
 - `build_env.sh` completed without an integrity error.
 - The Qwen chain produced six successful Slurm jobs.
-- The GLM canary passed and its chain produced six successful Slurm jobs.
+- The DeepSeek chain produced six successful Slurm jobs.
 - No relevant job ended in `FAILED`, `TIMEOUT`, `OUT_OF_MEMORY`, or `CANCELLED`.
 - The completeness script prints `All 12 HotPotQA campaign cells completed.`
 - `hotpotqa_analysis.json`, run artifacts, campaign locks, and logs were fetched locally.

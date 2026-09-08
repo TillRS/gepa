@@ -35,9 +35,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from examples.common.experiment_models import (
+    DEEPSEEK_V4_FLASH_0731_MODEL,
     EXPERIMENT_MODELS,
     EXPERIMENT_NUM_RETRIES,
-    GLM_5_3_FLASH_MODEL,
     QWEN3_8_27B_MODEL,
     experiment_decoding,
     experiment_model_version,
@@ -145,10 +145,51 @@ _SCIENTIFIC_UV_VERSION = "0.9.13"
 _SCIENTIFIC_SPLIT_COUNTS = {"train": 150, "val": 300, "test": 300}
 _REACT_V2_CONDITIONS = {"react_v2", "react_v2_random"}
 _SEMANTIC_CONDITIONS = {"react_v2", "react_v2_random", "random", "action"}
-_GLM_SGLANG_IMAGE_URI = (
-    "docker://lmsysorg/sglang@"
-    "sha256:0836f0160fa785e424e68d13ef88ddd548f87e6e11ad9f0e4de982e4f9188aaf"
+# Serve-argument tokens every arm must record: one sequence per replica on the frozen
+# vLLM environment, no prefix caching, seeded decoding, native tool calls.
+_COMMON_VLLM_SERVE_SETTINGS = (
+    "gpu_memory_utilization=0.92",
+    "max_model_len=262144",
+    "rope_scaling=none",
+    "max_num_seqs=1",
+    "dtype=bfloat16",
+    "prefix_caching=false",
+    "auto_tool_choice=true",
+    "seed=0",
+    "batch_invariant=false",
+    "single_sequence_replicas=true",
 )
+_MODEL_VLLM_CONTRACTS = {
+    QWEN3_8_27B_MODEL: {
+        "weight_dtype": "bfloat16",
+        "kv_cache_dtype": "auto",
+        "serve_settings": (
+            "tp=1",
+            "kv_cache_dtype=auto",
+            "reasoning_parser=qwen3",
+            "tool_parser=qwen3_coder",
+        ),
+    },
+    # DeepSeek-V4-Flash-0731 through the same pinned vLLM 0.25.1: FP8 block-quantized
+    # attention/dense weights with MXFP4 experts as shipped in the checkpoint, one
+    # TP8/EP8 replica, the fp8_ds_mla KV cache and 256-token blocks that vLLM's
+    # DeepSeek V4 sparse-MLA path requires, and no MTP/DSpark speculative decoding.
+    DEEPSEEK_V4_FLASH_0731_MODEL: {
+        "weight_dtype": "fp8",
+        "kv_cache_dtype": "fp8",
+        "serve_settings": (
+            "tp=8",
+            "ep=8",
+            "dp_attention=false",
+            "speculative_decoding=false",
+            "expert_dtype=fp4",
+            "kv_cache_dtype=fp8",
+            "block_size=256",
+            "reasoning_parser=deepseek_v4",
+            "tool_parser=deepseek_v4",
+        ),
+    },
+}
 
 
 def _validate_hotpotqa_model_pair(student_model: str, proposer_model: str) -> None:
@@ -159,7 +200,7 @@ def _validate_hotpotqa_model_pair(student_model: str, proposer_model: str) -> No
         proposer_model: Model that selects and proposes prompt revisions.
 
     Raises:
-        ValueError: The roles differ or use a model outside the Qwen/GLM
+        ValueError: The roles differ or use a model outside the Qwen/DeepSeek
             campaign pair.
     """
     validate_experiment_model_pair(student_model, proposer_model)
@@ -297,13 +338,15 @@ def _validate_scientific_contract(args) -> None:
                     "and one NVIDIA driver version"
                 )
         serve_arguments = os.environ.get("HOTPOTQA_SERVE_ARGUMENTS", "")
-        if args.solver_model == QWEN3_8_27B_MODEL:
+        model_contract = _MODEL_VLLM_CONTRACTS.get(args.solver_model)
+        if model_contract is not None:
+            model_label = "Qwen3.8-27B" if args.solver_model == QWEN3_8_27B_MODEL else "DeepSeek-V4-Flash-0731"
             if os.environ.get("HOTPOTQA_SERVING_ENGINE") != "vllm":
-                changed_axes.append("HOTPOTQA_SERVING_ENGINE must be 'vllm' for Qwen3.8-27B")
-            if os.environ.get("HOTPOTQA_WEIGHT_DTYPE") != "bfloat16":
-                changed_axes.append("HOTPOTQA_WEIGHT_DTYPE must be 'bfloat16'")
-            if os.environ.get("HOTPOTQA_KV_CACHE_DTYPE") != "auto":
-                changed_axes.append("HOTPOTQA_KV_CACHE_DTYPE must be 'auto'")
+                changed_axes.append(f"HOTPOTQA_SERVING_ENGINE must be 'vllm' for {model_label}")
+            if os.environ.get("HOTPOTQA_WEIGHT_DTYPE") != model_contract["weight_dtype"]:
+                changed_axes.append(f"HOTPOTQA_WEIGHT_DTYPE must be {model_contract['weight_dtype']!r}")
+            if os.environ.get("HOTPOTQA_KV_CACHE_DTYPE") != model_contract["kv_cache_dtype"]:
+                changed_axes.append(f"HOTPOTQA_KV_CACHE_DTYPE must be {model_contract['kv_cache_dtype']!r}")
             if os.environ.get("HOTPOTQA_VLLM_BATCH_INVARIANT") != "false":
                 changed_axes.append("HOTPOTQA_VLLM_BATCH_INVARIANT must be 'false'")
             if os.environ.get("HOTPOTQA_VLLM_SINGLE_SEQUENCE_REPLICAS") != "true":
@@ -320,59 +363,7 @@ def _validate_scientific_contract(args) -> None:
                 changed_axes.append(
                     "HOTPOTQA_SERVING_ENV_SHA256 must identify the frozen serving environment"
                 )
-            required_serve_settings = (
-                "tp=1",
-                "gpu_memory_utilization=0.92",
-                "max_model_len=262144",
-                "rope_scaling=none",
-                "max_num_seqs=1",
-                "dtype=bfloat16",
-                "kv_cache_dtype=auto",
-                "prefix_caching=false",
-                "reasoning_parser=qwen3",
-                "auto_tool_choice=true",
-                "tool_parser=qwen3_coder",
-                "seed=0",
-                "batch_invariant=false",
-                "single_sequence_replicas=true",
-            )
-            for setting in required_serve_settings:
-                if setting not in serve_arguments.split(";"):
-                    changed_axes.append(f"HOTPOTQA_SERVE_ARGUMENTS must include {setting!r}")
-        elif args.solver_model == GLM_5_3_FLASH_MODEL:
-            if os.environ.get("HOTPOTQA_SERVING_ENGINE") != "sglang":
-                changed_axes.append("HOTPOTQA_SERVING_ENGINE must be 'sglang' for GLM-5.3-Flash")
-            if os.environ.get("HOTPOTQA_WEIGHT_DTYPE") != "fp8":
-                changed_axes.append("HOTPOTQA_WEIGHT_DTYPE must be 'fp8'")
-            if os.environ.get("HOTPOTQA_KV_CACHE_DTYPE") != "bfloat16":
-                changed_axes.append("HOTPOTQA_KV_CACHE_DTYPE must be 'bfloat16'")
-            if not os.environ.get("HOTPOTQA_SGLANG_VERSION"):
-                changed_axes.append("HOTPOTQA_SGLANG_VERSION must identify the serving runtime")
-            if os.environ.get("HOTPOTQA_SERVING_IMAGE_URI") != _GLM_SGLANG_IMAGE_URI:
-                changed_axes.append(
-                    f"HOTPOTQA_SERVING_IMAGE_URI must be {_GLM_SGLANG_IMAGE_URI!r}"
-                )
-            serving_image_sha256 = os.environ.get("HOTPOTQA_SERVING_IMAGE_SHA256", "")
-            if len(serving_image_sha256) != 64 or any(
-                character not in "0123456789abcdef" for character in serving_image_sha256
-            ):
-                changed_axes.append(
-                    "HOTPOTQA_SERVING_IMAGE_SHA256 must identify the exact SGLang image bytes"
-                )
-            required_serve_settings = (
-                "tp=8",
-                "ep=8",
-                "context_length=262144",
-                "max_running_requests=8",
-                "kv_cache_dtype=bfloat16",
-                "dsa_prefill_backend=tilelang",
-                "dsa_decode_backend=tilelang",
-                "moe_runner_backend=deep_gemm",
-                "reasoning_parser=glm45",
-                "tool_parser=glm47",
-                "speculative_decoding=false",
-                "dp_attention=false",
-            )
+            required_serve_settings = _COMMON_VLLM_SERVE_SETTINGS + model_contract["serve_settings"]
             for setting in required_serve_settings:
                 if setting not in serve_arguments.split(";"):
                     changed_axes.append(f"HOTPOTQA_SERVE_ARGUMENTS must include {setting!r}")
@@ -677,8 +668,6 @@ def build_run_contract(condition: str, args) -> dict:
             "env_spec_sha256": os.environ.get("HOTPOTQA_ENV_SPEC_SHA256"),
             "gepa_env_sha256": os.environ.get("HOTPOTQA_GEPA_ENV_SHA256"),
             "serving_engine": os.environ.get("HOTPOTQA_SERVING_ENGINE"),
-            "serving_image_uri": os.environ.get("HOTPOTQA_SERVING_IMAGE_URI"),
-            "serving_image_sha256": os.environ.get("HOTPOTQA_SERVING_IMAGE_SHA256"),
             "serving_lock_sha256": os.environ.get("HOTPOTQA_SERVING_LOCK_SHA256"),
             "serving_env_sha256": os.environ.get("HOTPOTQA_SERVING_ENV_SHA256"),
             "gpu_runtime": (
@@ -687,7 +676,6 @@ def build_run_contract(condition: str, args) -> dict:
                 else None
             ),
             "vllm_version": os.environ.get("HOTPOTQA_VLLM_VERSION"),
-            "sglang_version": os.environ.get("HOTPOTQA_SGLANG_VERSION"),
             "torch_version": os.environ.get("HOTPOTQA_TORCH_VERSION"),
             "cuda_version": os.environ.get("HOTPOTQA_CUDA_VERSION"),
             "cuda_module": os.environ.get("HOTPOTQA_CUDA_MODULE"),

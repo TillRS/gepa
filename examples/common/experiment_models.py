@@ -11,28 +11,33 @@ QWEN3_8_27B_MODEL_INFO = {
     "input_cost_per_token": 0.0,
     "output_cost_per_token": 0.0,
 }
-GLM_5_3_FLASH_REPO = "zai-org/GLM-5.3-Flash"
-GLM_5_3_FLASH_MODEL = f"hosted_vllm/{GLM_5_3_FLASH_REPO}"
-GLM_5_3_FLASH_REVISION = "04c4e9e95c5da8862dced7e5056455116f83a7e0"
-GLM_5_3_FLASH_MODEL_INFO = {
+# Locally served DeepSeek-V4-Flash-0731 (the official release with enhanced agentic
+# capabilities, not the preview, -Base, or -DSpark variants). This is the HotPotQA
+# campaign's second arm and is distinct from DEEPSEEK_V4_FLASH_MODEL below, the
+# hosted DeepSeek API model used by the HoVer and Terminal-Bench harnesses.
+DEEPSEEK_V4_FLASH_0731_REPO = "deepseek-ai/DeepSeek-V4-Flash-0731"
+DEEPSEEK_V4_FLASH_0731_MODEL = f"hosted_vllm/{DEEPSEEK_V4_FLASH_0731_REPO}"
+DEEPSEEK_V4_FLASH_0731_REVISION = "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
+DEEPSEEK_V4_FLASH_0731_MODEL_INFO = {
     "max_input_tokens": 262_144,
     "max_output_tokens": 16_384,
     "input_cost_per_token": 0.0,
     "output_cost_per_token": 0.0,
 }
-EXPERIMENT_MODELS = (QWEN3_8_27B_MODEL, GLM_5_3_FLASH_MODEL)
+EXPERIMENT_MODELS = (QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_0731_MODEL)
 DEEPSEEK_V4_FLASH_MODEL = "deepseek/deepseek-v4-flash"
 EXPERIMENT_NUM_RETRIES = 0
 
 _EXPERIMENT_MODEL_VERSIONS = {
     QWEN3_8_27B_MODEL: QWEN3_8_27B_REVISION,
-    GLM_5_3_FLASH_MODEL: GLM_5_3_FLASH_REVISION,
+    DEEPSEEK_V4_FLASH_0731_MODEL: DEEPSEEK_V4_FLASH_0731_REVISION,
 }
 
 # These settings follow each checkpoint's published generation configuration;
 # the lower output limit is the fixed experiment contract for both model arms.
+# DeepSeek recommends temperature 1.0 with top_p 0.95 for agentic scenarios.
 # Sources: https://huggingface.co/Qwen/Qwen3.8-27B
-#          https://huggingface.co/zai-org/GLM-5.3-Flash
+#          https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731
 _EXPERIMENT_DECODING = {
     QWEN3_8_27B_MODEL: {
         "temperature": 1.0,
@@ -40,7 +45,7 @@ _EXPERIMENT_DECODING = {
         "top_k": 20,
         "max_tokens": 16_384,
     },
-    GLM_5_3_FLASH_MODEL: {
+    DEEPSEEK_V4_FLASH_0731_MODEL: {
         "temperature": 1.0,
         "top_p": 0.95,
         "max_tokens": 16_384,
@@ -53,12 +58,16 @@ _EXPERIMENT_DECODING = {
     },
 }
 
+# vLLM renders DeepSeek V4 prompts with the checkpoint's own encoding rather than a
+# Jinja template. Its apply_chat_template reads ``thinking`` (default False, which
+# would select the no-reasoning "chat" mode) and ``reasoning_effort`` ("max" or
+# "xhigh" select the maximum level; anything else but "none" maps to "high").
 _EXPERIMENT_REQUEST_OVERRIDES = {
-    GLM_5_3_FLASH_MODEL: {
+    DEEPSEEK_V4_FLASH_0731_MODEL: {
         "extra_body": {
             "chat_template_kwargs": {
+                "thinking": True,
                 "reasoning_effort": "max",
-                "clear_thinking": True,
             },
         }
     },
@@ -68,10 +77,10 @@ _EXPERIMENT_REQUEST_OVERRIDES = {
 def experiment_decoding(model: str) -> dict[str, int | float | str]:
     """Return the fixed decoding settings for one experiment model.
 
-    Qwen3.8-27B and GLM-5.3-Flash use their published thinking-mode sampling
-    parameters. Maximum GLM reasoning is carried separately in its request
-    override so the local serving runtime applies it through the checkpoint's
-    template.
+    Qwen3.8-27B and DeepSeek-V4-Flash-0731 use their published thinking-mode
+    sampling parameters. DeepSeek's thinking mode and maximum reasoning effort
+    are carried separately in its request override so the local serving runtime
+    applies them through the checkpoint's prompt encoding.
 
     Args:
         model: Exact LiteLLM model identifier used by a benchmark run.
@@ -111,9 +120,9 @@ def experiment_model_version(model: str) -> str:
 def experiment_request_overrides(model: str) -> dict[str, object]:
     """Return provider-specific request fields for one runtime model.
 
-    Self-hosted GLM requests set maximum reasoning through the checkpoint's
-    chat-template arguments. A deep copy keeps one client from mutating the
-    policy used by later calls.
+    Self-hosted DeepSeek requests enable thinking mode and maximum reasoning
+    through vLLM's chat-template arguments. A deep copy keeps one client from
+    mutating the policy used by later calls.
 
     Args:
         model: Exact LiteLLM model identifier used by a benchmark run.

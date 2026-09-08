@@ -32,13 +32,13 @@ source "${ENV_FILE}"
 WIKI17_DIR="${WIKI17_DIR:-${SCRATCH_BASE}/.cache/gepa/wiki17}"
 MODEL_STORAGE="${MODEL_STORAGE:-/projects/BSTEWART/model_storage}"
 QWEN_MODEL_DIR="${MODEL_STORAGE}/Qwen3.8-27B"
-GLM_MODEL_DIR="${MODEL_STORAGE}/GLM-5.3-Flash"
-GLM_RUNTIME_DIR="${MODEL_STORAGE}/runtimes"
-GLM_SGLANG_IMAGE_DIGEST="sha256:0836f0160fa785e424e68d13ef88ddd548f87e6e11ad9f0e4de982e4f9188aaf"
-GLM_SGLANG_IMAGE_URI="docker://lmsysorg/sglang@${GLM_SGLANG_IMAGE_DIGEST}"
-GLM_SGLANG_IMAGE="${GLM_RUNTIME_DIR}/sglang-glm-5.3-flash-x86_64.sif"
-# Self-contained Qwen serving environment (vLLM), built from the hash-locked
-# requirements in this repo; nothing outside the checkout is consulted.
+# deepseek-ai/DeepSeek-V4-Flash-0731 at the pinned revision is 48 safetensors shards
+# totalling about 167 GB (155 GiB) of FP8 attention/dense weights plus MXFP4 experts,
+# so MODEL_STORAGE needs roughly 200 GB free before the first build (the download
+# also stages transfer metadata under .cache inside the checkpoint directory).
+DEEPSEEK_MODEL_DIR="${MODEL_STORAGE}/DeepSeek-V4-Flash-0731"
+# Self-contained vLLM serving environment for both model profiles, built from the
+# hash-locked requirements in this repo; nothing outside the checkout is consulted.
 SERVING_VENV_DIR="${SERVING_VENV_DIR:-${REMOTE_DIR%/}/.serving-venv}"
 SERVING_LOCK_RELATIVE="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
 HOTPOTQA_SERVING_PYTHON_VERSION="3.12.7"
@@ -68,8 +68,7 @@ SERVING_VENV_DIR="${SERVING_VENV_DIR}"
 SERVING_LOCK="${SERVING_LOCK_RELATIVE}"
 HOTPOTQA_SERVING_PYTHON_VERSION="${HOTPOTQA_SERVING_PYTHON_VERSION}"
 mkdir -p "\${XDG_CACHE_HOME}" "\${HF_HOME}" "\${UV_CACHE_DIR}" "\${DSPY_CACHEDIR}" \
-    "${SCRATCH_BASE}/.cache/apptainer/tmp" "${WIKI17_DIR}" "${QWEN_MODEL_DIR}" \
-    "${GLM_MODEL_DIR}" "${GLM_RUNTIME_DIR}"
+    "${WIKI17_DIR}" "${QWEN_MODEL_DIR}" "${DEEPSEEK_MODEL_DIR}"
 
 ARTIFACT_LOCK_PATH="${SCRATCH_BASE}/.cache/gepa/hotpotqa-artifacts.lock"
 mkdir -p "\$(dirname "\${ARTIFACT_LOCK_PATH}")"
@@ -134,7 +133,7 @@ version, commit = validate_hotpotqa_dspy_runtime()
 print(f"DSPy task-program runtime: {version} ({commit[:8]})")
 PY
 
-echo "==> building the pinned Qwen serving environment (vLLM)"
+echo "==> building the pinned vLLM serving environment (both model profiles)"
 if [[ ! -f "\${SERVING_LOCK}" ]]; then
     echo "ERROR: missing \${SERVING_LOCK}; run scripts/della/lock_serving_env.sh and commit the result" >&2
     exit 1
@@ -181,51 +180,6 @@ if [[ ! "\${HOTPOTQA_SERVING_ENV_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
 fi
 echo "==> serving environment: lock \${HOTPOTQA_SERVING_LOCK_SHA256} / realized \${HOTPOTQA_SERVING_ENV_SHA256}"
 
-echo "==> preparing the pinned GLM SGLang image"
-APPTAINER_BIN="\$(command -v apptainer || true)"
-if [[ -z "\${APPTAINER_BIN}" ]]; then
-    echo "ERROR: Apptainer is required for the pinned GLM-5.3-Flash runtime" >&2
-    exit 1
-fi
-GLM_RUNTIME_LOCK_PATH="${GLM_RUNTIME_DIR}/glm-5.3-flash-runtime.lock"
-exec {GLM_RUNTIME_LOCK_FD}>"\${GLM_RUNTIME_LOCK_PATH}"
-if ! flock -n "\${GLM_RUNTIME_LOCK_FD}"; then
-    echo "ERROR: another user is preparing the shared GLM-5.3-Flash runtime" >&2
-    exit 1
-fi
-GLM_IMAGE_SOURCE_PATH="${GLM_SGLANG_IMAGE}.source"
-GLM_IMAGE_SHA_PATH="${GLM_SGLANG_IMAGE}.sha256"
-if [[ ! -f "${GLM_SGLANG_IMAGE}" ]]; then
-    GLM_IMAGE_TEMP="\$(mktemp "${GLM_RUNTIME_DIR}/.glm-5.3-flash.XXXXXX.sif")"
-    # mktemp creates the file, and \`apptainer build\` refuses to overwrite an
-    # existing target; keep the unique name but hand apptainer a free path.
-    rm -f -- "\${GLM_IMAGE_TEMP}"
-    cleanup_glm_image() {
-        rm -f -- "\${GLM_IMAGE_TEMP}"
-    }
-    trap cleanup_glm_image EXIT
-    APPTAINER_CACHEDIR="${SCRATCH_BASE}/.cache/apptainer" \
-        APPTAINER_TMPDIR="${SCRATCH_BASE}/.cache/apptainer/tmp" \
-        "\${APPTAINER_BIN}" build "\${GLM_IMAGE_TEMP}" "${GLM_SGLANG_IMAGE_URI}"
-    mv "\${GLM_IMAGE_TEMP}" "${GLM_SGLANG_IMAGE}"
-    trap - EXIT
-    printf '%s\n' "${GLM_SGLANG_IMAGE_URI}" > "\${GLM_IMAGE_SOURCE_PATH}"
-    sha256sum "${GLM_SGLANG_IMAGE}" | cut -d' ' -f1 > "\${GLM_IMAGE_SHA_PATH}"
-fi
-if [[ ! -f "\${GLM_IMAGE_SOURCE_PATH}" \
-    || "\$(tr -d '\n' < "\${GLM_IMAGE_SOURCE_PATH}")" != "${GLM_SGLANG_IMAGE_URI}" \
-    || ! -f "\${GLM_IMAGE_SHA_PATH}" ]]; then
-    echo "ERROR: GLM runtime sidecars do not identify ${GLM_SGLANG_IMAGE_URI}" >&2
-    exit 1
-fi
-GLM_IMAGE_SHA256="\$(sha256sum "${GLM_SGLANG_IMAGE}" | cut -d' ' -f1)"
-if [[ "\${GLM_IMAGE_SHA256}" != "\$(tr -d '\n' < "\${GLM_IMAGE_SHA_PATH}")" ]]; then
-    echo "ERROR: GLM runtime image differs from its frozen digest" >&2
-    exit 1
-fi
-"\${APPTAINER_BIN}" inspect "${GLM_SGLANG_IMAGE}" >/dev/null
-echo "==> GLM SGLang image: ${GLM_SGLANG_IMAGE_URI} / \${GLM_IMAGE_SHA256}"
-
 echo "==> preparing the frozen Wiki-2017 BM25 index"
 .venv/bin/python -m examples.common.wiki17_bm25 prepare --root "${WIKI17_DIR}"
 .venv/bin/python -m examples.common.wiki17_bm25 verify --deep --root "${WIKI17_DIR}"
@@ -243,17 +197,17 @@ echo "==> preparing the pinned Qwen3.8-27B checkpoint"
         --model-profile qwen3.8-27b --root "${QWEN_MODEL_DIR}"
 )
 
-echo "==> preparing the pinned GLM-5.3-Flash checkpoint"
+echo "==> preparing the pinned DeepSeek-V4-Flash-0731 checkpoint (about 167 GB)"
 (
-    exec {MODEL_LOCK_FD}<"${GLM_MODEL_DIR}"
+    exec {MODEL_LOCK_FD}<"${DEEPSEEK_MODEL_DIR}"
     if ! flock -n "\${MODEL_LOCK_FD}"; then
-        echo "ERROR: another user is preparing or serving the shared GLM-5.3-Flash checkpoint" >&2
+        echo "ERROR: another user is preparing or serving the shared DeepSeek-V4-Flash-0731 checkpoint" >&2
         exit 1
     fi
     .venv/bin/python -m examples.common.model_snapshot prepare \
-        --model-profile glm-5.3-flash --root "${GLM_MODEL_DIR}"
+        --model-profile deepseek-v4-flash --root "${DEEPSEEK_MODEL_DIR}"
     .venv/bin/python -m examples.common.model_snapshot verify \
-        --model-profile glm-5.3-flash --root "${GLM_MODEL_DIR}"
+        --model-profile deepseek-v4-flash --root "${DEEPSEEK_MODEL_DIR}"
 )
 
 echo "==> caching the HotpotQA fullwiki split"

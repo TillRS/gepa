@@ -36,18 +36,9 @@ MODEL_STORAGE="${MODEL_STORAGE:-/projects/BSTEWART/model_storage}"
 MODEL_PROFILE="${MODEL_PROFILE:-qwen3.8-27b}"
 BUDGET_PROFILE="${BUDGET_PROFILE:-standard}"
 CONDITION="${CONDITION:-}"
-HOTPOTQA_CANARY_ONLY="${HOTPOTQA_CANARY_ONLY:-0}"
 HOTPOTQA_CAMPAIGN_ID="${HOTPOTQA_CAMPAIGN_ID:-}"
 if [[ ! "${HOTPOTQA_CAMPAIGN_ID}" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; then
     echo "ERROR: production launcher did not provide a valid HotPotQA campaign ID" >&2
-    exit 1
-fi
-if [[ "${HOTPOTQA_CANARY_ONLY}" != "0" && "${HOTPOTQA_CANARY_ONLY}" != "1" ]]; then
-    echo "ERROR: HOTPOTQA_CANARY_ONLY must be 0 or 1" >&2
-    exit 1
-fi
-if [[ "${HOTPOTQA_CANARY_ONLY}" == "1" && "${MODEL_PROFILE}" != "glm-5.3-flash" ]]; then
-    echo "ERROR: the runtime canary is reserved for the GLM-5.3-Flash profile" >&2
     exit 1
 fi
 GEN_PORT="${GEN_PORT:-}"
@@ -61,7 +52,8 @@ VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-1}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
 # Self-contained vLLM serving environment built by scripts/della/build_env.sh from
-# examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt.
+# examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt. Both model profiles
+# serve through this one environment.
 SERVING_VENV_DIR="${SERVING_VENV_DIR:-}"
 SERVING_LOCK="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
 GEPA_VENV_DIR="${GEPA_VENV_DIR:-}"
@@ -73,11 +65,9 @@ HOTPOTQA_UV_VERSION="${HOTPOTQA_UV_VERSION:-}"
 HOTPOTQA_UV_SHA256="${HOTPOTQA_UV_SHA256:-}"
 GEPA_UV_BIN="${GEPA_UV_BIN:-}"
 QWEN_REVISION="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
-GLM_REVISION="04c4e9e95c5da8862dced7e5056455116f83a7e0"
-EXPECTED_GLM_SGLANG_IMAGE_URI="docker://lmsysorg/sglang@sha256:0836f0160fa785e424e68d13ef88ddd548f87e6e11ad9f0e4de982e4f9188aaf"
-GLM_SGLANG_IMAGE="${GLM_SGLANG_IMAGE:-}"
-GLM_SGLANG_IMAGE_URI="${GLM_SGLANG_IMAGE_URI:-}"
-HOTPOTQA_SGLANG_IMAGE_SHA256="${HOTPOTQA_SGLANG_IMAGE_SHA256:-}"
+# deepseek-ai/DeepSeek-V4-Flash-0731 main as of 2026-08-01: a model-card-only commit
+# (#20) on top of the 2026-07-31 weight release 9e165c30.
+DEEPSEEK_REVISION="7872f01b1d1fe23eabc4c98b48bffcef5a386062"
 HOTPOTQA_DATA_REVISION="1908d6afbbead072334abe2965f91bd2709910ab"
 WIKI17_REVISION="ef6a5e72a98b47cef31574a400fea8fe149559a3"
 HOTPOTQA_DSPY_COMMIT="62dc3b634d7dc0c4889abcf905cb4c391ea6b396"
@@ -199,18 +189,18 @@ case "${MODEL_PROFILE}" in
         MODEL_SNAPSHOT_PROFILE="qwen3.8-27b"
         SERVING_ENGINE="vllm"
         ;;
-    glm-5.3-flash)
-        MODEL="GLM-5.3-Flash"
+    deepseek-v4-flash)
+        MODEL="DeepSeek-V4-Flash-0731"
         SOLVER_MODEL_PATH="${MODEL_STORAGE}/${MODEL}"
-        SOLVER_SERVED_NAME="zai-org/GLM-5.3-Flash"
-        SOLVER_MODEL="hosted_vllm/zai-org/GLM-5.3-Flash"
-        HOTPOTQA_MODEL_REVISION="${GLM_REVISION}"
+        SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4-Flash-0731"
+        SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"
+        HOTPOTQA_MODEL_REVISION="${DEEPSEEK_REVISION}"
         SOLVER_API_BASE=""
-        MODEL_SNAPSHOT_PROFILE="glm-5.3-flash"
-        SERVING_ENGINE="sglang"
+        MODEL_SNAPSHOT_PROFILE="deepseek-v4-flash"
+        SERVING_ENGINE="vllm"
         ;;
     *)
-        echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or glm-5.3-flash" >&2
+        echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or deepseek-v4-flash" >&2
         exit 1
         ;;
 esac
@@ -288,196 +278,189 @@ REFLECTION_API_BASE="${SOLVER_API_BASE}"
 GEN_LOG="${LOG_DIR}/gen-${SLURM_JOB_ID:-local}.log"
 
 HOTPOTQA_VLLM_VERSION=""
-HOTPOTQA_SGLANG_VERSION=""
-HOTPOTQA_SERVING_IMAGE_URI=""
-HOTPOTQA_SERVING_IMAGE_SHA256=""
 HOTPOTQA_SERVING_LOCK_SHA256=""
 HOTPOTQA_CUDA_MODULE=""
 HOTPOTQA_VLLM_BATCH_INVARIANT=""
 HOTPOTQA_VLLM_SINGLE_SEQUENCE_REPLICAS=""
 
-if [[ "${SERVING_ENGINE}" == "vllm" ]]; then
-    VLLM_PY="${SERVING_VENV_DIR}/bin/python"
-    VLLM_BIN="${SERVING_VENV_DIR}/bin/vllm"
-    if [[ -z "${SERVING_VENV_DIR}" || ! -x "${VLLM_PY}" || ! -x "${VLLM_BIN}" ]]; then
-        echo "ERROR: missing frozen vLLM serving environment; run scripts/della/build_env.sh" >&2
-        exit 1
-    fi
-    if [[ "${VLLM_TENSOR_PARALLEL_SIZE}" != "1" \
-        || "${VLLM_DATA_PARALLEL_SIZE}" != "8" \
-        || "${VLLM_API_SERVER_COUNT}" != "8" \
-        || "${VLLM_MAX_NUM_SEQS}" != "1" ]]; then
-        echo "ERROR: Qwen requires TP1/DP8, eight API servers, and one sequence per replica" >&2
-        exit 1
-    fi
-    unset VLLM_BATCH_INVARIANT
-    HOTPOTQA_VLLM_BATCH_INVARIANT="false"
-    HOTPOTQA_VLLM_SINGLE_SEQUENCE_REPLICAS="true"
-    export PATH="${SERVING_VENV_DIR}/bin:${PATH}"
-    HOTPOTQA_VLLM_VERSION="$("${VLLM_PY}" -c 'from importlib.metadata import version; print(version("vllm"))')"
-    HOTPOTQA_TORCH_VERSION="$("${VLLM_PY}" -c 'import torch; print(torch.__version__)')"
-    HOTPOTQA_CUDA_VERSION="$("${VLLM_PY}" -c 'import torch; print(torch.version.cuda)')"
-    HOTPOTQA_TRANSFORMERS_VERSION="$("${VLLM_PY}" -c 'from importlib.metadata import version; print(version("transformers"))')"
-    HOTPOTQA_CUDA_MODULE="cudatoolkit/${HOTPOTQA_CUDA_VERSION}"
-    source /usr/share/Modules/init/bash
-    if ! module load "${HOTPOTQA_CUDA_MODULE}" || ! module is-loaded "${HOTPOTQA_CUDA_MODULE}"; then
-        echo "ERROR: exact CUDA module ${HOTPOTQA_CUDA_MODULE} is unavailable" >&2
-        exit 1
-    fi
-    if [[ ! -f "${SERVING_LOCK}" ]]; then
-        echo "ERROR: Slurm job source lacks ${SERVING_LOCK}" >&2
-        exit 1
-    fi
-    HOTPOTQA_SERVING_LOCK_SHA256="$(sha256sum "${SERVING_LOCK}" | cut -d' ' -f1)"
-    if [[ ! -f "${SERVING_VENV_DIR}/.gepa-serving-lock.sha256" \
-        || "$(tr -d '\n' < "${SERVING_VENV_DIR}/.gepa-serving-lock.sha256")" != "${HOTPOTQA_SERVING_LOCK_SHA256}" ]]; then
-        echo "ERROR: serving environment was built from a different lockfile; run scripts/della/build_env.sh" >&2
-        exit 1
-    fi
-    SERVING_ENV_MANIFEST="${SCRATCH_BASE}/.cache/gepa/serving-environments/${HOTPOTQA_SERVING_LOCK_SHA256}.json"
-    if ! "${GEPA_UV_BIN}" pip check --python "${VLLM_PY}"; then
-        echo "ERROR: serving environment has inconsistent dependencies" >&2
-        exit 1
-    fi
-    VERIFIED_SERVING_ENV_SHA256="$(
-        "${VLLM_PY}" -m examples.common.python_environment verify --path "${SERVING_ENV_MANIFEST}"
-    )"
-    if [[ ! "${HOTPOTQA_SERVING_ENV_SHA256}" =~ ^[0-9a-f]{64}$ \
-        || "${VERIFIED_SERVING_ENV_SHA256}" != "${HOTPOTQA_SERVING_ENV_SHA256}" ]]; then
-        echo "ERROR: serving environment differs from the submitted frozen environment" >&2
-        exit 1
-    fi
-    "${VLLM_PY}" - "${HOTPOTQA_VLLM_VERSION}" <<'PY'
+# --- Frozen vLLM serving environment (shared by both profiles) -------------
+VLLM_PY="${SERVING_VENV_DIR}/bin/python"
+VLLM_BIN="${SERVING_VENV_DIR}/bin/vllm"
+if [[ -z "${SERVING_VENV_DIR}" || ! -x "${VLLM_PY}" || ! -x "${VLLM_BIN}" ]]; then
+    echo "ERROR: missing frozen vLLM serving environment; run scripts/della/build_env.sh" >&2
+    exit 1
+fi
+# Determinism contract for both profiles: no vLLM batch-invariant mode; instead every
+# replica decodes exactly one sequence at a time, so no request's forward pass depends
+# on which other requests happen to be in flight.
+unset VLLM_BATCH_INVARIANT
+HOTPOTQA_VLLM_BATCH_INVARIANT="false"
+HOTPOTQA_VLLM_SINGLE_SEQUENCE_REPLICAS="true"
+if [[ "${VLLM_MAX_NUM_SEQS}" != "1" ]]; then
+    echo "ERROR: scientific runs require one sequence per replica (VLLM_MAX_NUM_SEQS=1)" >&2
+    exit 1
+fi
+case "${MODEL_PROFILE}" in
+    qwen3.8-27b)
+        # Dense 27B: eight independent TP1 replicas, one API server each.
+        if [[ "${VLLM_TENSOR_PARALLEL_SIZE}" != "1" \
+            || "${VLLM_DATA_PARALLEL_SIZE}" != "8" \
+            || "${VLLM_API_SERVER_COUNT}" != "8" ]]; then
+            echo "ERROR: Qwen requires TP1/DP8, eight API servers, and one sequence per replica" >&2
+            exit 1
+        fi
+        export HOTPOTQA_WEIGHT_DTYPE="bfloat16"
+        export HOTPOTQA_KV_CACHE_DTYPE="auto"
+        VLLM_PROFILE_ARGS=(
+            --reasoning-parser qwen3
+            --tool-call-parser qwen3_coder
+            --tensor-parallel-size 1
+            --data-parallel-size 8
+            --api-server-count 8
+            --kv-cache-dtype auto
+        )
+        HOTPOTQA_SERVE_ARGUMENTS="tp=1;dp=8;api_servers=8;gpu_memory_utilization=${GEN_GMU};max_model_len=${GEN_MAX_LEN};rope_scaling=none;max_num_seqs=1;max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS};dtype=bfloat16;kv_cache_dtype=auto;prefix_caching=false;language_model_only=true;reasoning_parser=qwen3;auto_tool_choice=true;tool_parser=qwen3_coder;seed=0;batch_invariant=false;single_sequence_replicas=true"
+        SERVE_TOPOLOGY="TP1/DP8"
+        ;;
+    deepseek-v4-flash)
+        # DeepSeek-V4-Flash-0731: a 304B-parameter MoE (13B activated) whose checkpoint
+        # ships FP8 block-quantized attention/dense weights (e4m3, ue8m0 scales) and
+        # MXFP4 experts (config.json expert_dtype=fp4), with hybrid Compressed Sparse
+        # Attention and Heavily Compressed Attention layers. One TP8 replica across the
+        # node with expert parallelism (EP8), a single API server, no speculative
+        # decoding (neither the MTP head nor the DSpark draft module is loaded), and no
+        # data-parallel attention. Weights stay in the checkpoint's quantized formats;
+        # the dtype flag sets the activation dtype. vLLM 0.25.1's DeepSeek V4 sparse-MLA
+        # path only supports the fp8_ds_mla KV cache and 256-token KV blocks, so both are
+        # fixed here. The MoE backend is left at vLLM's default: DeepGEMM MegaMoE from the
+        # model card needs SM100, and the H200 is SM90.
+        if [[ "${VLLM_TENSOR_PARALLEL_SIZE}" != "8" \
+            || "${VLLM_DATA_PARALLEL_SIZE}" != "1" \
+            || "${VLLM_API_SERVER_COUNT}" != "1" ]]; then
+            echo "ERROR: DeepSeek requires one TP8/EP8 replica with one API server on the eight-H200 node" >&2
+            exit 1
+        fi
+        export HOTPOTQA_WEIGHT_DTYPE="fp8"
+        export HOTPOTQA_KV_CACHE_DTYPE="fp8"
+        VLLM_PROFILE_ARGS=(
+            --reasoning-parser deepseek_v4
+            --tool-call-parser deepseek_v4
+            --tensor-parallel-size 8
+            --enable-expert-parallel
+            --data-parallel-size 1
+            --api-server-count 1
+            --kv-cache-dtype fp8
+            --block-size 256
+        )
+        HOTPOTQA_SERVE_ARGUMENTS="tp=8;ep=8;dp=1;api_servers=1;dp_attention=false;speculative_decoding=false;gpu_memory_utilization=${GEN_GMU};max_model_len=${GEN_MAX_LEN};rope_scaling=none;max_num_seqs=1;max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS};dtype=bfloat16;weight_quant=fp8;expert_dtype=fp4;kv_cache_dtype=fp8;block_size=256;prefix_caching=false;language_model_only=true;reasoning_parser=deepseek_v4;auto_tool_choice=true;tool_parser=deepseek_v4;seed=0;batch_invariant=false;single_sequence_replicas=true"
+        SERVE_TOPOLOGY="TP8/EP8"
+        ;;
+esac
+export PATH="${SERVING_VENV_DIR}/bin:${PATH}"
+HOTPOTQA_VLLM_VERSION="$("${VLLM_PY}" -c 'from importlib.metadata import version; print(version("vllm"))')"
+HOTPOTQA_TORCH_VERSION="$("${VLLM_PY}" -c 'import torch; print(torch.__version__)')"
+HOTPOTQA_CUDA_VERSION="$("${VLLM_PY}" -c 'import torch; print(torch.version.cuda)')"
+HOTPOTQA_TRANSFORMERS_VERSION="$("${VLLM_PY}" -c 'from importlib.metadata import version; print(version("transformers"))')"
+HOTPOTQA_CUDA_MODULE="cudatoolkit/${HOTPOTQA_CUDA_VERSION}"
+source /usr/share/Modules/init/bash
+if ! module load "${HOTPOTQA_CUDA_MODULE}" || ! module is-loaded "${HOTPOTQA_CUDA_MODULE}"; then
+    echo "ERROR: exact CUDA module ${HOTPOTQA_CUDA_MODULE} is unavailable" >&2
+    exit 1
+fi
+if [[ ! -f "${SERVING_LOCK}" ]]; then
+    echo "ERROR: Slurm job source lacks ${SERVING_LOCK}" >&2
+    exit 1
+fi
+HOTPOTQA_SERVING_LOCK_SHA256="$(sha256sum "${SERVING_LOCK}" | cut -d' ' -f1)"
+if [[ ! -f "${SERVING_VENV_DIR}/.gepa-serving-lock.sha256" \
+    || "$(tr -d '\n' < "${SERVING_VENV_DIR}/.gepa-serving-lock.sha256")" != "${HOTPOTQA_SERVING_LOCK_SHA256}" ]]; then
+    echo "ERROR: serving environment was built from a different lockfile; run scripts/della/build_env.sh" >&2
+    exit 1
+fi
+SERVING_ENV_MANIFEST="${SCRATCH_BASE}/.cache/gepa/serving-environments/${HOTPOTQA_SERVING_LOCK_SHA256}.json"
+if ! "${GEPA_UV_BIN}" pip check --python "${VLLM_PY}"; then
+    echo "ERROR: serving environment has inconsistent dependencies" >&2
+    exit 1
+fi
+VERIFIED_SERVING_ENV_SHA256="$(
+    "${VLLM_PY}" -m examples.common.python_environment verify --path "${SERVING_ENV_MANIFEST}"
+)"
+if [[ ! "${HOTPOTQA_SERVING_ENV_SHA256}" =~ ^[0-9a-f]{64}$ \
+    || "${VERIFIED_SERVING_ENV_SHA256}" != "${HOTPOTQA_SERVING_ENV_SHA256}" ]]; then
+    echo "ERROR: serving environment differs from the submitted frozen environment" >&2
+    exit 1
+fi
+"${VLLM_PY}" - "${HOTPOTQA_VLLM_VERSION}" <<'PY'
 import sys
 
 from packaging.version import Version
 
 if Version(sys.argv[1]) < Version("0.17.0"):
-    raise SystemExit(f"vLLM>=0.17.0 is required for Qwen3.8-27B; found {sys.argv[1]}")
+    raise SystemExit(f"vLLM>=0.17.0 is required for the HotPotQA campaign; found {sys.argv[1]}")
 PY
-    VLLM_HELP="$("${VLLM_BIN}" serve --help=all 2>&1)"
-    for required_option in \
-        --api-server-count \
-        --data-parallel-size \
-        --enable-auto-tool-choice \
-        --language-model-only \
-        --no-enable-prefix-caching \
-        --tool-call-parser
-    do
-        if [[ "${VLLM_HELP}" != *"${required_option}"* ]]; then
-            echo "ERROR: ${VLLM_BIN} does not support ${required_option}" >&2
-            exit 1
-        fi
-    done
-    RUNTIME_PY=("${VLLM_PY}")
-    export HOTPOTQA_WEIGHT_DTYPE="bfloat16"
-    export HOTPOTQA_KV_CACHE_DTYPE="auto"
-    HOTPOTQA_SERVE_ARGUMENTS="tp=1;dp=8;api_servers=8;gpu_memory_utilization=${GEN_GMU};max_model_len=${GEN_MAX_LEN};rope_scaling=none;max_num_seqs=1;max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS};dtype=bfloat16;kv_cache_dtype=auto;prefix_caching=false;language_model_only=true;reasoning_parser=qwen3;auto_tool_choice=true;tool_parser=qwen3_coder;seed=0;batch_invariant=false;single_sequence_replicas=true"
-    echo "==> serving Qwen with vLLM TP1/DP8 on :${GEN_PORT}; log: ${GEN_LOG}"
-    env \
-        -u OMP_NUM_THREADS \
-        -u MKL_NUM_THREADS \
-        -u OPENBLAS_NUM_THREADS \
-        -u NUMEXPR_NUM_THREADS \
-        -u TOKENIZERS_PARALLELISM \
-        "${VLLM_BIN}" serve "${SOLVER_MODEL_PATH}" \
-        --served-model-name "${SOLVER_SERVED_NAME}" \
-        --reasoning-parser qwen3 \
-        --enable-auto-tool-choice \
-        --tool-call-parser qwen3_coder \
-        --host 127.0.0.1 \
-        --port "${GEN_PORT}" \
-        --tensor-parallel-size 1 \
-        --data-parallel-size 8 \
-        --api-server-count 8 \
-        --gpu-memory-utilization "${GEN_GMU}" \
-        --max-model-len "${GEN_MAX_LEN}" \
-        --max-num-seqs 1 \
-        --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS}" \
-        --dtype bfloat16 \
-        --kv-cache-dtype auto \
-        --seed 0 \
-        --no-enable-prefix-caching \
-        --language-model-only \
-        > "${GEN_LOG}" 2>&1 &
-    GEN_PID=$!
-else
-    if [[ "${GLM_SGLANG_IMAGE_URI}" != "${EXPECTED_GLM_SGLANG_IMAGE_URI}" ]]; then
-        echo "ERROR: GLM runtime must use ${EXPECTED_GLM_SGLANG_IMAGE_URI}" >&2
-        exit 1
-    fi
-    if [[ ! "${HOTPOTQA_SGLANG_IMAGE_SHA256}" =~ ^[0-9a-f]{64}$ \
-        || ! -f "${GLM_SGLANG_IMAGE}" \
-        || ! -f "${GLM_SGLANG_IMAGE}.source" \
-        || "$(tr -d '\n' < "${GLM_SGLANG_IMAGE}.source")" != "${EXPECTED_GLM_SGLANG_IMAGE_URI}" \
-        || "$(sha256sum "${GLM_SGLANG_IMAGE}" | cut -d' ' -f1)" != "${HOTPOTQA_SGLANG_IMAGE_SHA256}" ]]; then
-        echo "ERROR: GLM SGLang image does not match the submitted frozen artifact" >&2
-        exit 1
-    fi
-    if [[ "${VLLM_TENSOR_PARALLEL_SIZE}" != "8" \
-        || "${VLLM_DATA_PARALLEL_SIZE}" != "1" \
-        || "${VLLM_API_SERVER_COUNT}" != "1" ]]; then
-        echo "ERROR: GLM requires one TP8/EP8 server on the eight-H200 node" >&2
-        exit 1
-    fi
-    APPTAINER_BIN="$(command -v apptainer || true)"
-    if [[ -z "${APPTAINER_BIN}" ]]; then
-        echo "ERROR: Apptainer is required for the pinned GLM runtime" >&2
-        exit 1
-    fi
-    if ! "${APPTAINER_BIN}" inspect "${GLM_SGLANG_IMAGE}" >/dev/null; then
-        echo "ERROR: GLM SGLang image is not a readable Apptainer image" >&2
-        exit 1
-    fi
-    GLM_EXEC=(
-        "${APPTAINER_BIN}" exec --nv --cleanenv
-        --bind "${SOLVER_MODEL_PATH}:${SOLVER_MODEL_PATH}:ro"
-        --bind "${SCRATCH_BASE}:${SCRATCH_BASE}"
-        --env "HF_HUB_OFFLINE=1"
-        --env "TRANSFORMERS_OFFLINE=1"
-        --env "HF_HOME=${HF_HOME}"
-        --env "XDG_CACHE_HOME=${XDG_CACHE_HOME}"
-        --env "TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR}"
-        --env "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-        "${GLM_SGLANG_IMAGE}"
-    )
-    HOTPOTQA_SGLANG_VERSION="$("${GLM_EXEC[@]}" python3 -c 'from importlib.metadata import version; print(version("sglang"))')"
-    HOTPOTQA_TORCH_VERSION="$("${GLM_EXEC[@]}" python3 -c 'import torch; print(torch.__version__)')"
-    HOTPOTQA_CUDA_VERSION="$("${GLM_EXEC[@]}" python3 -c 'import torch; print(torch.version.cuda)')"
-    HOTPOTQA_TRANSFORMERS_VERSION="$("${GLM_EXEC[@]}" python3 -c 'from importlib.metadata import version; print(version("transformers"))')"
-    HOTPOTQA_SERVING_IMAGE_URI="${EXPECTED_GLM_SGLANG_IMAGE_URI}"
-    HOTPOTQA_SERVING_IMAGE_SHA256="${HOTPOTQA_SGLANG_IMAGE_SHA256}"
-    RUNTIME_PY=("${GLM_EXEC[@]}" python3)
-    export HOTPOTQA_WEIGHT_DTYPE="fp8"
-    export HOTPOTQA_KV_CACHE_DTYPE="bfloat16"
-    HOTPOTQA_SERVE_ARGUMENTS="tp=8;ep=8;dp_attention=false;speculative_decoding=false;context_length=${GEN_MAX_LEN};max_running_requests=${VLLM_MAX_NUM_SEQS};kv_cache_dtype=bfloat16;dsa_prefill_backend=tilelang;dsa_decode_backend=tilelang;moe_runner_backend=deep_gemm;reasoning_parser=glm45;tool_parser=glm47"
-    echo "==> serving GLM with pinned SGLang TP8/EP8 on :${GEN_PORT}; log: ${GEN_LOG}"
-    env \
-        -u OMP_NUM_THREADS \
-        -u MKL_NUM_THREADS \
-        -u OPENBLAS_NUM_THREADS \
-        -u NUMEXPR_NUM_THREADS \
-        -u TOKENIZERS_PARALLELISM \
-        "${GLM_EXEC[@]}" python3 -m sglang.launch_server \
-        --model-path "${SOLVER_MODEL_PATH}" \
-        --served-model-name "${SOLVER_SERVED_NAME}" \
-        --tp-size 8 \
-        --ep-size 8 \
-        --dsa-prefill-backend tilelang \
-        --dsa-decode-backend tilelang \
-        --kv-cache-dtype bfloat16 \
-        --moe-runner-backend deep_gemm \
-        --reasoning-parser glm45 \
-        --tool-call-parser glm47 \
-        --context-length "${GEN_MAX_LEN}" \
-        --max-running-requests "${VLLM_MAX_NUM_SEQS}" \
-        --host 127.0.0.1 \
-        --port "${GEN_PORT}" \
-        > "${GEN_LOG}" 2>&1 &
-    GEN_PID=$!
-fi
+# Fail closed if the frozen vLLM does not register this checkpoint's architecture
+# (for the DeepSeek arm, DeepseekV4ForCausalLM), so model support is checked against
+# the actual build rather than a version number.
+"${VLLM_PY}" - "${SOLVER_MODEL_PATH}" "${HOTPOTQA_VLLM_VERSION}" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-HOTPOTQA_GPU_RUNTIME="$("${RUNTIME_PY[@]}" - <<'PY'
+from vllm import ModelRegistry
+
+config = json.loads((Path(sys.argv[1]) / "config.json").read_text())
+architectures = config.get("architectures") or []
+supported = set(ModelRegistry.get_supported_archs())
+unsupported = [architecture for architecture in architectures if architecture not in supported]
+if not architectures or unsupported:
+    raise SystemExit(
+        f"vLLM {sys.argv[2]} does not register {unsupported or architectures!r}; "
+        "the pinned serving environment cannot serve this checkpoint."
+    )
+PY
+VLLM_HELP="$("${VLLM_BIN}" serve --help=all 2>&1)"
+for required_option in \
+    --api-server-count \
+    --block-size \
+    --data-parallel-size \
+    --enable-auto-tool-choice \
+    --enable-expert-parallel \
+    --kv-cache-dtype \
+    --language-model-only \
+    --no-enable-prefix-caching \
+    --reasoning-parser \
+    --tool-call-parser
+do
+    if [[ "${VLLM_HELP}" != *"${required_option}"* ]]; then
+        echo "ERROR: ${VLLM_BIN} does not support ${required_option}" >&2
+        exit 1
+    fi
+done
+echo "==> serving ${MODEL} with vLLM ${SERVE_TOPOLOGY} on :${GEN_PORT}; log: ${GEN_LOG}"
+env \
+    -u OMP_NUM_THREADS \
+    -u MKL_NUM_THREADS \
+    -u OPENBLAS_NUM_THREADS \
+    -u NUMEXPR_NUM_THREADS \
+    -u TOKENIZERS_PARALLELISM \
+    "${VLLM_BIN}" serve "${SOLVER_MODEL_PATH}" \
+    --served-model-name "${SOLVER_SERVED_NAME}" \
+    --enable-auto-tool-choice \
+    --host 127.0.0.1 \
+    --port "${GEN_PORT}" \
+    --gpu-memory-utilization "${GEN_GMU}" \
+    --max-model-len "${GEN_MAX_LEN}" \
+    --max-num-seqs 1 \
+    --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS}" \
+    --dtype bfloat16 \
+    --seed 0 \
+    --no-enable-prefix-caching \
+    --language-model-only \
+    "${VLLM_PROFILE_ARGS[@]}" \
+    > "${GEN_LOG}" 2>&1 &
+GEN_PID=$!
+
+HOTPOTQA_GPU_RUNTIME="$("${VLLM_PY}" - <<'PY'
 import json
 import subprocess
 
@@ -523,7 +506,7 @@ PY
 )"
 
 cleanup() {
-    echo "==> tearing down local ${SERVING_ENGINE} endpoint"
+    echo "==> tearing down local vLLM endpoint"
     kill "${GEN_PID}" 2>/dev/null || true
     wait "${GEN_PID}" 2>/dev/null || true
 }
@@ -538,19 +521,19 @@ generator_reports_expected_model() {
 deadline=$((SECONDS + HEALTH_TIMEOUT))
 while true; do
     if ! kill -0 "${GEN_PID}" 2>/dev/null; then
-        echo "ERROR: ${SERVING_ENGINE} exited before becoming healthy; see ${GEN_LOG}" >&2
+        echo "ERROR: vLLM exited before becoming healthy; see ${GEN_LOG}" >&2
         exit 1
     fi
     if generator_reports_expected_model && kill -0 "${GEN_PID}" 2>/dev/null; then
         break
     fi
     if (( SECONDS >= deadline )); then
-        echo "ERROR: ${SERVING_ENGINE} did not report ${SOLVER_SERVED_NAME} within ${HEALTH_TIMEOUT}s; see ${GEN_LOG}" >&2
+        echo "ERROR: vLLM did not report ${SOLVER_SERVED_NAME} within ${HEALTH_TIMEOUT}s; see ${GEN_LOG}" >&2
         exit 1
     fi
     sleep 5
 done
-echo "==> ${SERVING_ENGINE} endpoint ready on :${GEN_PORT}"
+echo "==> vLLM endpoint ready on :${GEN_PORT}"
 
 # --- Freeze the complete local scientific runtime ------------------------
 export OPENAI_API_KEY="EMPTY"
@@ -560,9 +543,6 @@ export HOTPOTQA_MODEL_INTEGRITY_SHA256
 export HOTPOTQA_SERVING_ENGINE="${SERVING_ENGINE}"
 export HOTPOTQA_SERVE_ARGUMENTS
 export HOTPOTQA_VLLM_VERSION
-export HOTPOTQA_SGLANG_VERSION
-export HOTPOTQA_SERVING_IMAGE_URI
-export HOTPOTQA_SERVING_IMAGE_SHA256
 export HOTPOTQA_TORCH_VERSION
 export HOTPOTQA_CUDA_VERSION
 export HOTPOTQA_CUDA_MODULE
@@ -581,8 +561,8 @@ export HOTPOTQA_VLLM_BATCH_INVARIANT
 export HOTPOTQA_VLLM_SINGLE_SEQUENCE_REPLICAS
 HOTPOTQA_LITELLM_VERSION="$("${PY}" -c 'from importlib.metadata import version; print(version("litellm"))')"
 export HOTPOTQA_LITELLM_VERSION
-RUNTIME_IDENTITY="python=${HOTPOTQA_PYTHON_VERSION};uv=${HOTPOTQA_UV_VERSION};uv_sha=${HOTPOTQA_UV_SHA256};gepa_env=${HOTPOTQA_GEPA_ENV_SHA256};model_manifest=${HOTPOTQA_MODEL_INTEGRITY_SHA256};engine=${HOTPOTQA_SERVING_ENGINE};vllm=${HOTPOTQA_VLLM_VERSION};sglang=${HOTPOTQA_SGLANG_VERSION};image_uri=${HOTPOTQA_SERVING_IMAGE_URI};image_sha=${HOTPOTQA_SERVING_IMAGE_SHA256};torch=${HOTPOTQA_TORCH_VERSION};cuda=${HOTPOTQA_CUDA_VERSION};cuda_module=${HOTPOTQA_CUDA_MODULE};transformers=${HOTPOTQA_TRANSFORMERS_VERSION};serving_lock=${HOTPOTQA_SERVING_LOCK_SHA256};serving_env=${HOTPOTQA_SERVING_ENV_SHA256};gpu=${HOTPOTQA_GPU_RUNTIME};${HOTPOTQA_SERVE_ARGUMENTS}"
-CAMPAIGN_QUALITY_IDENTITY="source=${HOTPOTQA_SOURCE_COMMIT};source_manifest=${HOTPOTQA_SOURCE_MANIFEST_SHA256};python=${HOTPOTQA_PYTHON_VERSION};uv=${HOTPOTQA_UV_VERSION};uv_sha=${HOTPOTQA_UV_SHA256};env_spec=${HOTPOTQA_ENV_SPEC_SHA256};gepa_env=${HOTPOTQA_GEPA_ENV_SHA256};model=${HOTPOTQA_MODEL_REVISION};model_manifest=${HOTPOTQA_MODEL_INTEGRITY_SHA256};engine=${HOTPOTQA_SERVING_ENGINE};vllm=${HOTPOTQA_VLLM_VERSION};sglang=${HOTPOTQA_SGLANG_VERSION};image_uri=${HOTPOTQA_SERVING_IMAGE_URI};image_sha=${HOTPOTQA_SERVING_IMAGE_SHA256};torch=${HOTPOTQA_TORCH_VERSION};cuda=${HOTPOTQA_CUDA_VERSION};cuda_module=${HOTPOTQA_CUDA_MODULE};transformers=${HOTPOTQA_TRANSFORMERS_VERSION};litellm=${HOTPOTQA_LITELLM_VERSION};serving_lock=${HOTPOTQA_SERVING_LOCK_SHA256};serving_env=${HOTPOTQA_SERVING_ENV_SHA256};gpu=${HOTPOTQA_GPU_RUNTIME};serve=${HOTPOTQA_SERVE_ARGUMENTS};request_seed=0;dspy=${HOTPOTQA_DSPY_COMMIT};hotpot=${HOTPOTQA_DATA_REVISION};wiki17=${WIKI17_REVISION};index=${WIKI17_INTEGRITY_SHA256}"
+RUNTIME_IDENTITY="python=${HOTPOTQA_PYTHON_VERSION};uv=${HOTPOTQA_UV_VERSION};uv_sha=${HOTPOTQA_UV_SHA256};gepa_env=${HOTPOTQA_GEPA_ENV_SHA256};model_manifest=${HOTPOTQA_MODEL_INTEGRITY_SHA256};engine=${HOTPOTQA_SERVING_ENGINE};vllm=${HOTPOTQA_VLLM_VERSION};torch=${HOTPOTQA_TORCH_VERSION};cuda=${HOTPOTQA_CUDA_VERSION};cuda_module=${HOTPOTQA_CUDA_MODULE};transformers=${HOTPOTQA_TRANSFORMERS_VERSION};serving_lock=${HOTPOTQA_SERVING_LOCK_SHA256};serving_env=${HOTPOTQA_SERVING_ENV_SHA256};gpu=${HOTPOTQA_GPU_RUNTIME};${HOTPOTQA_SERVE_ARGUMENTS}"
+CAMPAIGN_QUALITY_IDENTITY="source=${HOTPOTQA_SOURCE_COMMIT};source_manifest=${HOTPOTQA_SOURCE_MANIFEST_SHA256};python=${HOTPOTQA_PYTHON_VERSION};uv=${HOTPOTQA_UV_VERSION};uv_sha=${HOTPOTQA_UV_SHA256};env_spec=${HOTPOTQA_ENV_SPEC_SHA256};gepa_env=${HOTPOTQA_GEPA_ENV_SHA256};model=${HOTPOTQA_MODEL_REVISION};model_manifest=${HOTPOTQA_MODEL_INTEGRITY_SHA256};engine=${HOTPOTQA_SERVING_ENGINE};vllm=${HOTPOTQA_VLLM_VERSION};torch=${HOTPOTQA_TORCH_VERSION};cuda=${HOTPOTQA_CUDA_VERSION};cuda_module=${HOTPOTQA_CUDA_MODULE};transformers=${HOTPOTQA_TRANSFORMERS_VERSION};litellm=${HOTPOTQA_LITELLM_VERSION};serving_lock=${HOTPOTQA_SERVING_LOCK_SHA256};serving_env=${HOTPOTQA_SERVING_ENV_SHA256};gpu=${HOTPOTQA_GPU_RUNTIME};serve=${HOTPOTQA_SERVE_ARGUMENTS};request_seed=0;dspy=${HOTPOTQA_DSPY_COMMIT};hotpot=${HOTPOTQA_DATA_REVISION};wiki17=${WIKI17_REVISION};index=${WIKI17_INTEGRITY_SHA256}"
 CAMPAIGN_IDENTITY_SHA256="$(printf '%s' "${CAMPAIGN_QUALITY_IDENTITY}" | sha256sum | cut -d' ' -f1)"
 CAMPAIGN_LOCK_DIR="${SCRATCH_BASE}/.cache/gepa/hotpotqa-campaign/${HOTPOTQA_CAMPAIGN_ID}"
 CAMPAIGN_LOCK_PATH="${CAMPAIGN_LOCK_DIR}/${MODEL_PROFILE}.sha256"
@@ -628,33 +608,6 @@ SOLVER_API_ARG=()
 [[ -n "${SOLVER_API_BASE}" ]] && SOLVER_API_ARG=(--solver-api-base "${SOLVER_API_BASE}")
 REFLECTION_API_ARG=()
 [[ -n "${REFLECTION_API_BASE}" ]] && REFLECTION_API_ARG=(--reflection-api-base "${REFLECTION_API_BASE}")
-
-if [[ "${MODEL_PROFILE}" == "glm-5.3-flash" ]]; then
-    GLM_CANARY_DIR="${SCRATCH_BASE}/.cache/gepa/hotpotqa-canaries/${HOTPOTQA_CAMPAIGN_ID}"
-    GLM_CANARY_MARKER="${GLM_CANARY_DIR}/${CAMPAIGN_IDENTITY_SHA256}.ok"
-    mkdir -p "${GLM_CANARY_DIR}"
-    if [[ "${HOTPOTQA_CANARY_ONLY}" == "1" ]]; then
-        echo "==> running the fail-closed GLM multi-tool canary"
-        "${PY}" -m examples.hotpotqa.runtime_canary \
-            --model "${SOLVER_MODEL}" \
-            --api-base "${SOLVER_API_BASE}" \
-            --attempts 20
-        if ! kill -0 "${GEN_PID}" 2>/dev/null || ! generator_reports_expected_model; then
-            echo "ERROR: GLM endpoint failed after the runtime canary" >&2
-            exit 1
-        fi
-        GLM_CANARY_TEMP="$(mktemp "${GLM_CANARY_DIR}/.canary.XXXXXX")"
-        printf '%s\n' "${CAMPAIGN_IDENTITY_SHA256}" > "${GLM_CANARY_TEMP}"
-        mv "${GLM_CANARY_TEMP}" "${GLM_CANARY_MARKER}"
-        echo "==> GLM runtime canary passed: ${CAMPAIGN_IDENTITY_SHA256}"
-        exit 0
-    fi
-    if [[ ! -f "${GLM_CANARY_MARKER}" \
-        || "$(tr -d '\n' < "${GLM_CANARY_MARKER}")" != "${CAMPAIGN_IDENTITY_SHA256}" ]]; then
-        echo "ERROR: the exact GLM runtime has not passed its fail-closed canary" >&2
-        exit 1
-    fi
-fi
 
 echo "==> checking native tool-call compatibility"
 "${PY}" - "${SOLVER_MODEL}" "${SOLVER_API_BASE}" <<'PY'
