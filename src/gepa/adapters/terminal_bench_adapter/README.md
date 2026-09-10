@@ -135,6 +135,66 @@ the final iteration's evaluations. A run stopped by that cap before four epochs
 does not complete the standard protocol. The normal commands omit this cap.
 Final held-out test evaluation remains separate.
 
+#### Repetitions and final testing
+
+Each benchmark/model arm uses one optimization run per method, followed by
+three test repetitions of each frozen harness. This follows
+[AutoSaddler, section 5.1 and Table 3](https://arxiv.org/html/2608.23041v1): one
+evolution run and three test executions, reporting mean and standard deviation
+of Pass@1. Both TB2 and TB4 use this repetition protocol.
+
+The final evaluation command requires a completed vanilla GEPA run and a
+completed FOREST run with matching benchmark, model, decoding, optimization seed,
+splits, and budget. It rejects partial training/validation selections and runs
+that stopped before completing four epochs. It selects each winner by mean
+validation reward, with GEPA's earliest-candidate tie break, and freezes both
+winners and their common initial harness before running any test task.
+
+Each repetition starts a distinct Harbor job over the entire test split with
+`n_attempts=1` and fresh task environments. Training and validation evaluations
+remain single-attempt. All three test success rates contribute equally to the
+reported mean; no best-of-three selection or Pass@3 aggregation is performed.
+The output records sample standard deviation (`ddof=1`) explicitly. Test repeats
+measure execution variability for the fixed harness, not optimization-seed
+variability.
+
+For each model, the three harnesses are initial, GEPA-selected, and FOREST-selected:
+
+| Experiment | Test tasks | Repetitions per harness | Attempts per harness | Attempts across all three harnesses |
+| --- | --- | --- | --- | --- |
+| TB2 | 40 | 3 | 120 | 360 |
+| TB4 | 20 | 3 | 60 | 180 |
+
+Run final testing only after both matching optimization runs have completed:
+
+```bash
+uv run python -m examples.terminalbench.evaluate \
+  --vanilla-run-dir runs/tb2-system-prompt/vanilla \
+  --forest-run-dir runs/tb2-system-prompt/react_v2 \
+  --output-dir runs/tb2-system-prompt/test
+```
+
+Use the corresponding directories for TB4 and for the separate DeepSeek arm.
+The command reads student model, endpoint, decoding, and concurrency from the
+optimization contracts. `--harbor-executable` and `--docker-executable` optionally
+select installed binaries. Checkpoints must be trusted local optimization
+artifacts because GEPA's checkpoint format uses Python pickle.
+
+`frozen-comparison.json` contains all three harnesses and their source contracts.
+Each completed repetition gets a JSON file with per-task verifier rewards and
+its distinct Harbor job identity. Rerunning the same command reuses completed
+repetitions and runs only missing ones; an interrupted, unrecorded repetition
+starts again in fresh environments. Frozen harness or configuration changes
+are rejected. The CLI locks the output directory against concurrent writers.
+`summary.json` is written only after all nine repetitions finish and contains
+the three Pass@1 values, their mean and sample standard deviation, and the
+completed task-attempt count for each harness. Scores are fractions in JSON
+and percentages in console output. Failed or incomplete Harbor jobs stop the
+evaluation instead of becoming fabricated zero scores.
+
+This aligns the repetition protocol with the paper; the previously documented
+TB2 task-identity, harness-revision, and model differences still apply.
+
 #### Run
 
 From the repository root, with Docker and the selected model endpoint available:

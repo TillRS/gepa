@@ -54,6 +54,15 @@ SYSTEM_PROMPT_SEED_PATH = Path(__file__).with_name("terminus-system-prompt.txt")
 
 RUN_CONTRACT_FILENAME = "terminalbench-run-contract.json"
 TRAINING_EPOCHS = 4
+TEST_REPETITIONS = 3
+EVALUATION_PROTOCOL = {
+    "optimization_runs_per_method": 1,
+    "test_repetitions": TEST_REPETITIONS,
+    "attempts_per_task_per_repetition": 1,
+    "selection_metric": "mean_validation_reward",
+    "test_metric": "pass_at_1",
+    "standard_deviation_ddof": 1,
+}
 TemplateFamily = Literal["generic", "openai", "anthropic", "google", "alibaba"]
 
 
@@ -225,7 +234,7 @@ def build_run_contract(
     operated = condition == "react_v2"
     reflection_level = args.reflection_level if operated else 0
     return {
-        "schema_version": 7,
+        "schema_version": 8,
         "experiment": manifest.experiment,
         "optimization_target": "system_prompt" if manifest.experiment == "tb2-system-prompt" else "agent_text",
         "condition": condition,
@@ -240,6 +249,7 @@ def build_run_contract(
         "harbor_process_timeout_sec": args.harbor_process_timeout_sec,
         "manifest": str(manifest.path),
         "max_metric_calls": args.max_metric_calls,
+        "evaluation_protocol": dict(EVALUATION_PROTOCOL),
         "optimization_budget": {
             "unit": "training_epochs",
             "reference": "https://arxiv.org/html/2608.23041v1#A2",
