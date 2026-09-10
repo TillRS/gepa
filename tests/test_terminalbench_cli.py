@@ -177,7 +177,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 8
+    assert contract["schema_version"] == 9
     assert contract["component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
@@ -276,9 +276,11 @@ def test_deepseek_settings_reach_both_runtime_roles(
     assert optimize_kwargs["stop_callbacks"].max_proposals == 4
     assert optimize_kwargs["max_metric_calls"] == 4
     assert optimize_kwargs["batch_sampler"] == "epoch_shuffled"
+    assert optimize_kwargs["module_selector"] == ("all" if experiment == "tb4-agent-text" else "round_robin")
     assert optimize_kwargs["use_merge"] is False
     contract = json.loads((tmp_path / "run" / "terminalbench-run-contract.json").read_text())
     assert contract["experiment"] == experiment
+    assert contract["module_selector"] == optimize_kwargs["module_selector"]
     assert (
         contract["student_model_version"]
         == contract["proposer_model_version"]
@@ -299,6 +301,7 @@ def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
     stop_file = run_dir / "gepa.stop"
     parent_batches = []
     evaluations = []
+    selected_components = []
     trainset = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment]).tasks("train")
 
     class SamplingRecorder:
@@ -316,7 +319,7 @@ def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
         def evaluate(self, batch, candidate, capture_traces=False):
             """Return controlled rewards for training and validation tasks."""
             evaluations.append([task.task_id for task in batch])
-            score = sum(text.count("budget_step") for text in candidate.values()) / 100
+            score = sum(text.count("budget_step") for text in candidate.values()) / (100 * len(candidate))
             if outcome != "accepted":
                 score = 1.0 if outcome == "perfect" else 0.0
             return EvaluationBatch(
@@ -332,6 +335,7 @@ def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
 
         def propose_new_texts(self, candidate, reflective_dataset, components_to_update):
             """Append a revision marker inside each selected document."""
+            selected_components.append(set(components_to_update))
             return {key: candidate[key] + "\nbudget_step" for key in components_to_update}
 
     results = []
@@ -385,6 +389,10 @@ def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
     if outcome == "accepted":
         per_iteration += len(contract["val_task_ids"])
     assert results[-1].total_metric_calls == len(contract["val_task_ids"]) + iterations * per_iteration
+    assert selected_components == ([] if outcome == "perfect" else [set(contract["component_kinds"])] * iterations)
+    if outcome == "accepted":
+        assert len(results[-1].candidates) == iterations + 1
+        assert all(text.count("budget_step") == iterations for text in results[-1].candidates[-1].values())
 
 
 @pytest.mark.parametrize("field,value", [("reflection_minibatch_size", 0), ("max_metric_calls", -1)])

@@ -216,7 +216,8 @@ def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    "damage", ["incomplete", "partial_validation", "partial_train", "different_seed", "different_model"]
+    "damage",
+    ["incomplete", "partial_validation", "partial_train", "different_seed", "different_model", "different_selector"],
 )
 def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, damage: str) -> None:
     """Reject unfinished optimization, pilot splits, and unmatched experimental settings."""
@@ -230,11 +231,13 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
         else:
             del state.prog_candidate_val_subscores[1][0]
         state.save(str(forest))
-    elif damage in {"partial_train", "different_seed"}:
+    elif damage in {"partial_train", "different_seed", "different_selector"}:
         path = forest / RUN_CONTRACT_FILENAME
         contract = json.loads(path.read_text())
         if damage == "partial_train":
             contract["train_task_ids"].pop()
+        elif damage == "different_selector":
+            contract["module_selector"] = "round_robin"
         else:
             contract["seed"] = 19
         path.write_text(json.dumps(contract))

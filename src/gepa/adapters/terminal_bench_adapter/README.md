@@ -18,6 +18,10 @@ This experiment exposes that same kind of artifact as one component. Tool-use
 guidance and response-format instructions inside the prompt are editable; the
 parser, tools, agent loop, auxiliary prompts, and verifier remain fixed.
 
+This restriction describes the paper's **GEPA baseline**. AutoSaddler itself
+edits a broader harness: its [TB2 patch catalog](https://arxiv.org/html/2608.23041v1#A15)
+includes prompt changes, completion reminders, output limits, and startup code.
+
 `SystemPromptTerminus` inherits Harbor 0.22.0's recovery, summarization, and
 completion behavior. It replaces only the initial prompt and disables additional
 skill discovery. Terminus delivers this unified prompt in its initial **user**
@@ -61,6 +65,17 @@ Prompts use the selected provider's `user_prompt` template. Skills use the `skil
 template: Name, Description, Instructions, and Examples. Their metadata appears
 in the initial context, and the agent reads each full `SKILL.md` through the
 terminal when needed. Both optimizers can rewrite skill metadata and bodies.
+
+Both methods explicitly use `module_selector="all"`: each proposal selects all
+15 documents, revises them separately using the same minibatch evidence, and
+evaluates the combined harness as one child candidate. This applies the
+[GEPA FAQ's multi-module efficiency guidance](https://gepa-ai.github.io/gepa/guides/faq/#how-do-i-optimize-multi-module-dspy-programs-efficiently)
+to the TB4 text bundle. It increases optimizer-side editing work without adding
+separate task evaluations for each document. The four-epoch budget stays fixed;
+minibatches already scoring perfectly still skip mutation. TB2 explicitly keeps
+`module_selector="round_robin"`, which always selects its sole prompt. The run
+contract pins this policy for resume and final-test comparisons, so older runs
+using implicit component selection require a fresh run directory.
 
 The JSON command interface, execution policy, task inputs, runtime observations,
 and official verifier remain fixed. TB4's resource limits and agent timeouts come

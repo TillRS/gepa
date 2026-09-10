@@ -234,11 +234,12 @@ def build_run_contract(
     operated = condition == "react_v2"
     reflection_level = args.reflection_level if operated else 0
     return {
-        "schema_version": 8,
+        "schema_version": 9,
         "experiment": manifest.experiment,
         "optimization_target": "system_prompt" if manifest.experiment == "tb2-system-prompt" else "agent_text",
         "condition": condition,
         "component_kinds": manifest.component_kinds,
+        "module_selector": "all" if manifest.experiment == "tb4-agent-text" else "round_robin",
         "document_bundle_version": BUNDLE_VERSION if manifest.experiment == "tb4-agent-text" else None,
         "seed_document_digest": manifest.candidate_digest(candidate),
         "dataset": manifest.dataset,
@@ -363,6 +364,7 @@ def main() -> None:
         batch_sampler="epoch_shuffled",
         reflection_minibatch_size=args.reflection_minibatch_size,
         sampling_strategy=SingleMutationSampling(),
+        module_selector=contract["module_selector"],
         use_merge=False,
         run_dir=str(args.run_dir),
         seed=args.seed,
