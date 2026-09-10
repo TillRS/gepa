@@ -57,6 +57,7 @@ from gepa.strategies.intervention import (
     UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT,
 )
 from gepa.strategies.proposal_sampling import SingleMutationSampling
+from gepa.strategies.reflection_context import REFLECTION_CONTEXT_CONTRACT
 from gepa.utils.stop_condition import MaxCandidateProposalsStopper
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -263,7 +264,7 @@ def build_run_contract(
         UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT if condition == "react_v2_random" else CONTROLLER_POLICY_CONTRACT
     )
     return {
-        "schema_version": 13,
+        "schema_version": 14,
         "experiment": manifest.experiment,
         "optimization_target": "agent_text",
         "condition": condition,
@@ -283,6 +284,8 @@ def build_run_contract(
         "max_metric_calls": args.max_metric_calls,
         "evaluation_protocol": dict(EVALUATION_PROTOCOL),
         "reflection_feedback": deepcopy(REFLECTION_FEEDBACK_CONTRACT),
+        "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
+        "manifestor_traces_chars": None,
         "failure_policy": deepcopy(FAILURE_POLICY_CONTRACT),
         "optimization_budget": {
             "unit": "training_epochs",
@@ -403,6 +406,7 @@ def main() -> None:
             component_kinds=manifest.component_kinds,
             controller_selection=contract["controller_selection"],
             rng=random.Random(args.seed),
+            manifestor_traces_chars=None,
         )
     elif condition == "action":
         reflection_strategy = ComponentActionReflectionLM(

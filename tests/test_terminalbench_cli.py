@@ -176,7 +176,9 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 13
+    assert contract["schema_version"] == 14
+    assert contract["manifestor_traces_chars"] is None
+    assert contract["reflection_context"]["version"] == 1
     assert contract["failure_policy"]["accepted_trial_exceptions"] == ["AgentTimeoutError"]
     assert contract["failure_policy"]["harbor_max_retries"] == 0
     assert contract["reflection_feedback"]["reflection_split"] == "train"

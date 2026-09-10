@@ -77,18 +77,36 @@ operational limit recorded in the run contract.
 
 #### Textual feedback for reflection
 
-Every method receives the same training-evidence format: task identity, complete
-ATIF agent trajectories, the trial result, official rewards, and textual verifier
-diagnostics. The task instructions and agent commands/outputs remain in the
-trajectory. The official verifier reward is the optimization score; diagnostic
-text supplies evidence for reflection without changing that score.
+Every method receives the same training-evidence format: task identity, ATIF
+execution content, official rewards, and textual verifier diagnostics. The task
+instructions, new reasoning, commands, observations, and subagent relationships
+remain available. Raw trial/process metadata, token statistics, and model
+configuration stay in the original artifacts rather than entering reflection.
+The official verifier reward is the optimization score; diagnostic text supplies
+evidence for reflection without changing that score.
 
 `Feedback` includes the actual contents of Harbor's `verifier/test-stdout.txt`
 and `verifier/test-stderr.txt` when present, plus corresponding logs under
 `steps/*/verifier/` for multi-step trials. These are console outputs from the
 verifier run, not the verifier implementation or benchmark solution files.
 All 16 selected components receive the same feedback. Each optimizer retains
-its existing reflection procedure and role-specific context limits.
+its existing reflection procedure.
+
+Both Terminal-Bench experiments and HotPotQA remove the additional
+8,000-character Manifestor trace cap and rely on the configured model's context
+window. Exact repeated long strings and paragraphs are shown once per request
+with references for later occurrences. Long identical-line runs retain one line
+and their repetition count. Distinct text is not shortened. FOREST's Manifestor
+and editor read feedback once in the per-example traces. Context overflow stops
+the run through the provider error path instead of silently truncating evidence.
+
+Harbor's copied-context steps refer to identical original steps when those
+originals are present in the same reflection input. Unmatched copied context and
+new subagent reasoning stay intact; repeated actual actions keep their separate
+step identities. The adapter retains complete original ATIF and job results,
+and it no longer repeats the editable document body in every example's metadata.
+Context formatting and the Manifestor limit are pinned for resume and final
+comparison alongside the feedback policy.
 
 Each log contributes up to 8,192 source bytes. Longer logs retain equal portions
 from the beginning and end, separated by an explicit omitted-byte count. Full
