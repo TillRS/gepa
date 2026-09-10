@@ -183,8 +183,8 @@ def test_manifest_is_exactly_pinned_complete_and_disjoint() -> None:
     assert manifest.dataset["source_commit"] == "452bf305c6daa62fc59061d22133a7cbc7c1572e"
     assert len(manifest.task_refs) == 66
     assert {split: len(ids) for split, ids in manifest.splits.items()} == {
-        "train": 26,
-        "val": 20,
+        "train": 23,
+        "val": 23,
         "test": 20,
     }
     split_sets = {name: set(task_ids) for name, task_ids in manifest.splits.items()}
@@ -192,7 +192,28 @@ def test_manifest_is_exactly_pinned_complete_and_disjoint() -> None:
     assert split_sets["train"].isdisjoint(split_sets["test"])
     assert split_sets["val"].isdisjoint(split_sets["test"])
     assert set().union(*split_sets.values()) == set(manifest.task_refs)
-    assert derive_terminalbench_splits(list(manifest.task_refs), manifest.split_policy["seed"]) == manifest.splits
+    assert (
+        derive_terminalbench_splits(
+            list(manifest.task_refs), manifest.split_policy["seed"], manifest.split_policy["counts"]
+        )
+        == manifest.splits
+    )
+
+
+def test_tb4_balances_development_data_without_changing_the_test_tasks(tmp_path: Path) -> None:
+    """Preserve held-out tasks and reject the superseded 26/20 development split."""
+    payload = json.loads(MANIFEST_PATH.read_text())
+    previous_splits = derive_terminalbench_splits(
+        list(payload["task_refs"]), payload["split_policy"]["seed"], {"train": 26, "val": 20, "test": 20}
+    )
+    assert payload["splits"]["test"] == previous_splits["test"]
+    assert len(payload["splits"]["train"]) == len(payload["splits"]["val"])
+    payload["splits"] = previous_splits
+    payload["split_policy"]["counts"] = {"train": 26, "val": 20, "test": 20}
+    previous_manifest = tmp_path / "previous-manifest.json"
+    previous_manifest.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="recorded deterministic split policy"):
+        load_terminalbench_manifest(previous_manifest)
 
 
 def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: Path) -> None:

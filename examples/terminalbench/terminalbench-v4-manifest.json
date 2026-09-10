@@ -18,12 +18,13 @@
     "seed": "gepa-tb4-agent-text-split-v1",
     "ordering": "ascending SHA-256(seed + NUL + task_id), then ascending task_id",
     "allocation": "explicit train/val/test counts",
-    "provenance": "FOREST deterministic 40/30/30 split, Hamilton largest-remainder allocation",
+    "provenance": "GEPA FAQ recommends 50/50 train/validation below 200 examples; FOREST retains its existing 20-task test holdout",
     "counts": {
-      "train": 26,
-      "val": 20,
+      "train": 23,
+      "val": 23,
       "test": 20
-    }
+    },
+    "guidance_url": "https://gepa-ai.github.io/gepa/guides/faq/#whats-the-recommended-trainvalidation-split"
   },
   "task_refs": {
     "terminal-bench/atrx-vep-crispr": "sha256:4ebe9e13de8cbd39ee2f9e14a9d7b1233c047ae43fba238ebc6274465697be3a",
@@ -117,12 +118,12 @@
       "terminal-bench/html-js-filter",
       "terminal-bench/mvcc-lsm-compaction",
       "terminal-bench/wdm-design",
-      "terminal-bench/heat-pump-warranty",
-      "terminal-bench/cumulative-layout-shift",
-      "terminal-bench/freecad-impeller",
-      "terminal-bench/rs-archive-clone"
+      "terminal-bench/heat-pump-warranty"
     ],
     "val": [
+      "terminal-bench/cumulative-layout-shift",
+      "terminal-bench/freecad-impeller",
+      "terminal-bench/rs-archive-clone",
       "terminal-bench/vba-userform-port",
       "terminal-bench/layout-config-recreation2",
       "terminal-bench/mp-checkpoint-consolidation",

@@ -56,7 +56,7 @@ EXPERIMENT_DATASETS = {
 }
 EXPERIMENT_SPLIT_COUNTS = {
     "tb2-system-prompt": {"train": 30, "val": 19, "test": 40},
-    "tb4-agent-text": {"train": 26, "val": 20, "test": 20},
+    "tb4-agent-text": {"train": 23, "val": 23, "test": 20},
 }
 PROMPTED_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:PromptedTerminus"
 SYSTEM_PROMPT_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:SystemPromptTerminus"

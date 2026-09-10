@@ -8,7 +8,7 @@ student/proposer models, and metric-call budgets within an experiment.
 | Experiment | Dataset | Editable target | Train / validation / test |
 | --- | --- | --- | --- |
 | `tb2-system-prompt` | Terminal-Bench 2.0, 89 tasks | One unified `system_prompt` | 30 / 19 / 40 |
-| `tb4-agent-text` | Terminal-Bench 4.0.0, 66 tasks | 13 prompts and two skills | 26 / 20 / 20 |
+| `tb4-agent-text` | Terminal-Bench 4.0.0, 66 tasks | 13 prompts and two skills | 23 / 23 / 20 |
 
 #### TB2: the published optimization surface
 
@@ -36,6 +36,13 @@ with AutoSaddler's split sizes; the paper's exact identities and harness revisio
 were not established from its released artifacts. The existing homogeneous model
 arms, provider section wrapper, and caller-selected budget are our configuration.
 In particular, this is not the ReASearch paper's GPT-5/Bash-prompt setup.
+
+The intended TB2 protocol follows AutoSaddler's GEPA baseline. The checked-in
+30/19/40 partition remains provisional until the authors' exact task assignments
+can be verified; matching the published counts does not establish an exact split.
+On September 10, 2026, the [released AutoSaddler repository](https://github.com/microsoft/AutoSaddler/tree/9df6d2e3e1d3946057243690bca28e136fa81179)
+contains GAIA2 split manifests and lists Terminal-Bench integration as forthcoming.
+The approved Qwen and DeepSeek model arms remain our explicit experimental choice.
 
 #### TB4: full agent text and skills
 
@@ -77,6 +84,14 @@ split sizes, deterministic ordering, and disjoint coverage. Each evaluation
 retains its candidate, experiment identity, Harbor job configuration, verifier
 results, and ATIF trajectories. Reflection identifies the selected dataset and
 only exposes components belonging to that experiment.
+
+TB4 retains its 20 held-out test tasks and splits the remaining 46 tasks equally:
+23 for reflection and 23 for validation-based selection. This follows the
+[GEPA FAQ's small-dataset guidance](https://gepa-ai.github.io/gepa/guides/faq/#whats-the-recommended-trainvalidation-split)
+to use a 50/50 train/validation split below 200 examples. The 20-task test holdout
+is our choice, not a test fraction prescribed by GEPA. Task assignments use the
+existing deterministic hash order and are identical across models and optimizers.
+This replaces the earlier 26/20/20 allocation without moving any test tasks.
 
 The resume contract records the experiment, dataset, complete task refs and
 splits, target, seed digest, models, decoding, and budget. A different experiment,
