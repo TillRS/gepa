@@ -1,15 +1,43 @@
 ### Terminal-Bench experiments
 
 Select `--experiment tb2` or `--experiment tb4`. Both benchmarks optimize the
-same full agent text and skills. Vanilla GEPA (`vanilla`) and FOREST (`react_v2`)
-receive identical initial documents, editable components, task splits,
-student/proposer models, and four-epoch training budgets within an experiment.
+same full agent text and skills. All methods receive identical initial documents,
+editable components, task splits, and student/proposer models within an experiment.
 Neither benchmark is the default or designated primary.
 
 | Experiment | Dataset | Editable target | Train / validation / test |
 | --- | --- | --- | --- |
 | `tb2` | Terminal-Bench 2.0, 89 tasks | 14 prompts and two skills | 30 / 19 / 40 |
 | `tb4` | Terminal-Bench 4.0.0, 66 tasks | 14 prompts and two skills | 23 / 23 / 20 |
+
+#### Methods and campaign matrix
+
+Each benchmark/model arm follows HotPotQA's six-configuration comparison:
+
+| Condition | Method | Standard budget | Double budget |
+| --- | --- | --- | --- |
+| `vanilla` | Vanilla GEPA reflection | 4 epochs | 8 epochs |
+| `react_v2` | Full FOREST: Controller, Manifestor, ReAct V2 | 4 epochs | 8 epochs |
+| `react_v2_random` | FOREST with a uniformly random Controller | 4 epochs | — |
+| `action` | Action-conditioned stateless GEPA | 4 epochs | — |
+
+This gives **24 optimization runs**: six configurations, two models, and two
+benchmarks. There is one optimization run per configuration. The shared initial
+harness is an additional evaluation reference, not an optimization run.
+
+Random-Controller FOREST preserves Manifestor steering, the ReAct V2 editor,
+and branch-local edit history. Only Controller selection changes. The `action`
+condition uses HotPotQA's `VerbalizedActionSelector` and `StatelessReflectionLM`:
+select a semantic action and section, then rewrite that section once without
+Manifestor or a tool loop. Every selected prompt and skill gets its own
+single-component action job with its matching section template. All edits see
+the same parent harness and combine into one child candidate. `action` is no
+longer an alias for full FOREST. Controller randomness is seeded, separate from
+task sampling, and restored on resume.
+
+HotPotQA's budget levels are 6,871 and 13,742 metric calls. Terminal-Bench retains
+the approved epoch-based rule: four and eight training epochs. Thus the method
+matrix and 2× budget multiplier match HotPotQA; the budget unit differs.
 
 #### Editable agent text and skills
 
@@ -25,16 +53,16 @@ Neither benchmark is the default or designated primary.
 Prompts use the selected provider's `user_prompt` template. Skills use the `skill`
 template: Name, Description, Instructions, and Examples. Their metadata appears
 in the initial context, and the agent reads each full `SKILL.md` through the
-terminal when needed. Both optimizers can rewrite skill metadata and bodies.
+terminal when needed. All methods can rewrite skill metadata and bodies.
 Command-format guidance and completion instructions are editable text too.
 
-Both methods explicitly use `module_selector="all"`: each proposal selects all
+All methods explicitly use `module_selector="all"`: each proposal selects all
 16 documents, revises them separately using the same minibatch evidence, and
 evaluates the combined harness as one child candidate. This applies the
 [GEPA FAQ's multi-module efficiency guidance](https://gepa-ai.github.io/gepa/guides/faq/#how-do-i-optimize-multi-module-dspy-programs-efficiently)
 to both benchmarks. Optimizer-side editing work is measured separately; selecting
 all documents does not require a separate task evaluation for each document.
-The four-epoch budget stays fixed, and perfectly scored minibatches still skip
+The selected epoch budget stays fixed, and perfectly scored minibatches still skip
 mutation. Run contracts pin the full component set, document bundle version,
 and selection policy for resume and final-test comparisons.
 
@@ -56,7 +84,7 @@ that prompt, while AutoSaddler itself could also change executable harness code.
 Our GEPA and FOREST comparison now shares the broader text-and-skill scope,
 with execution code fixed for both methods.
 
-TB2 retains the paper-inspired 30/19/40 split sizes, four-epoch budget, and
+TB2 retains the paper-inspired 30/19/40 split sizes, four-epoch standard budget, and
 three repeated final evaluations. Its checked-in task assignments remain our
 deterministic split; the authors' exact identities and harness revision were
 not established from released artifacts. The broader editable surface, common
@@ -102,7 +130,9 @@ This replaces the earlier 26/20/20 allocation without moving any test tasks.
 The resume contract records the experiment, dataset, complete task refs and
 splits, target, seed digest, models, decoding, and budget. A different experiment,
 manifest, or configuration requires a fresh run directory. Old prompt-only or
-earlier document-bundle checkpoints cannot resume under the new scope.
+earlier document-bundle checkpoints cannot resume under the new scope. The
+current schema also pins the condition, Controller policy, and standard/double
+budget; earlier contracts must use fresh run directories.
 Experiment IDs are now `tb2` and `tb4`; the former
 `tb2-system-prompt` and `tb4-agent-text` IDs are rejected rather than silently
 changing the optimization target. The held-out test split is never evaluated
@@ -110,19 +140,22 @@ automatically.
 
 #### Optimization budget
 
-Both experiments use **four training epochs**, following the TB2 GEPA budget in
+Both experiments use **four training epochs at the standard budget**, following the TB2 GEPA budget in
 [AutoSaddler, Appendix B](https://arxiv.org/html/2608.23041v1#A2). TB4 receives the
-same number of passes through its own training split. With the default minibatch
-size of three, the stopping rule is `4 * ceil(train_tasks / 3)` iterations:
+same number of passes through its own training split. `--budget double` gives
+vanilla GEPA and full FOREST **eight epochs**, with all other settings fixed.
+With the default minibatch size of three, the stopping rule is
+`epochs * ceil(train_tasks / 3)` iterations:
 
-| Experiment | Training tasks | Iterations per epoch | Total iterations | Training task draws |
+| Experiment | Training tasks | Iterations per epoch | Standard / double iterations | Standard / double training draws |
 | --- | --- | --- | --- | --- |
-| TB2 | 30 | 10 | 40 | 120 |
-| TB4 | 23 | 8 | 32 | 96 |
+| TB2 | 30 | 10 | 40 / 80 | 120 / 240 |
+| TB4 | 23 | 8 | 32 / 64 | 96 / 192 |
 
 GEPA's epoch sampler pads each final minibatch to the configured size. For TB4,
 each epoch covers all 23 training tasks and repeats one, giving 92 unpadded draws
-plus four padding draws over the run. A training limit or different minibatch
+plus four padding draws in the standard run, or 184 unpadded plus eight padding
+draws in the double run. A training limit or different minibatch
 size changes the iteration count using the same rule. These counts describe
 sampled training tasks, not total task executions or model calls.
 
@@ -134,28 +167,34 @@ allowed to finish and does not reduce the number of training epochs. Thus the
 methods have equal training-pass budgets, not necessarily equal task-execution,
 token, or wall-time costs. The run contract records the epoch rule, iteration
 limit, sampler, and padding. Resuming continues the original budget rather than
-granting four additional epochs.
+granting additional epochs. Doubling the budget doubles proposal opportunities;
+it does not guarantee twice as many accepted candidates or total metric calls.
+The two larger-budget runs start independently from the shared initial harness.
+They cannot extend a standard-budget checkpoint in place.
 
 `--max-metric-calls` is an optional additional early-stop cap for pilot or
 operational runs. It is checked at iteration boundaries and can be exceeded by
-the final iteration's evaluations. A run stopped by that cap before four epochs
-does not complete the standard protocol. The normal commands omit this cap.
+the final iteration's evaluations. A run stopped by that cap before its selected
+epoch budget does not complete the protocol. The normal commands omit this cap.
 Final held-out test evaluation remains separate.
 
 #### Repetitions and final testing
 
-Each benchmark/model arm uses one optimization run per method, followed by
+Each benchmark/model arm uses one optimization run per method/budget configuration, followed by
 three test repetitions of each frozen harness. This follows
 [AutoSaddler, section 5.1 and Table 3](https://arxiv.org/html/2608.23041v1): one
 evolution run and three test executions, reporting mean and standard deviation
 of Pass@1. Both TB2 and TB4 use this repetition protocol.
 
-The final evaluation command requires a completed vanilla GEPA run and a
-completed FOREST run with matching benchmark, model, decoding, optimization seed,
-splits, and budget. It rejects partial training/validation selections and runs
-that stopped before completing four epochs. It selects each winner by mean
-validation reward, with GEPA's earliest-candidate tie break, and freezes both
-winners and their common initial harness before running any test task.
+The final evaluation command requires all six completed runs with matching
+benchmark, model, decoding, optimization seed, and splits. Each must have the
+correct method and budget for its campaign cell. It rejects partial
+training/validation selections and runs that stopped before completing their
+four or eight epochs. It selects each winner independently by mean validation
+reward, with GEPA's earliest-candidate tie break, and freezes all six winners
+and their common initial harness before running any test task. Standard and
+double-budget results retain separate labels; no selection across budgets
+uses test results.
 
 Each repetition starts a distinct Harbor job over the entire test split with
 `n_attempts=1` and fresh task environments. Training and validation evaluations
@@ -165,19 +204,24 @@ The output records sample standard deviation (`ddof=1`) explicitly. Test repeats
 measure execution variability for the fixed harness, not optimization-seed
 variability.
 
-For each model, the three harnesses are initial, GEPA-selected, and FOREST-selected:
+For each model, the seven harnesses are the initial harness and the six
+validation-selected winners:
 
-| Experiment | Test tasks | Repetitions per harness | Attempts per harness | Attempts across all three harnesses |
+| Experiment | Test tasks | Repetitions per harness | Attempts per harness | Attempts across all seven harnesses |
 | --- | --- | --- | --- | --- |
-| TB2 | 40 | 3 | 120 | 360 |
-| TB4 | 20 | 3 | 60 | 180 |
+| TB2 | 40 | 3 | 120 | 840 |
+| TB4 | 20 | 3 | 60 | 420 |
 
-Run final testing only after both matching optimization runs have completed:
+Run final testing only after all six matching optimization runs have completed:
 
 ```bash
 uv run python -m examples.terminalbench.evaluate \
-  --vanilla-run-dir runs/tb2/vanilla \
-  --forest-run-dir runs/tb2/react_v2 \
+  --run-dir vanilla=runs/tb2/vanilla \
+  --run-dir react_v2=runs/tb2/react_v2 \
+  --run-dir react_v2_random=runs/tb2/react_v2_random \
+  --run-dir action=runs/tb2/action \
+  --run-dir vanilla_2x=runs/tb2/vanilla_2x \
+  --run-dir react_v2_2x=runs/tb2/react_v2_2x \
   --output-dir runs/tb2/test
 ```
 
@@ -187,13 +231,13 @@ optimization contracts. `--harbor-executable` and `--docker-executable` optional
 select installed binaries. Checkpoints must be trusted local optimization
 artifacts because GEPA's checkpoint format uses Python pickle.
 
-`frozen-comparison.json` contains all three harnesses and their source contracts.
+`frozen-comparison.json` contains all seven harnesses and their source contracts.
 Each completed repetition gets a JSON file with per-task verifier rewards and
 its distinct Harbor job identity. Rerunning the same command reuses completed
 repetitions and runs only missing ones; an interrupted, unrecorded repetition
 starts again in fresh environments. Frozen harness or configuration changes
 are rejected. The CLI locks the output directory against concurrent writers.
-`summary.json` is written only after all nine repetitions finish and contains
+`summary.json` is written only after all 21 repetitions finish and contains
 the three Pass@1 values, their mean and sample standard deviation, and the
 completed task-attempt count for each harness. Scores are fractions in JSON
 and percentages in console output. Failed or incomplete Harbor jobs stop the
@@ -223,8 +267,22 @@ uv run python -m examples.terminalbench.main \
   --harbor-work-dir runs/tb4/vanilla/harbor
 ```
 
-Use `--condition react_v2` and matching separate output directories for FOREST.
-Both commands use the four-epoch budget above.
+Use `--condition react_v2`, `--condition react_v2_random`, and `--condition action`
+with separate output directories for the other standard-budget methods.
+Both commands above default to `--budget standard` (four epochs).
+Launch each larger-budget run in its own fresh directory, for example:
+
+```bash
+uv run python -m examples.terminalbench.main \
+  --experiment tb2 \
+  --condition vanilla --budget double \
+  --run-dir runs/tb2/vanilla_2x \
+  --harbor-work-dir runs/tb2/vanilla_2x/harbor
+```
+
+Use `--condition react_v2 --budget double` and `runs/tb2/react_v2_2x` for the
+larger-budget FOREST run. Repeat the same six configurations for TB4 and both
+model arms. The CLI rejects double-budget ablations outside the approved pair.
 An optional `--manifest` must match the explicitly selected experiment.
 
 Both experiments support two separate model arms: Qwen3.8-27B with Qwen3.8-27B

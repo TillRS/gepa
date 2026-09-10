@@ -176,7 +176,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 10
+    assert contract["schema_version"] == 11
     assert contract["component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
@@ -215,9 +215,9 @@ def test_deepseek_run_contract_uses_the_separate_same_model_condition(tmp_path: 
 
 
 @pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
-@pytest.mark.parametrize("condition", ["vanilla", "react_v2"])
+@pytest.mark.parametrize("condition,budget", list(terminalbench_main.CAMPAIGN_CELLS.values()))
 def test_deepseek_settings_reach_both_runtime_roles(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, condition: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, condition: str, budget: str
 ) -> None:
     """Forward DeepSeek thinking and context settings through both experiment CLIs."""
     requirements = Mock()
@@ -235,6 +235,8 @@ def test_deepseek_settings_reach_both_runtime_roles(
             experiment,
             "--condition",
             condition,
+            "--budget",
+            budget,
             "--student-model",
             DEEPSEEK_V4_FLASH_MODEL,
             "--proposer-model",
@@ -271,8 +273,29 @@ def test_deepseek_settings_reach_both_runtime_roles(
     assert len(optimize_kwargs["trainset"]) == len(optimize_kwargs["valset"]) == 1
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
     assert set(optimize_kwargs["seed_candidate"]) == set(manifest.component_kinds)
-    assert optimize_kwargs["reflection_level"] == (0 if condition == "vanilla" else 2)
-    assert optimize_kwargs["stop_callbacks"].max_proposals == 4
+    assert optimize_kwargs["reflection_level"] == (2 if condition in terminalbench_main.FOREST_CONDITIONS else 0)
+    strategy = optimize_kwargs["reflection_strategy"]
+    if condition in terminalbench_main.FOREST_CONDITIONS:
+        assert strategy.controller_selection == ("uniform_random" if condition == "react_v2_random" else "verbalized")
+        assert strategy.base_lm.model == strategy.manifestor_lm.model == DEEPSEEK_V4_FLASH_MODEL
+        assert strategy.base_lm.completion_kwargs["extra_body"] == expected_body
+        assert strategy.base_lm.completion_kwargs["api_base"] == "http://localhost:8000/v1"
+        assert strategy.manifestor_lm.completion_kwargs["temperature"] == 0
+    elif condition == "action":
+        assert isinstance(strategy, terminalbench_main.ComponentActionReflectionLM)
+        for reflector in strategy.reflectors.values():
+            assert reflector.lm.model == reflector.action_selector.lm.model == DEEPSEEK_V4_FLASH_MODEL
+            assert (
+                reflector.lm.completion_kwargs["extra_body"]
+                == reflector.action_selector.lm.completion_kwargs["extra_body"]
+                == expected_body
+            )
+            assert (
+                reflector.lm.completion_kwargs["api_base"] == reflector.action_selector.lm.completion_kwargs["api_base"]
+            )
+    else:
+        assert strategy is None
+    assert optimize_kwargs["stop_callbacks"].max_proposals == (8 if budget == "double" else 4)
     assert optimize_kwargs["max_metric_calls"] == 4
     assert optimize_kwargs["batch_sampler"] == "epoch_shuffled"
     assert optimize_kwargs["module_selector"] == "all"
@@ -292,10 +315,19 @@ def test_deepseek_settings_reach_both_runtime_roles(
 
 @pytest.mark.parametrize("experiment,iterations,padding", [("tb2", 40, 0), ("tb4", 32, 1)])
 @pytest.mark.parametrize("outcome", ["accepted", "rejected", "perfect"])
-def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, iterations: int, padding: int, outcome: str
+@pytest.mark.parametrize("budget_name,epochs", [("standard", 4), ("double", 8)])
+def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    experiment: str,
+    iterations: int,
+    padding: int,
+    outcome: str,
+    budget_name: str,
+    epochs: int,
 ) -> None:
-    """Complete four covered epochs across resume regardless of proposal success."""
+    """Complete either budget across resume regardless of proposal success."""
+    iterations *= epochs // 4
     run_dir = tmp_path / "run"
     stop_file = run_dir / "gepa.stop"
     parent_batches = []
@@ -357,6 +389,8 @@ def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
             experiment,
             "--condition",
             "vanilla",
+            "--budget",
+            budget_name,
             "--run-dir",
             str(run_dir),
             "--harbor-work-dir",
@@ -375,12 +409,12 @@ def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
     contract = json.loads((run_dir / "terminalbench-run-contract.json").read_text())
     budget = contract["optimization_budget"]
     assert contract["max_metric_calls"] is None
-    assert budget["training_epochs"] == 4
+    assert budget["training_epochs"] == epochs
     assert budget["max_iterations"] == iterations
     assert budget["padding_tasks_per_epoch"] == padding
     assert budget["sampled_training_tasks"] == sum(map(len, parent_batches)) == iterations * 3
-    for start in range(0, iterations, iterations // 4):
-        epoch_ids = [task_id for batch in parent_batches[start : start + iterations // 4] for task_id in batch]
+    for start in range(0, iterations, iterations // epochs):
+        epoch_ids = [task_id for batch in parent_batches[start : start + iterations // epochs] for task_id in batch]
         assert set(epoch_ids) == set(contract["train_task_ids"])
         assert len(epoch_ids) == len(contract["train_task_ids"]) + padding
     assert not set(contract["test_task_ids"]).intersection(task_id for batch in evaluations for task_id in batch)
@@ -402,6 +436,64 @@ def test_run_contract_rejects_invalid_budget_inputs(tmp_path: Path, field: str, 
     manifest = load_terminalbench_manifest(MANIFEST_PATH)
     with pytest.raises(ValueError, match="must be positive"):
         build_run_contract(args, manifest, manifest.tasks("train"), manifest.tasks("val"), "vanilla", "alibaba")
+
+
+def test_six_cell_matrix_pins_methods_budgets_and_resume_identity(tmp_path: Path) -> None:
+    """Expose four standard methods and two double-budget methods with distinct contracts."""
+    assert terminalbench_main.CAMPAIGN_CELLS == {
+        "vanilla": ("vanilla", "standard"),
+        "react_v2": ("react_v2", "standard"),
+        "react_v2_random": ("react_v2_random", "standard"),
+        "action": ("action", "standard"),
+        "vanilla_2x": ("vanilla", "double"),
+        "react_v2_2x": ("react_v2", "double"),
+    }
+    args = _model_args(tmp_path, QWEN3_8_27B_MODEL, QWEN3_8_27B_MODEL)
+    manifest = load_terminalbench_manifest(MANIFEST_PATH)
+    contracts = []
+    for condition, budget in terminalbench_main.CAMPAIGN_CELLS.values():
+        args.budget = budget
+        contract = build_run_contract(
+            args, manifest, manifest.tasks("train"), manifest.tasks("val"), condition, "alibaba"
+        )
+        contracts.append(contract)
+        assert contract["condition"] == condition
+        assert contract["optimization_budget"]["max_iterations"] == (64 if budget == "double" else 32)
+        assert contract["module_selector"] == "all"
+    ensure_run_contract(tmp_path / "resume", contracts[1])
+    for contract in contracts[:1] + contracts[2:]:
+        with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+            ensure_run_contract(tmp_path / "resume", contract)
+
+
+@pytest.mark.parametrize("condition", ["react_v2_random", "action"])
+def test_double_budget_rejects_extra_ablation_cells_before_harbor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, condition: str
+) -> None:
+    """Keep the larger budget exclusive to the two headline methods."""
+    harbor_factory = Mock()
+    monkeypatch.setattr(terminalbench_main, "HarborCLI", harbor_factory)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "terminalbench",
+            "--experiment",
+            "tb2",
+            "--condition",
+            condition,
+            "--budget",
+            "double",
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--harbor-work-dir",
+            str(tmp_path / "harbor"),
+        ],
+    )
+    with pytest.raises(SystemExit):
+        terminalbench_main.main()
+    harbor_factory.assert_not_called()
+    assert not (tmp_path / "run").exists()
 
 
 def test_run_contract_rejects_a_cross_model_pair(tmp_path: Path) -> None:

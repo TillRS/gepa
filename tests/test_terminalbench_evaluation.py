@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 from examples.common.experiment_models import DEEPSEEK_V4_FLASH_MODEL, QWEN3_8_27B_MODEL
 from examples.terminalbench import evaluate
 from examples.terminalbench.main import (
+    CAMPAIGN_CELLS,
     EXPERIMENT_MANIFESTS,
     RUN_CONTRACT_FILENAME,
     build_parser,
@@ -31,15 +32,20 @@ from gepa.adapters.terminal_bench_adapter import (
 from gepa.core.state import GEPAState, ValsetEvaluation
 
 
-def _write_run(root: Path, experiment: str, condition: str, model: str = QWEN3_8_27B_MODEL) -> Path:
+def _write_run(
+    root: Path, experiment: str, condition: str, model: str = QWEN3_8_27B_MODEL, budget: str = "standard"
+) -> Path:
     """Create a real checkpoint whose validation winner is not the last candidate."""
-    run_dir = root / condition
+    label = f"{condition}{'_2x' if budget == 'double' else ''}"
+    run_dir = root / label
     args = build_parser().parse_args(
         [
             "--experiment",
             experiment,
             "--condition",
             condition,
+            "--budget",
+            budget,
             "--student-model",
             model,
             "--proposer-model",
@@ -65,7 +71,7 @@ def _write_run(root: Path, experiment: str, condition: str, model: str = QWEN3_8
     state.num_full_ds_evals = 3
     component = next(iter(initial))
     for name, score in [("winner", 1.0), ("last", 0.0)]:
-        candidate = {**initial, component: initial[component] + f"\n{condition}-{name}"}
+        candidate = {**initial, component: initial[component] + f"\n{label}-{name}"}
         state.update_state_with_new_program(
             [0],
             candidate,
@@ -76,6 +82,14 @@ def _write_run(root: Path, experiment: str, condition: str, model: str = QWEN3_8
         )
     state.save(str(run_dir))
     return run_dir
+
+
+def _write_comparison(root: Path, experiment: str, model: str = QWEN3_8_27B_MODEL) -> dict[str, Path]:
+    """Create all six distinct standard/double-budget source checkpoints."""
+    return {
+        label: _write_run(root, experiment, condition, model, budget)
+        for label, (condition, budget) in CAMPAIGN_CELLS.items()
+    }
 
 
 def _fake_runner(manifest, comparison, output_dir: Path, *, fail_on_call: int | None = None) -> Mock:
@@ -128,11 +142,12 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, model: str
 ) -> None:
     """Test all benchmark/model arms through the CLI without any optimization or model call."""
-    vanilla = _write_run(tmp_path, experiment, "vanilla", model)
-    forest = _write_run(tmp_path, experiment, "react_v2", model)
-    manifest, comparison = evaluate.freeze_comparison(vanilla, forest)
-    for condition in ("vanilla", "react_v2"):
+    run_dirs = _write_comparison(tmp_path, experiment, model)
+    manifest, comparison = evaluate.freeze_comparison(run_dirs)
+    for condition in CAMPAIGN_CELLS:
         assert comparison["source_runs"][condition]["selected_candidate_index"] == 1
+        epochs = 8 if condition.endswith("_2x") else 4
+        assert comparison["source_runs"][condition]["contract"]["optimization_budget"]["training_epochs"] == epochs
         assert any(f"{condition}-winner" in text for text in comparison["harnesses"][condition]["documents"].values())
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir)
@@ -143,20 +158,17 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
         "argv",
         [
             "evaluate",
-            "--vanilla-run-dir",
-            str(vanilla),
-            "--forest-run-dir",
-            str(forest),
+            *[argument for label, path in run_dirs.items() for argument in ("--run-dir", f"{label}={path}")],
             "--output-dir",
             str(output_dir),
         ],
     )
 
     evaluate.main()
-    assert runner.run.call_count == 9
+    assert runner.run.call_count == 21
     summary = json.loads((output_dir / "summary.json").read_text())
     assert summary["complete"] is True
-    assert summary["protocol"]["optimization_runs_per_method"] == 1
+    assert summary["protocol"]["optimization_runs_per_configuration"] == 1
     assert summary["protocol"]["attempts_per_task_per_repetition"] == 1
     for scores in summary["harnesses"].values():
         assert scores["repetition_pass_at_1"] == [0.0, 0.5, 1.0]
@@ -173,14 +185,46 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
         **contract["student_request_overrides"],
     }
     evaluate.main()
-    assert runner.run.call_count == 9
+    assert runner.run.call_count == 21
+
+
+@pytest.mark.parametrize(
+    "specifications",
+    [
+        ["vanilla"],
+        ["vanilla="],
+        ["unknown=/tmp/run"],
+        ["vanilla=/tmp/first", "vanilla=/tmp/second"],
+    ],
+)
+def test_evaluation_cli_rejects_invalid_or_duplicate_cell_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, specifications: list[str]
+) -> None:
+    """Reject ambiguous source mappings before reading runs or constructing Harbor."""
+    freeze = Mock()
+    harbor = Mock()
+    monkeypatch.setattr(evaluate, "freeze_comparison", freeze)
+    monkeypatch.setattr(evaluate, "HarborCLI", harbor)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate",
+            *[argument for specification in specifications for argument in ("--run-dir", specification)],
+            "--output-dir",
+            str(tmp_path / "test"),
+        ],
+    )
+    with pytest.raises(SystemExit):
+        evaluate.main()
+    freeze.assert_not_called()
+    harbor.assert_not_called()
 
 
 def test_interrupted_evaluation_resumes_only_missing_repetitions(tmp_path: Path) -> None:
-    """Keep completed attempts unchanged and withhold a summary until all nine jobs finish."""
-    vanilla = _write_run(tmp_path, "tb2", "vanilla")
-    forest = _write_run(tmp_path, "tb2", "react_v2")
-    manifest, comparison = evaluate.freeze_comparison(vanilla, forest)
+    """Keep completed attempts unchanged and withhold a summary until all 21 jobs finish."""
+    run_dirs = _write_comparison(tmp_path, "tb2")
+    manifest, comparison = evaluate.freeze_comparison(run_dirs)
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir, fail_on_call=5)
 
@@ -190,40 +234,61 @@ def test_interrupted_evaluation_resumes_only_missing_repetitions(tmp_path: Path)
     assert len(saved) == 4
     assert not (output_dir / "summary.json").exists()
     summary = evaluate.evaluate_comparison(manifest, comparison, output_dir, runner)
-    assert runner.run.call_count == 10
+    assert runner.run.call_count == 22
     assert summary["complete"] is True
     assert all((output_dir / name).read_bytes() == content for name, content in saved.items())
     assert all(row["mean_pass_at_1"] == 0.5 for row in summary["harnesses"].values())
 
 
 def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Path) -> None:
-    """Preserve fresh attempts when validation selects the initial harness for both methods."""
-    vanilla = _write_run(tmp_path, "tb4", "vanilla")
-    forest = _write_run(tmp_path, "tb4", "react_v2")
-    for run_dir in (vanilla, forest):
+    """Preserve fresh attempts when validation selects the initial harness in all six runs."""
+    run_dirs = _write_comparison(tmp_path, "tb4")
+    for run_dir in run_dirs.values():
         state = GEPAState.load(str(run_dir))
         state.prog_candidate_val_subscores[1] = dict.fromkeys(state.prog_candidate_val_subscores[1], 0.0)
         state.save(str(run_dir))
-    manifest, comparison = evaluate.freeze_comparison(vanilla, forest)
+    manifest, comparison = evaluate.freeze_comparison(run_dirs)
     assert all(run["selected_candidate_index"] == 0 for run in comparison["source_runs"].values())
     assert len({harness["candidate_digest"] for harness in comparison["harnesses"].values()}) == 1
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir)
     summary = evaluate.evaluate_comparison(manifest, comparison, output_dir, runner)
-    assert runner.run.call_count == 9
-    assert len(list(output_dir.glob("*-repetition-*.json"))) == 9
+    assert runner.run.call_count == 21
+    assert len(list(output_dir.glob("*-repetition-*.json"))) == 21
     assert all(row["task_attempts"] == 60 for row in summary["harnesses"].values())
 
 
 @pytest.mark.parametrize(
     "damage",
-    ["incomplete", "partial_validation", "partial_train", "different_seed", "different_model", "different_selector"],
+    [
+        "incomplete",
+        "partial_validation",
+        "partial_train",
+        "different_seed",
+        "different_model",
+        "different_selector",
+        "missing_cell",
+        "wrong_budget",
+        "incomplete_double",
+        "different_condition",
+        "different_policy",
+    ],
 )
 def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, damage: str) -> None:
     """Reject unfinished optimization, pilot splits, and unmatched experimental settings."""
-    vanilla = _write_run(tmp_path, "tb4", "vanilla")
-    other_model = DEEPSEEK_V4_FLASH_MODEL if damage == "different_model" else QWEN3_8_27B_MODEL
-    forest = _write_run(tmp_path, "tb4", "react_v2", other_model)
+    run_dirs = _write_comparison(tmp_path, "tb4")
+    forest = run_dirs["react_v2"]
+    if damage == "different_model":
+        forest = _write_run(tmp_path / "other-model", "tb4", "react_v2", DEEPSEEK_V4_FLASH_MODEL)
+        run_dirs["react_v2"] = forest
+    if damage == "missing_cell":
+        run_dirs.pop("action")
+    elif damage == "wrong_budget":
+        run_dirs["react_v2_2x"] = forest
+    elif damage == "incomplete_double":
+        state = GEPAState.load(str(run_dirs["react_v2_2x"]))
+        state.i = 31
+        state.save(str(run_dirs["react_v2_2x"]))
     if damage in {"incomplete", "partial_validation"}:
         state = GEPAState.load(str(forest))
         if damage == "incomplete":
@@ -231,25 +296,29 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
         else:
             del state.prog_candidate_val_subscores[1][0]
         state.save(str(forest))
-    elif damage in {"partial_train", "different_seed", "different_selector"}:
+    elif damage in {"partial_train", "different_seed", "different_selector", "different_condition", "different_policy"}:
         path = forest / RUN_CONTRACT_FILENAME
         contract = json.loads(path.read_text())
         if damage == "partial_train":
             contract["train_task_ids"].pop()
         elif damage == "different_selector":
             contract["module_selector"] = "round_robin"
+        elif damage == "different_condition":
+            contract["condition"] = "action"
+        elif damage == "different_policy":
+            contract["controller_selection"] = "uniform_random"
         else:
             contract["seed"] = 19
         path.write_text(json.dumps(contract))
     with pytest.raises(ValueError):
-        evaluate.freeze_comparison(vanilla, forest)
+        evaluate.freeze_comparison(run_dirs)
 
 
 def test_frozen_output_rejects_a_changed_validation_winner(tmp_path: Path) -> None:
     """Prevent replacing an optimized harness after test feedback has been observed."""
-    vanilla = _write_run(tmp_path, "tb4", "vanilla")
-    forest = _write_run(tmp_path, "tb4", "react_v2")
-    manifest, comparison = evaluate.freeze_comparison(vanilla, forest)
+    run_dirs = _write_comparison(tmp_path, "tb4")
+    forest = run_dirs["react_v2_2x"]
+    manifest, comparison = evaluate.freeze_comparison(run_dirs)
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir, fail_on_call=2)
     with pytest.raises(HarborExecutionError):
@@ -257,7 +326,7 @@ def test_frozen_output_rejects_a_changed_validation_winner(tmp_path: Path) -> No
     state = GEPAState.load(str(forest))
     state.program_candidates[1]["instruction_prompt"] += "\nChanged after testing"
     state.save(str(forest))
-    _, changed = evaluate.freeze_comparison(vanilla, forest)
+    _, changed = evaluate.freeze_comparison(run_dirs)
     with pytest.raises(ValueError, match="different frozen comparison"):
         evaluate.evaluate_comparison(manifest, changed, output_dir, runner)
     assert runner.run.call_count == 2
@@ -268,9 +337,8 @@ def test_frozen_output_rejects_a_changed_validation_winner(tmp_path: Path) -> No
 )
 def test_corrupt_saved_repetition_is_not_silently_reused(tmp_path: Path, damage: str) -> None:
     """Reject incomplete, mismatched, or duplicate test evidence during resume."""
-    vanilla = _write_run(tmp_path, "tb4", "vanilla")
-    forest = _write_run(tmp_path, "tb4", "react_v2")
-    manifest, comparison = evaluate.freeze_comparison(vanilla, forest)
+    run_dirs = _write_comparison(tmp_path, "tb4")
+    manifest, comparison = evaluate.freeze_comparison(run_dirs)
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir)
     evaluate.evaluate_comparison(manifest, comparison, output_dir, runner)
@@ -290,4 +358,4 @@ def test_corrupt_saved_repetition_is_not_silently_reused(tmp_path: Path, damage:
     path.write_text(json.dumps(record))
     with pytest.raises(ValueError):
         evaluate.evaluate_comparison(manifest, comparison, output_dir, runner)
-    assert runner.run.call_count == 9
+    assert runner.run.call_count == 21

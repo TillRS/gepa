@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from examples.terminalbench.main import (
+    CAMPAIGN_CELLS,
     EVALUATION_PROTOCOL,
     EXPERIMENT_MANIFESTS,
+    FOREST_CONDITIONS,
     REPO_ROOT,
     RUN_CONTRACT_FILENAME,
     TEST_REPETITIONS,
@@ -25,11 +27,15 @@ from gepa.core.state import GEPAState
 FROZEN_COMPARISON_FILENAME = "frozen-comparison.json"
 METHOD_SPECIFIC_FIELDS = {
     "condition",
+    "budget",
+    "optimization_budget",
+    "controller_selection",
     "proposer_backend",
     "reflection_level",
     "max_proposer_model_calls",
     "semantic_action_space",
     "semantic_controller_policy",
+    "stateless_selector_policy",
     "manifest",
 }
 
@@ -41,12 +47,13 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def load_completed_run(run_dir: Path, condition: str) -> tuple[TerminalBenchManifest, dict[str, Any]]:
+def load_completed_run(run_dir: Path, condition: str, budget: str) -> tuple[TerminalBenchManifest, dict[str, Any]]:
     """Select the validation winner from one completed, trusted local checkpoint.
 
     Args:
         run_dir: Directory produced by the Terminal-Bench optimization CLI.
-        condition: Required method, either ``vanilla`` or ``react_v2``.
+        condition: Required method from the six-configuration campaign.
+        budget: Required standard or double training budget for this cell.
 
     Returns:
         Pinned manifest and the initial/selected harnesses with run provenance.
@@ -56,6 +63,10 @@ def load_completed_run(run_dir: Path, condition: str) -> tuple[TerminalBenchMani
             from its recorded protocol, model settings, or seed candidate.
     """
     contract = json.loads((run_dir / RUN_CONTRACT_FILENAME).read_text())
+    if contract.get("budget") != budget:
+        raise ValueError(f"{run_dir}: expected the {budget} budget for {condition}")
+    if contract.get("reflection_level") != (2 if condition in FOREST_CONDITIONS else 0):
+        raise ValueError(f"{run_dir}: reflection level does not match the campaign method {condition}")
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[contract["experiment"]])
     expected = build_run_contract(
         argparse.Namespace(**contract),
@@ -72,7 +83,8 @@ def load_completed_run(run_dir: Path, condition: str) -> tuple[TerminalBenchMani
     state = GEPAState.load(str(run_dir))
     completed_iterations = state.i + 1
     if completed_iterations != contract["optimization_budget"]["max_iterations"]:
-        raise ValueError(f"{run_dir}: optimization has not completed its four-epoch budget")
+        epochs = contract["optimization_budget"]["training_epochs"]
+        raise ValueError(f"{run_dir}: optimization has not completed its {epochs}-epoch budget")
     result = GEPAResult.from_state(state)
     if manifest.candidate_digest(result.candidates[0]) != contract["seed_document_digest"]:
         raise ValueError(f"{run_dir}: checkpoint seed differs from the run contract")
@@ -95,33 +107,38 @@ def load_completed_run(run_dir: Path, condition: str) -> tuple[TerminalBenchMani
     }
 
 
-def freeze_comparison(vanilla_run_dir: Path, forest_run_dir: Path) -> tuple[TerminalBenchManifest, dict[str, Any]]:
-    """Freeze both validation winners before any test result can influence selection.
+def freeze_comparison(run_dirs: dict[str, Path]) -> tuple[TerminalBenchManifest, dict[str, Any]]:
+    """Freeze all six validation winners before any test result can influence selection.
 
     Args:
-        vanilla_run_dir: Completed vanilla GEPA run for one benchmark/model arm.
-        forest_run_dir: Matching completed FOREST run.
+        run_dirs: One completed directory per campaign cell for one benchmark/model.
 
     Returns:
-        Manifest and a comparison containing all three immutable harness texts.
+        Manifest and a comparison containing all seven immutable harness texts.
 
     Raises:
-        ValueError: Methods differ on a shared experimental setting.
+        ValueError: A campaign cell is missing or shared experimental settings differ.
     """
-    manifest, vanilla = load_completed_run(vanilla_run_dir, "vanilla")
-    _, forest = load_completed_run(forest_run_dir, "react_v2")
+    if set(run_dirs) != set(CAMPAIGN_CELLS):
+        raise ValueError(f"Final testing requires exactly these six campaign cells: {', '.join(CAMPAIGN_CELLS)}")
+    runs = {}
+    for label, (condition, budget) in CAMPAIGN_CELLS.items():
+        manifest, runs[label] = load_completed_run(run_dirs[label], condition, budget)
+    vanilla = runs["vanilla"]
+    manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[vanilla["contract"]["experiment"]])
     shared = {key: value for key, value in vanilla["contract"].items() if key not in METHOD_SPECIFIC_FIELDS}
-    other = {key: value for key, value in forest["contract"].items() if key not in METHOD_SPECIFIC_FIELDS}
-    if shared != other or vanilla["initial"] != forest["initial"]:
-        raise ValueError("GEPA and FOREST must share benchmark, model settings, seed, splits, and training budget")
-    candidates = {"initial": vanilla["initial"], "vanilla": vanilla["selected"], "react_v2": forest["selected"]}
+    for label, run in runs.items():
+        other = {key: value for key, value in run["contract"].items() if key not in METHOD_SPECIFIC_FIELDS}
+        if shared != other or vanilla["initial"] != run["initial"]:
+            raise ValueError(f"{label}: all six runs must share benchmark, model settings, seed, and splits")
+    candidates = {"initial": vanilla["initial"], **{label: run["selected"] for label, run in runs.items()}}
     return manifest, {
-        "schema_version": 1,
+        "schema_version": 2,
         "protocol": dict(EVALUATION_PROTOCOL),
         "shared_configuration": shared,
         "source_runs": {
             label: {key: value for key, value in run.items() if key not in {"initial", "selected"}}
-            for label, run in (("vanilla", vanilla), ("react_v2", forest))
+            for label, run in runs.items()
         },
         "harnesses": {
             label: {"documents": candidate, "candidate_digest": manifest.candidate_digest(candidate)}
@@ -149,8 +166,8 @@ def evaluate_comparison(
     """Resume three fresh test repetitions per frozen harness and summarize Pass@1.
 
     Args:
-        manifest: Pinned benchmark shared by both optimization runs.
-        comparison: Frozen initial harness and both validation-selected winners.
+        manifest: Pinned benchmark shared by all six optimization runs.
+        comparison: Frozen initial harness and six validation-selected winners.
         output_dir: Dedicated comparison directory; use one writer at a time.
         harbor: Runner with the recorded student model and runtime settings.
 
@@ -241,13 +258,24 @@ def evaluate_comparison(
 def main() -> None:
     """Evaluate one matched benchmark/model comparison from completed local runs."""
     parser = argparse.ArgumentParser(description="Three frozen Terminal-Bench Pass@1 test repetitions")
-    parser.add_argument("--vanilla-run-dir", type=Path, required=True)
-    parser.add_argument("--forest-run-dir", type=Path, required=True)
+    parser.add_argument(
+        "--run-dir",
+        action="append",
+        required=True,
+        metavar="CELL=PATH",
+        help=f"Repeat once for each of: {', '.join(CAMPAIGN_CELLS)}",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--harbor-executable", default="harbor")
     parser.add_argument("--docker-executable", default="docker")
     args = parser.parse_args()
-    manifest, comparison = freeze_comparison(args.vanilla_run_dir, args.forest_run_dir)
+    run_dirs = {}
+    for specification in args.run_dir:
+        label, separator, path = specification.partition("=")
+        if not separator or label not in CAMPAIGN_CELLS or not path or label in run_dirs:
+            parser.error("Each --run-dir must specify a distinct supported CELL=PATH")
+        run_dirs[label] = Path(path)
+    manifest, comparison = freeze_comparison(run_dirs)
     contract = comparison["shared_configuration"]
     harbor = HarborCLI(
         manifest=manifest,

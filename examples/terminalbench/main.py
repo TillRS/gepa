@@ -4,16 +4,20 @@ The held-out test split is not evaluated automatically.
 
 * ``vanilla`` uses stock free-form GEPA reflection.
 * ``react_v2`` uses the Controller -> Manifestor -> ReAct V2 workflow.
+* ``react_v2_random`` replaces only the Controller with uniform selection.
+* ``action`` uses semantic action selection and a stateless section rewrite.
 
 Within each model arm, all conditions use the same official Harbor rewards,
-manifest, student/proposer model, task splits, editable documents, and four-epoch
-training budget. The experiment must be selected explicitly; neither is primary.
+manifest, student/proposer model, task splits, and editable documents. All four
+methods run for four epochs; vanilla and full FOREST also run for eight epochs.
+The experiment must be selected explicitly; neither is primary.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -27,7 +31,8 @@ from examples.common.experiment_models import (
     experiment_request_overrides,
     validate_experiment_model_pair,
 )
-from examples.common.react_v2 import resolve_template_family
+from examples.common.react_v2 import build_react_v2_strategy, resolve_template_family
+from examples.terminalbench.reflection import ComponentActionReflectionLM
 from gepa import optimize
 from gepa.adapters.terminal_bench_adapter import (
     HarborCLI,
@@ -40,7 +45,13 @@ from gepa.adapters.terminal_bench_adapter.documents import (
     BUNDLE_VERSION,
     seed_documents,
 )
-from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
+from gepa.lm import LM
+from gepa.strategies.action_space import stateless_selector_policy_contract
+from gepa.strategies.intervention import (
+    CONTROLLER_POLICY_CONTRACT,
+    SEMANTIC_ACTION_CATALOGS,
+    UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT,
+)
 from gepa.strategies.proposal_sampling import SingleMutationSampling
 from gepa.utils.stop_condition import MaxCandidateProposalsStopper
 
@@ -50,10 +61,20 @@ EXPERIMENT_MANIFESTS = {
     "tb4": Path(__file__).with_name("terminalbench-v4-manifest.json"),
 }
 RUN_CONTRACT_FILENAME = "terminalbench-run-contract.json"
-TRAINING_EPOCHS = 4
+CONDITIONS_BY_BUDGET = {
+    "standard": ("vanilla", "react_v2", "react_v2_random", "action"),
+    "double": ("vanilla", "react_v2"),
+}
+TRAINING_EPOCHS_BY_BUDGET = {"standard": 4, "double": 8}
+CAMPAIGN_CELLS = {
+    f"{condition}{'_2x' if budget == 'double' else ''}": (condition, budget)
+    for budget, conditions in CONDITIONS_BY_BUDGET.items()
+    for condition in conditions
+}
+FOREST_CONDITIONS = {"react_v2", "react_v2_random"}
 TEST_REPETITIONS = 3
 EVALUATION_PROTOCOL = {
-    "optimization_runs_per_method": 1,
+    "optimization_runs_per_configuration": 1,
     "test_repetitions": TEST_REPETITIONS,
     "attempts_per_task_per_repetition": 1,
     "selection_metric": "mean_validation_reward",
@@ -124,9 +145,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--condition",
-        choices=("vanilla", "react_v2", "action"),
+        choices=CONDITIONS_BY_BUDGET["standard"],
         required=True,
         help="Optimization condition to run",
+    )
+    parser.add_argument(
+        "--budget",
+        choices=tuple(CONDITIONS_BY_BUDGET),
+        default="standard",
+        help="Four epochs for all methods; double gives vanilla and full FOREST eight epochs",
     )
     parser.add_argument(
         "--student-model",
@@ -144,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-metric-calls",
         type=int,
         default=None,
-        help="Optional early-stop cap on task evaluations; the default budget is four training epochs",
+        help="Optional early-stop cap on task evaluations, in addition to the selected epoch budget",
     )
     parser.add_argument("--reflection-minibatch-size", type=int, default=3)
     parser.add_argument("--n-concurrent", type=int, default=1)
@@ -213,16 +240,31 @@ def build_run_contract(
         raise ValueError("--reflection-minibatch-size must be positive")
     if args.max_metric_calls is not None and args.max_metric_calls <= 0:
         raise ValueError("--max-metric-calls must be positive")
+    if args.budget not in CONDITIONS_BY_BUDGET or condition not in CONDITIONS_BY_BUDGET[args.budget]:
+        raise ValueError("The double budget supports only vanilla GEPA and full FOREST (react_v2)")
+    training_epochs = TRAINING_EPOCHS_BY_BUDGET[args.budget]
     iterations_per_epoch = (len(trainset) + args.reflection_minibatch_size - 1) // args.reflection_minibatch_size
     sampled_tasks_per_epoch = iterations_per_epoch * args.reflection_minibatch_size
     candidate, _ = seed_candidate(args.student_model, resolved_family, args.experiment)
-    operated = condition == "react_v2"
+    operated = condition in FOREST_CONDITIONS
     reflection_level = args.reflection_level if operated else 0
+    controller_selection = (
+        "uniform_random"
+        if condition == "react_v2_random"
+        else "verbalized"
+        if operated or condition == "action"
+        else None
+    )
+    controller_policy = (
+        UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT if condition == "react_v2_random" else CONTROLLER_POLICY_CONTRACT
+    )
     return {
-        "schema_version": 10,
+        "schema_version": 11,
         "experiment": manifest.experiment,
         "optimization_target": "agent_text",
         "condition": condition,
+        "budget": args.budget,
+        "controller_selection": controller_selection,
         "component_kinds": manifest.component_kinds,
         "module_selector": "all",
         "document_bundle_version": BUNDLE_VERSION,
@@ -239,10 +281,10 @@ def build_run_contract(
         "optimization_budget": {
             "unit": "training_epochs",
             "reference": "https://arxiv.org/html/2608.23041v1#A2",
-            "training_epochs": TRAINING_EPOCHS,
+            "training_epochs": training_epochs,
             "iterations_per_epoch": iterations_per_epoch,
-            "max_iterations": TRAINING_EPOCHS * iterations_per_epoch,
-            "sampled_training_tasks": TRAINING_EPOCHS * sampled_tasks_per_epoch,
+            "max_iterations": training_epochs * iterations_per_epoch,
+            "sampled_training_tasks": training_epochs * sampled_tasks_per_epoch,
             "padding_tasks_per_epoch": sampled_tasks_per_epoch - len(trainset),
             "batch_sampler": "epoch_shuffled",
             "sampling_strategy": "single_mutation",
@@ -259,8 +301,15 @@ def build_run_contract(
         "reflection_level": reflection_level,
         "reflection_minibatch_size": args.reflection_minibatch_size,
         "max_proposer_model_calls": 8 if operated else None,
-        "semantic_action_space": deepcopy(SEMANTIC_ACTION_CATALOGS) if reflection_level == 2 else None,
-        "semantic_controller_policy": deepcopy(CONTROLLER_POLICY_CONTRACT) if reflection_level == 2 else None,
+        "semantic_action_space": (
+            deepcopy(SEMANTIC_ACTION_CATALOGS) if reflection_level == 2 or condition == "action" else None
+        ),
+        "semantic_controller_policy": deepcopy(controller_policy) if reflection_level == 2 else None,
+        "stateless_selector_policy": (
+            {**stateless_selector_policy_contract("verbalized"), "component_schedule": "per_component"}
+            if condition == "action"
+            else None
+        ),
         "seed": args.seed,
         "student_api_base": args.student_api_base,
         "student_decoding": experiment_decoding(args.student_model),
@@ -297,7 +346,7 @@ def main() -> None:
         raise ValueError("train and validation selections must both be non-empty")
 
     candidate, resolved_family = seed_candidate(args.student_model, args.template_family, args.experiment)
-    condition = "react_v2" if args.condition == "action" else args.condition
+    condition = args.condition
     try:
         contract = build_run_contract(args, manifest, trainset, valset, condition, resolved_family)
     except ValueError as exc:
@@ -336,7 +385,27 @@ def main() -> None:
     if args.proposer_api_base is not None:
         reflection_lm_kwargs["api_base"] = args.proposer_api_base
 
-    reflection_level = 0 if condition == "vanilla" else args.reflection_level
+    reflection_strategy = None
+    if condition in FOREST_CONDITIONS:
+        reflection_strategy, _ = build_react_v2_strategy(
+            reflection_model=args.proposer_model,
+            task_model=args.student_model,
+            lm_kwargs=reflection_lm_kwargs,
+            level=args.reflection_level,
+            edit_tool_set=args.edit_tool_set,
+            template_family=resolved_family,
+            component_kinds=manifest.component_kinds,
+            controller_selection=contract["controller_selection"],
+            rng=random.Random(args.seed),
+        )
+    elif condition == "action":
+        reflection_strategy = ComponentActionReflectionLM(
+            lm=LM(args.proposer_model, **reflection_lm_kwargs),
+            selector_lm=LM(args.proposer_model, **reflection_lm_kwargs),
+            component_kinds=manifest.component_kinds,
+            template_family=resolved_family,
+            rng=random.Random(args.seed),
+        )
     optimize(
         seed_candidate=candidate,
         trainset=trainset,
@@ -344,6 +413,7 @@ def main() -> None:
         adapter=adapter,
         reflection_lm=args.proposer_model,
         reflection_lm_kwargs=reflection_lm_kwargs,
+        reflection_strategy=reflection_strategy,
         max_metric_calls=args.max_metric_calls,
         stop_callbacks=MaxCandidateProposalsStopper(contract["optimization_budget"]["max_iterations"]),
         batch_sampler="epoch_shuffled",
@@ -353,7 +423,7 @@ def main() -> None:
         use_merge=False,
         run_dir=str(args.run_dir),
         seed=args.seed,
-        reflection_level=reflection_level,
+        reflection_level=contract["reflection_level"],
         edit_tool_set=args.edit_tool_set,
         component_kinds=manifest.component_kinds,
         template_family=resolved_family,
