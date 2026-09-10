@@ -72,8 +72,11 @@ runtime observations, and the official verifier stay fixed. Rewriting the text
 that describes a tool does not change its implementation. Task and terminal-state
 fields are appended separately, and candidate braces remain literal. Both
 benchmarks retain their official task resource limits and agent timeouts, without
-local overrides. An optional `--harbor-process-timeout-sec` is a whole-job
-operational limit recorded in the run contract.
+local overrides. For each benchmark, all six configurations use the same task
+limits, including the standard and double optimization budgets. The double
+budget increases optimization opportunities while keeping per-task limits fixed.
+An optional `--harbor-process-timeout-sec` is a whole-job operational limit
+recorded in the run contract.
 
 #### Textual feedback for reflection
 
