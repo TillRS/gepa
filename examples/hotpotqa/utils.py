@@ -20,8 +20,8 @@ except ImportError:
     dspy = None  # type: ignore[assignment]
 
 from examples.common.experiment_models import (
+    DEEPSEEK_V4_FLASH_MODEL,
     EXPERIMENT_NUM_RETRIES,
-    GLM_5_3_FLASH_MODEL,
     QWEN3_8_27B_MODEL,
     experiment_decoding,
     experiment_request_overrides,
@@ -47,6 +47,7 @@ HOTPOTQA_SCIENTIFIC_REQUEST_SEED = 0
 
 
 if dspy is not None:
+
     class _HotPotQAChatAdapter(dspy.ChatAdapter):
         """Parse artifact fields after repairing one observed marker near-miss."""
 
@@ -71,9 +72,7 @@ if dspy is not None:
                     completion remains invalid after the narrow marker repair.
             """
             if completion is None:
-                raise ValueError(
-                    "Failed to parse response as per signature: provider returned no completion text."
-                )
+                raise ValueError("Failed to parse response as per signature: provider returned no completion text.")
             try:
                 return super().parse(signature, completion)
             except ValueError:
@@ -169,7 +168,7 @@ def resolve_hotpotqa_lm_kwargs(
         **experiment_decoding(model),
         **experiment_request_overrides(model),
     }
-    if model in {QWEN3_8_27B_MODEL, GLM_5_3_FLASH_MODEL}:
+    if model in {QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL}:
         kwargs["seed"] = HOTPOTQA_SCIENTIFIC_REQUEST_SEED
     if api_base is not None:
         kwargs["api_base"] = api_base
