@@ -6,7 +6,8 @@ The held-out test split is not evaluated automatically.
 * ``react_v2`` uses the Controller -> Manifestor -> ReAct V2 workflow.
 
 Within each model arm, all conditions use the same official Harbor rewards,
-manifest, student/proposer model, task splits, and metric-call budget.
+manifest, student/proposer model, task splits, document bundle, and metric-call
+budget. Both methods can revise every prompt and skill in the bundle.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import argparse
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from examples.common.experiment_models import (
     EXPERIMENT_NUM_RETRIES,
@@ -24,7 +25,7 @@ from examples.common.experiment_models import (
     experiment_decoding,
     validate_experiment_model_pair,
 )
-from examples.common.react_v2 import resolve_template_family, structured_prompt
+from examples.common.react_v2 import resolve_template_family
 from gepa import optimize
 from gepa.adapters.terminal_bench_adapter import (
     HarborCLI,
@@ -33,31 +34,33 @@ from gepa.adapters.terminal_bench_adapter import (
     TerminalBenchTask,
     load_terminalbench_manifest,
 )
+from gepa.adapters.terminal_bench_adapter.documents import (
+    BUNDLE_VERSION,
+    COMPONENT_KINDS,
+    document_digest,
+    seed_documents,
+)
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = Path(__file__).with_name("terminalbench-v3-manifest.json")
 
-SEED_INSTRUCTION = """Complete the assigned command-line task in the provided Linux tmux session.
-
-Each turn includes the task description and current terminal screen. Use only the fixed tmux interface. Inspect the environment before editing, run targeted commands, check their results, and handle errors or incomplete output before continuing.
-
-Stop when the verifier's required artifact or behavior is present. Format replies with the appended Terminus JSON command contract."""
 RUN_CONTRACT_FILENAME = "terminalbench-run-contract.json"
+TemplateFamily = Literal["generic", "openai", "anthropic", "google", "alibaba"]
 
 
-def seed_candidate(student_model: str, template_family: str) -> tuple[dict[str, str], str]:
-    """Build the Terminus user-message target with the selected provider template.
+def seed_candidate(student_model: str, template_family: str) -> tuple[dict[str, str], TemplateFamily]:
+    """Build the complete agent document bundle with the selected provider template.
 
     Args:
         student_model: Task model used for automatic provider inference.
         template_family: Explicit provider family or ``"auto"``.
 
     Returns:
-        Single instruction component and its resolved template family.
+        All prompt and skill components and its resolved template family.
     """
-    resolved_family = resolve_template_family(template_family, student_model)
-    return {"instruction_prompt": structured_prompt(SEED_INSTRUCTION, resolved_family, "user_prompt")}, resolved_family
+    resolved_family = cast(TemplateFamily, resolve_template_family(template_family, student_model))
+    return seed_documents(resolved_family), resolved_family
 
 
 def ensure_run_contract(run_dir: Path, contract: dict[str, Any]) -> Path:
@@ -177,9 +180,11 @@ def build_run_contract(
     operated = condition == "react_v2"
     reflection_level = args.reflection_level if operated else 0
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "condition": condition,
-        "component_kinds": {"instruction_prompt": "user_prompt"},
+        "component_kinds": dict(COMPONENT_KINDS),
+        "document_bundle_version": BUNDLE_VERSION,
+        "seed_document_digest": document_digest(seed_documents(resolved_family)),
         "dataset": manifest.dataset,
         "edit_tool_set": args.edit_tool_set,
         "harbor_process_timeout_sec": args.harbor_process_timeout_sec,
@@ -194,7 +199,7 @@ def build_run_contract(
         "reflection_level": reflection_level,
         "reflection_minibatch_size": args.reflection_minibatch_size,
         "max_proposer_model_calls": 8 if operated else None,
-        "semantic_action_space": deepcopy(SEMANTIC_ACTION_CATALOGS["prompt"]) if reflection_level == 2 else None,
+        "semantic_action_space": deepcopy(SEMANTIC_ACTION_CATALOGS) if reflection_level == 2 else None,
         "semantic_controller_policy": deepcopy(CONTROLLER_POLICY_CONTRACT) if reflection_level == 2 else None,
         "seed": args.seed,
         "student_api_base": args.student_api_base,
@@ -272,7 +277,7 @@ def main() -> None:
         seed=args.seed,
         reflection_level=reflection_level,
         edit_tool_set=args.edit_tool_set,
-        component_kinds={"instruction_prompt": "user_prompt"},
+        component_kinds=dict(COMPONENT_KINDS),
         template_family=resolved_family,
         template_model=args.student_model,
     )

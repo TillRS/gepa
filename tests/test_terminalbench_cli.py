@@ -17,6 +17,7 @@ from examples.common.experiment_models import (
 )
 from examples.terminalbench.main import build_parser, build_run_contract, ensure_run_contract, seed_candidate
 from gepa.adapters.terminal_bench_adapter import load_terminalbench_manifest
+from gepa.adapters.terminal_bench_adapter.documents import COMPONENT_KINDS
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
 
@@ -157,8 +158,8 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 4
-    assert contract["component_kinds"] == {"instruction_prompt": "user_prompt"}
+    assert contract["schema_version"] == 5
+    assert contract["component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
     assert contract["student_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
@@ -166,7 +167,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     assert contract["proposer_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
     assert contract["student_num_retries"] == EXPERIMENT_NUM_RETRIES
     assert contract["proposer_num_retries"] == EXPERIMENT_NUM_RETRIES
-    assert contract["semantic_action_space"] == SEMANTIC_ACTION_CATALOGS["prompt"]
+    assert contract["semantic_action_space"] == SEMANTIC_ACTION_CATALOGS
     assert contract["semantic_controller_policy"] == CONTROLLER_POLICY_CONTRACT
 
 
@@ -243,5 +244,5 @@ def test_legacy_state_without_contract_is_not_resumed(tmp_path: Path) -> None:
     """
     (tmp_path / "gepa_state.bin").write_bytes(b"old-state")
 
-    with pytest.raises(ValueError, match="no terminalbench-run-contract.json"):
+    with pytest.raises(ValueError, match=r"no terminalbench-run-contract\.json"):
         ensure_run_contract(tmp_path, {"condition": "react_v2"})

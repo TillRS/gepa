@@ -21,6 +21,7 @@ from gepa.adapters.terminal_bench_adapter import (
     load_terminalbench_manifest,
     render_terminus_prompt,
 )
+from gepa.adapters.terminal_bench_adapter.documents import COMMAND_CONTRACT, COMPONENT_KINDS, seed_documents
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "examples" / "terminalbench" / "terminalbench-v3-manifest.json"
@@ -69,6 +70,18 @@ Iterate on command output.
 
 ## Output Format
 Use the fixed Terminus JSON format."""
+
+
+def _candidate(**documents: str) -> dict[str, str]:
+    """Build a complete bundle with selected test documents replaced.
+
+    Args:
+        **documents: Component values overridden by the test.
+
+    Returns:
+        Complete generic document bundle.
+    """
+    return {**seed_documents("generic"), **documents}
 
 
 def test_terminus_adapter_alias_preserves_public_api() -> None:
@@ -191,6 +204,7 @@ def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: P
     config = runner.build_job_config(
         task_ids,
         prompt_path=tmp_path / "prompt.txt",
+        bundle_path=tmp_path / "document-bundle.json",
         jobs_dir=tmp_path / "jobs",
         job_name="candidate-abc",
     )
@@ -207,7 +221,8 @@ def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: P
     assert agent["import_path"] == "examples.terminalbench.terminus_agent:PromptedTerminus"
     assert agent["model_name"] == _QWEN3_8_27B_MODEL
     assert agent["skills"] == []
-    assert agent["kwargs"]["disable_skills"] is True
+    assert agent["kwargs"]["document_bundle_path"] == str(tmp_path / "document-bundle.json")
+    assert "disable_skills" not in agent["kwargs"]
     assert agent["kwargs"]["llm_kwargs"] == _QWEN3_8_27B_LM_KWARGS
     assert agent["kwargs"]["model_info"] == _QWEN3_8_27B_MODEL_INFO
     assert "max_turns" not in agent["kwargs"]
@@ -225,7 +240,7 @@ def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: P
 
 def test_rendered_prompt_preserves_candidate_braces_and_runtime_fields() -> None:
     """Escape candidate braces without breaking Harbor's task/state formatting."""
-    rendered = render_terminus_prompt("Use {literal} syntax.")
+    rendered = render_terminus_prompt(_candidate(instruction_prompt="Use {literal} syntax."))
     formatted = rendered.format(instruction="TASK", terminal_state="STATE")
 
     assert "Use {literal} syntax." in formatted
@@ -235,8 +250,8 @@ def test_rendered_prompt_preserves_candidate_braces_and_runtime_fields() -> None
 
 def test_empty_candidate_renders_only_the_fixed_terminus_contract() -> None:
     """Keep an all-empty user template out of the task text while retaining the adapter contract."""
-    rendered = render_terminus_prompt("")
-    assert rendered == terminalbench_module.TERMINUS_JSON_CONTRACT
+    rendered = render_terminus_prompt(dict.fromkeys(COMPONENT_KINDS, ""))
+    assert rendered == COMMAND_CONTRACT
     assert "Task Description:\nTASK" in rendered.format(instruction="TASK", terminal_state="STATE")
 
 
@@ -360,7 +375,7 @@ def test_runner_isolates_candidates_and_adapter_maps_complete_evidence_by_task_i
     monkeypatch.setattr(terminalbench_module.subprocess, "run", fake_run)
     batch = [manifest.tasks("train")[1], manifest.tasks("train")[0]]
     adapter = TerminalBenchAdapter(manifest, runner)
-    evaluated = adapter.evaluate(batch, {"instruction_prompt": SEED_PROMPT}, capture_traces=True)
+    evaluated = adapter.evaluate(batch, _candidate(instruction_prompt=SEED_PROMPT), capture_traces=True)
 
     assert [output["task_id"] for output in evaluated.outputs] == [task.task_id for task in batch]
     assert evaluated.scores == [1.0, 0.0]
@@ -373,14 +388,18 @@ def test_runner_isolates_candidates_and_adapter_maps_complete_evidence_by_task_i
     assert all(not trajectory["errors"] for trajectory in evaluated.trajectories)
 
     reflective = adapter.make_reflective_dataset(
-        {"instruction_prompt": SEED_PROMPT},
+        _candidate(instruction_prompt=SEED_PROMPT),
         evaluated,
         ["instruction_prompt"],
     )
     assert [row["Inputs"]["task_id"] for row in reflective["instruction_prompt"]] == [task.task_id for task in batch]
     assert reflective["instruction_prompt"][0]["Generated Outputs"]["atif_trajectories"]
+    for component in COMPONENT_KINDS:
+        rows = adapter.make_reflective_dataset(_candidate(instruction_prompt=SEED_PROMPT), evaluated, [component])
+        assert rows[component][0]["Document"]["kind"] == COMPONENT_KINDS[component]
+        assert rows[component][0]["Generated Outputs"]["atif_trajectories"]
 
-    runner.run([batch[0].task_id], SEED_PROMPT)
+    runner.run([batch[0].task_id], _candidate(instruction_prompt=SEED_PROMPT))
     assert len(captured_configs) == 2
     assert captured_configs[0] != captured_configs[1]
     first_config = json.loads(captured_configs[0].read_text())
@@ -457,7 +476,7 @@ def test_runner_rejects_incomplete_or_failed_harbor_evidence(
     adapter = TerminalBenchAdapter(manifest, runner)
 
     with pytest.raises(HarborExecutionError, match=match):
-        adapter.evaluate([task], {"instruction_prompt": SEED_PROMPT}, capture_traces=True)
+        adapter.evaluate([task], _candidate(instruction_prompt=SEED_PROMPT), capture_traces=True)
 
 
 def test_runner_preserves_valid_verified_zero_reward(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -493,7 +512,7 @@ def test_runner_preserves_valid_verified_zero_reward(tmp_path: Path, monkeypatch
     monkeypatch.setattr(terminalbench_module.subprocess, "run", fake_run)
     evaluated = TerminalBenchAdapter(manifest, runner).evaluate(
         [task],
-        {"instruction_prompt": SEED_PROMPT},
+        _candidate(instruction_prompt=SEED_PROMPT),
         capture_traces=True,
     )
 
@@ -591,7 +610,7 @@ def test_runner_rejects_malformed_or_structurally_invalid_atif(
     with pytest.raises(HarborExecutionError, match=match):
         TerminalBenchAdapter(manifest, runner).evaluate(
             [task],
-            {"instruction_prompt": SEED_PROMPT},
+            _candidate(instruction_prompt=SEED_PROMPT),
             capture_traces=True,
         )
 
@@ -633,7 +652,7 @@ def test_runner_wraps_atif_file_read_errors(tmp_path: Path, monkeypatch: pytest.
     with pytest.raises(HarborExecutionError, match="unreadable or invalid JSON"):
         TerminalBenchAdapter(manifest, runner).evaluate(
             [task],
-            {"instruction_prompt": SEED_PROMPT},
+            _candidate(instruction_prompt=SEED_PROMPT),
             capture_traces=True,
         )
 
@@ -661,7 +680,7 @@ def test_real_harbor_terminalbench_single_task_smoke(tmp_path: Path) -> None:
     adapter = TerminalBenchAdapter(manifest, runner)
     evaluated = adapter.evaluate(
         manifest.tasks("val", 1),
-        {"instruction_prompt": SEED_PROMPT},
+        _candidate(instruction_prompt=SEED_PROMPT),
         capture_traces=True,
     )
 

@@ -18,6 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict
 
+from gepa.adapters.terminal_bench_adapter.documents import (
+    COMPONENT_KINDS,
+    document_digest,
+    render_instruction,
+    validate_documents,
+    write_document_bundle,
+)
 from gepa.core.adapter import EvaluationBatch, GEPAAdapter
 
 PINNED_HARBOR_VERSION = "0.22.0"
@@ -30,68 +37,9 @@ PINNED_SOURCE_TAG = "v3.0.0"
 PINNED_SOURCE_COMMIT = "2b0442c3c583b710ca8da14c8e601b99f2f1f244"
 PINNED_TASK_COUNT = 74
 PROMPTED_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:PromptedTerminus"
-INSTRUCTION_COMPONENT = "instruction_prompt"
 SPLIT_NAMES = ("train", "val", "test")
 SPLIT_WEIGHTS = {"train": 0.40, "val": 0.30, "test": 0.30}
 SUPPORTED_ATIF_SCHEMA_VERSIONS = {f"ATIF-v1.{minor}" for minor in range(8)}
-
-# This is the Terminus 2 JSON interaction contract from Harbor v0.22.0. GEPA
-# evolves only the instruction prefix placed above it. The braces remain
-# doubled because Harbor applies ``str.format`` with the task instruction and
-# current tmux state at runtime.
-TERMINUS_JSON_CONTRACT = r"""Format your response as JSON with the following structure:
-
-{{
-  "analysis": "Analyze the current state based on the terminal output provided. What do you see? What has been accomplished? What still needs to be done?",
-  "plan": "Describe your plan for the next steps. What commands will you run and why? Be specific about what you expect each command to accomplish.",
-  "commands": [
-    {{
-      "keystrokes": "ls -la\n",
-      "duration": 0.1
-    }},
-    {{
-      "keystrokes": "cd project\n",
-      "duration": 0.1
-    }}
-  ],
-  "task_complete": true
-}}
-
-Required fields:
-- "analysis": Your analysis of the current situation
-- "plan": Your plan for the next steps
-- "commands": Array of command objects to execute
-
-Optional fields:
-- "task_complete": Boolean indicating if the task is complete (defaults to false if not present)
-
-Command object structure:
-- "keystrokes": String containing the exact keystrokes to send to the terminal (required)
-- "duration": Number of seconds to wait for the command to complete before the next command will be executed (defaults to 1.0 if not present)
-
-IMPORTANT: The text inside "keystrokes" will be used completely verbatim as keystrokes. Write commands exactly as you want them sent to the terminal:
-- You must end every command with a newline (\n) or it will not execute.
-- For special key sequences, use tmux-style escape sequences:
-  - C-c for Ctrl+C
-  - C-d for Ctrl+D
-
-The "duration" attribute specifies the number of seconds to wait for the command to complete (default: 1.0) before the next command will be executed. On immediate tasks (e.g., cd, ls, echo, cat) set a duration of 0.1 seconds. On commands (e.g., gcc, find, rustc) set a duration of 1.0 seconds. On slow commands (e.g., make, python3 [long running script], wget [file]) set an appropriate duration as you determine necessary.
-
-It is better to set a smaller duration than a longer duration. It is always possible to wait again if the prior output has not finished, by running {{"keystrokes": "", "duration": 10.0}} on subsequent requests to wait longer. Never wait longer than 60 seconds; prefer to poll to see intermediate result status.
-
-Important notes:
-- Each command's keystrokes are sent exactly as written to the terminal
-- Do not include extra whitespace before or after the keystrokes unless it is part of the intended command
-- Extra text before or after the JSON will generate warnings but be tolerated
-- The JSON must be valid; use proper escaping for quotes and special characters within strings
-- The commands array can be empty if you want to wait without taking action
-
-Task Description:
-{instruction}
-
-Current terminal state:
-{terminal_state}
-"""
 
 
 class TerminalBenchOutput(TypedDict):
@@ -112,7 +60,7 @@ class TerminalBenchTrajectory(TypedDict):
     """Complete Harbor evidence used to construct reflection records."""
 
     task_id: str
-    candidate_prompt: str
+    candidate_documents: dict[str, str]
     reward: float
     rewards: dict[str, float]
     errors: list[str]
@@ -331,10 +279,7 @@ def derive_terminalbench_splits(task_ids: Sequence[str], seed: str) -> dict[str,
     quotas = {name: len(ordered) * SPLIT_WEIGHTS[name] for name in SPLIT_NAMES}
     counts = {name: int(quotas[name]) for name in SPLIT_NAMES}
     unassigned = len(ordered) - sum(counts.values())
-    remainder_order = [
-        name
-        for _, name in sorted((-(quotas[name] - counts[name]), name) for name in SPLIT_NAMES)
-    ]
+    remainder_order = [name for _, name in sorted((-(quotas[name] - counts[name]), name) for name in SPLIT_NAMES)]
     for name in remainder_order[:unassigned]:
         counts[name] += 1
 
@@ -430,29 +375,24 @@ def load_terminalbench_manifest(path: str | Path) -> TerminalBenchManifest:
     )
 
 
-def render_terminus_prompt(candidate_prompt: str) -> str:
-    """Combine an evolvable instruction prefix with the fixed Terminus contract.
+def render_terminus_prompt(candidate: Mapping[str, str]) -> str:
+    """Render every main-agent document above the fixed JSON command API.
 
     Args:
-        candidate_prompt: GEPA's current ``instruction_prompt`` component.
+        candidate: Complete candidate bundle.
 
     Returns:
-        A complete Terminus template ready for Harbor's later ``str.format``.
-        When ``candidate_prompt`` is blank, only the fixed output contract
-        remains.
+        Terminus template with task and terminal-state placeholders.
     """
-    if not candidate_prompt.strip():
-        return TERMINUS_JSON_CONTRACT
-    escaped_candidate = candidate_prompt.replace("{", "{{").replace("}", "}}")
-    return f"{escaped_candidate.rstrip()}\n\n{TERMINUS_JSON_CONTRACT}"
+    return render_instruction(candidate)
 
 
 class HarborCLI:
-    """Create isolated candidate jobs and execute them with pinned Harbor.
+    """Create isolated document-bundle jobs and execute them with pinned Harbor.
 
     Args:
         student_model: Model used by Terminus to solve benchmark tasks.
-        work_dir: Root for immutable candidate prompt/config/job artifacts.
+        work_dir: Root for immutable document-bundle/config/job artifacts.
         agent_python_path: Directory added to ``PYTHONPATH`` so Harbor can load
             the checked-in ``PromptedTerminus`` wrapper.
         n_concurrent: Maximum trials Harbor may run concurrently.
@@ -460,7 +400,7 @@ class HarborCLI:
         docker_executable: Docker CLI name or path used for readiness checks.
         student_api_base: Optional LiteLLM API base for the student model.
         student_agent_kwargs: Extra Terminus kwargs that do not alter the fixed
-            prompt, tmux tool, skill policy, or unbounded-turn default.
+            documents, tmux tool, skill loading, or unbounded-turn default.
         process_timeout_sec: Optional whole-job subprocess timeout. ``None``
             leaves long-horizon completion governed by each pinned task's
             Harbor agent/verifier timeouts.
@@ -512,6 +452,7 @@ class HarborCLI:
             "mcp_servers",
             "parser_name",
             "prompt_template_path",
+            "document_bundle_path",
             "record_terminal_session",
             "skills_dir",
             "store_all_messages",
@@ -599,6 +540,7 @@ class HarborCLI:
         task_ids: Sequence[str],
         *,
         prompt_path: Path,
+        bundle_path: Path,
         jobs_dir: Path,
         job_name: str,
     ) -> dict[str, Any]:
@@ -607,6 +549,7 @@ class HarborCLI:
         Args:
             task_ids: Fully qualified pinned task IDs.
             prompt_path: Candidate-specific rendered Terminus template.
+            bundle_path: Complete candidate prompts and skill metadata.
             jobs_dir: Candidate-specific Harbor jobs directory.
             job_name: Unique job name inside ``jobs_dir``.
 
@@ -614,8 +557,8 @@ class HarborCLI:
             JSON-serializable Harbor v0.22.0 job configuration.
         """
         agent_kwargs: dict[str, Any] = {
-            "disable_skills": True,
             "prompt_template_path": str(prompt_path),
+            "document_bundle_path": str(bundle_path),
             "record_terminal_session": True,
             "store_all_messages": True,
             "trajectory_config": {"linear_history": False},
@@ -648,12 +591,12 @@ class HarborCLI:
             ],
         }
 
-    def run(self, task_ids: Sequence[str], candidate_prompt: str) -> HarborEvaluation:
+    def run(self, task_ids: Sequence[str], candidate: Mapping[str, str]) -> HarborEvaluation:
         """Run one isolated Harbor job and parse every task by exact ID.
 
         Args:
             task_ids: Unique fully qualified task IDs in desired output order.
-            candidate_prompt: Current GEPA instruction prompt.
+            candidate: Complete GEPA document bundle.
 
         Returns:
             Evaluation metadata and a task-ID keyed trial map.
@@ -672,19 +615,21 @@ class HarborCLI:
             raise ValueError("task_ids must not be empty")
         if len(set(task_ids)) != len(task_ids):
             raise ValueError("task_ids must be unique within one Harbor job")
+        validate_documents(candidate)
         harbor, _docker = self.check_requirements()
 
-        candidate_digest = hashlib.sha256(candidate_prompt.encode()).hexdigest()
+        candidate_digest = document_digest(candidate)
         evaluation_id = f"{candidate_digest[:12]}-{uuid.uuid4().hex}"
         evaluation_dir = self.work_dir / "evaluations" / evaluation_id
         evaluation_dir.mkdir(parents=True, exist_ok=False)
         prompt_path = evaluation_dir / "terminus-prompt.txt"
-        prompt_path.write_text(render_terminus_prompt(candidate_prompt))
+        bundle_path = write_document_bundle(evaluation_dir, candidate)
         jobs_dir = evaluation_dir / "jobs"
         job_name = f"candidate-{candidate_digest[:12]}"
         config = self.build_job_config(
             task_ids,
             prompt_path=prompt_path,
+            bundle_path=bundle_path,
             jobs_dir=jobs_dir,
             job_name=job_name,
         )
@@ -808,7 +753,7 @@ class HarborCLI:
 
 
 class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, TerminalBenchOutput]):
-    """Evaluate one prompt component with Terminus and official Harbor rewards.
+    """Evaluate an agent document bundle with Terminus and official Harbor rewards.
 
     Args:
         manifest: Checked-in, validated v3 manifest.
@@ -836,7 +781,7 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
 
         Args:
             batch: Pinned task records.
-            candidate: Exactly one ``instruction_prompt`` component.
+            candidate: Complete reusable prompts and skills.
             capture_traces: Whether to return full ATIF/result evidence to GEPA.
 
         Returns:
@@ -846,13 +791,12 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
             ValueError: Candidate components or task IDs violate the harness
                 contract.
         """
-        if set(candidate) != {INSTRUCTION_COMPONENT}:
-            raise ValueError(f"TerminalBenchAdapter optimizes only {INSTRUCTION_COMPONENT!r}; got {sorted(candidate)}")
+        validate_documents(candidate)
         task_ids = [task.task_id for task in batch]
         unknown = sorted(set(task_ids).difference(self.manifest.task_refs))
         if unknown:
             raise ValueError(f"tasks are not in pinned {PINNED_DATASET_REFERENCE}: {unknown}")
-        evaluation = self.harbor.run(task_ids, candidate[INSTRUCTION_COMPONENT])
+        evaluation = self.harbor.run(task_ids, candidate)
 
         outputs: list[TerminalBenchOutput] = []
         scores: list[float] = []
@@ -877,7 +821,7 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
                 trajectories.append(
                     {
                         "task_id": task_id,
-                        "candidate_prompt": candidate[INSTRUCTION_COMPONENT],
+                        "candidate_documents": dict(candidate),
                         "reward": trial.reward,
                         "rewards": trial.rewards,
                         "errors": errors,
@@ -911,19 +855,15 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
             components_to_update: Components requested by GEPA.
 
         Returns:
-            Reflection rows for the single optimized instruction component.
+            Execution evidence for each selected document component.
 
         Raises:
-            ValueError: A different component is requested or the candidate
-                does not contain exactly the optimized instruction component.
+            ValueError: A component is unknown or the candidate is incomplete.
             RuntimeError: The evaluation omitted trajectories.
         """
-        if components_to_update != [INSTRUCTION_COMPONENT]:
-            raise ValueError(
-                f"TerminalBenchAdapter can update only [{INSTRUCTION_COMPONENT!r}]; got {components_to_update!r}"
-            )
-        if set(candidate) != {INSTRUCTION_COMPONENT}:
-            raise ValueError(f"TerminalBenchAdapter optimizes only {INSTRUCTION_COMPONENT!r}; got {sorted(candidate)}")
+        if not components_to_update or not set(components_to_update).issubset(COMPONENT_KINDS):
+            raise ValueError(f"Unknown Terminal Bench document selection: {components_to_update}")
+        validate_documents(candidate)
         if eval_batch.trajectories is None:
             raise RuntimeError("Terminal-Bench reflection requires capture_traces=True")
 
@@ -954,7 +894,16 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
                     ),
                 }
             )
-        return {INSTRUCTION_COMPONENT: rows}
+        return {
+            component: [
+                {
+                    **row,
+                    "Document": {"name": component, "kind": COMPONENT_KINDS[component], "text": candidate[component]},
+                }
+                for row in rows
+            ]
+            for component in components_to_update
+        }
 
 
 TerminusAdapter = TerminalBenchAdapter

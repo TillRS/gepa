@@ -1,0 +1,123 @@
+"""Verify candidate identity, runtime field preservation, and optimizer parity."""
+
+import json
+import sys
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from examples.terminalbench import main as cli
+from gepa.adapters.terminal_bench_adapter.documents import (
+    COMPONENT_KINDS,
+    CONTEXT_FIELDS,
+    document_digest,
+    seed_documents,
+    validate_documents,
+    write_document_bundle,
+)
+
+
+@pytest.mark.parametrize("component", COMPONENT_KINDS)
+def test_every_document_changes_candidate_identity(component: str) -> None:
+    """Make skill and auxiliary-prompt edits distinct from the parent.
+
+    Args:
+        component: Each component exposed to both optimizers.
+    """
+    parent = seed_documents("generic")
+    child = {**parent, component: parent[component] + "\nChanged guidance."}
+    assert document_digest(child) != document_digest(parent)
+    assert document_digest(dict(reversed(list(parent.items())))) == document_digest(parent)
+
+
+def test_all_documents_are_materialized_without_evaluating_candidate_braces(tmp_path: Path) -> None:
+    """Preserve literal text, including Hebrew, while inserting real runtime inputs.
+
+    Args:
+        tmp_path: Isolated evaluation directory.
+    """
+    candidate = {name: f"{name}: שלום {{literal}} {{instruction}}" for name in COMPONENT_KINDS}
+    path = write_document_bundle(tmp_path, candidate)
+    bundle = json.loads(path.read_text())
+    fields = {
+        key: f"OBSERVED_{key}"
+        for key in (
+            "instruction",
+            "original_instruction",
+            "terminal_state",
+            "command",
+            "timeout_sec",
+            "summary",
+            "questions",
+            "answers",
+            "limit_str",
+            "warnings_text",
+        )
+    }
+    initial = (tmp_path / "terminus-prompt.txt").read_text().format(**fields)
+    assert "OBSERVED_instruction" in initial
+    assert "OBSERVED_terminal_state" in initial
+    for name in ("instruction_prompt", "terminal_tool", "skill_discovery"):
+        assert candidate[name] in initial
+    for name in CONTEXT_FIELDS:
+        assert candidate[name] in bundle["prompts"][name].format(**fields)
+    for skill in bundle["skills"]:
+        assert candidate[skill["component"]] in (tmp_path / "skills" / skill["component"] / "SKILL.md").read_text()
+    assert bundle["documents"] == candidate
+
+
+def test_prompt_only_candidates_cannot_resume_as_complete_bundles() -> None:
+    """Reject the old candidate shape before it can reach Harbor."""
+    with pytest.raises(ValueError, match="complete document bundle"):
+        validate_documents({"instruction_prompt": "old experiment"})
+
+
+def test_cli_gives_both_methods_the_same_documents_and_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the real CLI wiring without starting model calls or Docker.
+
+    Args:
+        tmp_path: Separate run directories for the two conditions.
+        monkeypatch: Fixture replacing only external execution boundaries.
+    """
+    optimize = Mock()
+    monkeypatch.setattr(cli, "optimize", optimize)
+    monkeypatch.setattr(cli.HarborCLI, "check_requirements", Mock())
+    for condition in ("vanilla", "react_v2"):
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "terminalbench",
+                "--condition",
+                condition,
+                "--max-metric-calls",
+                "50",
+                "--run-dir",
+                str(tmp_path / condition),
+                "--harbor-work-dir",
+                str(tmp_path / "harbor"),
+            ],
+        )
+        cli.main()
+    vanilla, forest = [call.kwargs for call in optimize.call_args_list]
+    for key in (
+        "seed_candidate",
+        "component_kinds",
+        "trainset",
+        "valset",
+        "max_metric_calls",
+        "reflection_lm",
+        "reflection_lm_kwargs",
+        "template_family",
+    ):
+        assert vanilla[key] == forest[key]
+    assert vanilla["reflection_level"] == 0
+    assert forest["reflection_level"] == 2
+    assert vanilla["component_kinds"] == COMPONENT_KINDS
+    assert set(vanilla["seed_candidate"]) == set(COMPONENT_KINDS)
+    old_contract = json.loads((tmp_path / "vanilla" / cli.RUN_CONTRACT_FILENAME).read_text())
+    old_contract["schema_version"] = 4
+    with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+        cli.ensure_run_contract(tmp_path / "vanilla", old_contract)
