@@ -14,10 +14,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from examples.common.experiment_models import (
+    DEEPSEEK_V4_FLASH_MODEL,
+    DEEPSEEK_V4_FLASH_OPENROUTER_MODEL,
+    DEEPSEEK_V4_FLASH_REVISION,
     EXPERIMENT_NUM_RETRIES,
-    GLM_5_3_FLASH_MODEL,
-    GLM_5_3_FLASH_OPENROUTER_MODEL,
-    GLM_5_3_FLASH_REVISION,
     QWEN3_8_27B_MODEL,
     QWEN3_8_27B_OPENROUTER_MODEL,
     QWEN3_8_27B_REVISION,
@@ -84,10 +84,6 @@ from gepa.strategies.proposal_sampling import SingleMutationSampling
 from gepa.strategies.proposal_selection import AllImprovements
 
 LOCAL_API_BASE = "http://127.0.0.1:8000/v1"
-GLM_SGLANG_IMAGE_URI = (
-    "docker://lmsysorg/sglang@"
-    "sha256:0836f0160fa785e424e68d13ef88ddd548f87e6e11ad9f0e4de982e4f9188aaf"
-)
 H200_GPU_RUNTIME = json.dumps(
     {
         "compute_capabilities": ["9.0"] * 8,
@@ -104,10 +100,11 @@ QWEN_SERVE_ARGUMENTS = (
     "auto_tool_choice=true;tool_parser=qwen3_coder;seed=0;batch_invariant=false;"
     "single_sequence_replicas=true"
 )
-GLM_SERVE_ARGUMENTS = (
-    "tp=8;ep=8;context_length=262144;max_running_requests=8;kv_cache_dtype=bfloat16;"
-    "dsa_prefill_backend=tilelang;dsa_decode_backend=tilelang;moe_runner_backend=deep_gemm;"
-    "reasoning_parser=glm45;tool_parser=glm47;speculative_decoding=false;dp_attention=false"
+DEEPSEEK_SERVE_ARGUMENTS = (
+    "tp=8;ep=8;dp=1;api_servers=1;gpu_memory_utilization=0.92;max_model_len=393216;max_num_seqs=8;"
+    "dtype=auto;weight_dtype=fp4_fp8_mixed;kv_cache_dtype=fp8;block_size=256;prefix_caching=false;"
+    "tokenizer_mode=deepseek_v4;reasoning_parser=deepseek_v4;auto_tool_choice=true;tool_parser=deepseek_v4;"
+    "speculative_decoding=false;seed=0;batch_invariant=false;single_sequence_replicas=false"
 )
 COMMON_SCIENTIFIC_RUNTIME = {
     "HOTPOTQA_MODEL_INTEGRITY_SHA256": "c" * 64,
@@ -136,16 +133,18 @@ QWEN_SCIENTIFIC_RUNTIME = {
     "HOTPOTQA_POSIT_ENV_SHA256": "1" * 64,
     "HOTPOTQA_SERVE_ARGUMENTS": QWEN_SERVE_ARGUMENTS,
 }
-GLM_SCIENTIFIC_RUNTIME = {
+DEEPSEEK_SCIENTIFIC_RUNTIME = {
     **COMMON_SCIENTIFIC_RUNTIME,
-    "HOTPOTQA_MODEL_REVISION": GLM_5_3_FLASH_REVISION,
-    "HOTPOTQA_WEIGHT_DTYPE": "fp8",
-    "HOTPOTQA_KV_CACHE_DTYPE": "bfloat16",
-    "HOTPOTQA_SERVING_ENGINE": "sglang",
-    "HOTPOTQA_SGLANG_VERSION": "0.5.9",
-    "HOTPOTQA_SERVING_IMAGE_URI": GLM_SGLANG_IMAGE_URI,
-    "HOTPOTQA_SERVING_IMAGE_SHA256": "3" * 64,
-    "HOTPOTQA_SERVE_ARGUMENTS": GLM_SERVE_ARGUMENTS,
+    "HOTPOTQA_MODEL_REVISION": DEEPSEEK_V4_FLASH_REVISION,
+    "HOTPOTQA_WEIGHT_DTYPE": "fp4_fp8_mixed",
+    "HOTPOTQA_KV_CACHE_DTYPE": "fp8",
+    "HOTPOTQA_SERVING_ENGINE": "vllm",
+    "HOTPOTQA_VLLM_VERSION": "0.25.0",
+    "HOTPOTQA_POSIT_COMMIT": "b" * 40,
+    "HOTPOTQA_POSIT_ENV_SHA256": "1" * 64,
+    "HOTPOTQA_VLLM_BATCH_INVARIANT": "false",
+    "HOTPOTQA_VLLM_SINGLE_SEQUENCE_REPLICAS": "false",
+    "HOTPOTQA_SERVE_ARGUMENTS": DEEPSEEK_SERVE_ARGUMENTS,
 }
 
 
@@ -231,7 +230,7 @@ def test_structured_prompt_populates_only_the_role_specific_task_section(
 
 @pytest.mark.parametrize(
     ("model", "expected_family"),
-    [(QWEN3_8_27B_MODEL, "alibaba"), (GLM_5_3_FLASH_MODEL, "generic")],
+    [(QWEN3_8_27B_MODEL, "alibaba"), (DEEPSEEK_V4_FLASH_MODEL, "generic")],
 )
 def test_experiment_model_pairs_build_without_running_an_experiment(model: str, expected_family: str) -> None:
     """Build each homogeneous model condition without calling its model.
@@ -342,8 +341,8 @@ def _scientific_data_identity() -> dict[str, object]:
     [
         (QWEN3_8_27B_MODEL, QWEN3_8_27B_REVISION),
         (QWEN3_8_27B_OPENROUTER_MODEL, QWEN3_8_27B_REVISION),
-        (GLM_5_3_FLASH_MODEL, GLM_5_3_FLASH_REVISION),
-        (GLM_5_3_FLASH_OPENROUTER_MODEL, GLM_5_3_FLASH_REVISION),
+        (DEEPSEEK_V4_FLASH_MODEL, DEEPSEEK_V4_FLASH_REVISION),
+        (DEEPSEEK_V4_FLASH_OPENROUTER_MODEL, "DeepSeek-V4-Flash-0731"),
     ],
 )
 def test_experiment_models_resolve_to_declared_runtime_identities(model: str, expected_version: str) -> None:
@@ -422,20 +421,20 @@ def test_hotpot_scientific_campaign_contains_only_the_six_approved_cells() -> No
             assert isinstance(config.engine.selection_strategy, AllImprovements)
 
 
-def test_hotpot_scientific_contract_accepts_the_pinned_glm_runtime(monkeypatch) -> None:
-    """Accept GLM only under the exact local SGLang serving contract.
+def test_hotpot_scientific_contract_accepts_the_pinned_deepseek_runtime(monkeypatch) -> None:
+    """Accept DeepSeek only under the exact local vLLM serving contract.
 
     Args:
         monkeypatch: Pytest fixture used to install recorded runtime metadata.
     """
-    for name, value in GLM_SCIENTIFIC_RUNTIME.items():
+    for name, value in DEEPSEEK_SCIENTIFIC_RUNTIME.items():
         monkeypatch.setenv(name, value)
     args = _hotpot_args(
         condition="react_v2",
         enforce_scientific_contract=True,
         max_metric_calls=13_742,
-        solver_model=GLM_5_3_FLASH_MODEL,
-        reflection_model=GLM_5_3_FLASH_MODEL,
+        solver_model=DEEPSEEK_V4_FLASH_MODEL,
+        reflection_model=DEEPSEEK_V4_FLASH_MODEL,
         solver_api_base=LOCAL_API_BASE,
         reflection_api_base=LOCAL_API_BASE,
         train_limit=None,
@@ -454,36 +453,36 @@ def test_hotpot_scientific_contract_accepts_the_pinned_glm_runtime(monkeypatch) 
         ({"HOTPOTQA_MODEL_REVISION": "moving-main"}, "HOTPOTQA_MODEL_REVISION"),
         ({"HOTPOTQA_MODEL_INTEGRITY_SHA256": "moving-manifest"}, "HOTPOTQA_MODEL_INTEGRITY_SHA256"),
         ({"HOTPOTQA_WEIGHT_DTYPE": "bfloat16"}, "HOTPOTQA_WEIGHT_DTYPE"),
-        ({"HOTPOTQA_KV_CACHE_DTYPE": "fp8"}, "HOTPOTQA_KV_CACHE_DTYPE"),
-        ({"HOTPOTQA_SERVING_ENGINE": "vllm"}, "HOTPOTQA_SERVING_ENGINE"),
-        ({"HOTPOTQA_SGLANG_VERSION": ""}, "HOTPOTQA_SGLANG_VERSION"),
-        ({"HOTPOTQA_SERVING_IMAGE_URI": "docker://lmsysorg/sglang:latest"}, "HOTPOTQA_SERVING_IMAGE_URI"),
-        ({"HOTPOTQA_SERVING_IMAGE_SHA256": "moving-image"}, "HOTPOTQA_SERVING_IMAGE_SHA256"),
+        ({"HOTPOTQA_KV_CACHE_DTYPE": "bfloat16"}, "HOTPOTQA_KV_CACHE_DTYPE"),
+        ({"HOTPOTQA_SERVING_ENGINE": "sglang"}, "HOTPOTQA_SERVING_ENGINE"),
+        ({"HOTPOTQA_VLLM_VERSION": "0.24.0"}, "HOTPOTQA_VLLM_VERSION"),
+        ({"HOTPOTQA_POSIT_COMMIT": "moving-main"}, "HOTPOTQA_POSIT_COMMIT"),
+        ({"HOTPOTQA_POSIT_ENV_SHA256": "moving-env"}, "HOTPOTQA_POSIT_ENV_SHA256"),
         ({"HOTPOTQA_TRANSFORMERS_VERSION": ""}, "HOTPOTQA_TRANSFORMERS_VERSION"),
         ({"HOTPOTQA_GPU_RUNTIME": "{}"}, "HOTPOTQA_GPU_RUNTIME"),
         ({"HOTPOTQA_SERVE_ARGUMENTS": "tp=8"}, "HOTPOTQA_SERVE_ARGUMENTS"),
     ],
 )
-def test_hotpot_scientific_contract_rejects_glm_runtime_drift(
+def test_hotpot_scientific_contract_rejects_deepseek_runtime_drift(
     monkeypatch,
     environment: dict[str, str],
     message: str,
 ) -> None:
-    """Reject GLM checkpoint, image, engine, or topology drift.
+    """Reject DeepSeek checkpoint, image, engine, or topology drift.
 
     Args:
         monkeypatch: Pytest fixture used to install runtime metadata.
-        environment: One altered GLM runtime field.
+        environment: One altered DeepSeek runtime field.
         message: Runtime field expected in the rejection.
     """
-    for name, value in {**GLM_SCIENTIFIC_RUNTIME, **environment}.items():
+    for name, value in {**DEEPSEEK_SCIENTIFIC_RUNTIME, **environment}.items():
         monkeypatch.setenv(name, value)
     args = _hotpot_args(
         condition="react_v2",
         enforce_scientific_contract=True,
         max_metric_calls=13_742,
-        solver_model=GLM_5_3_FLASH_MODEL,
-        reflection_model=GLM_5_3_FLASH_MODEL,
+        solver_model=DEEPSEEK_V4_FLASH_MODEL,
+        reflection_model=DEEPSEEK_V4_FLASH_MODEL,
         solver_api_base=LOCAL_API_BASE,
         reflection_api_base=LOCAL_API_BASE,
         train_limit=None,
@@ -500,30 +499,30 @@ def test_hotpot_scientific_contract_rejects_glm_runtime_drift(
     ("field", "value"),
     [
         ("solver_api_base", None),
-        ("solver_api_base", "https://api.z.ai/api/paas/v4"),
+        ("solver_api_base", "https://api.deepseek.com/v1"),
         ("reflection_api_base", None),
         ("reflection_api_base", "http://127.0.0.1/v1"),
     ],
 )
-def test_hotpot_scientific_contract_rejects_nonlocal_glm_endpoints(
+def test_hotpot_scientific_contract_rejects_nonlocal_deepseek_endpoints(
     monkeypatch,
     field: str,
     value: str | None,
 ) -> None:
-    """Require both GLM roles to use a local loopback endpoint with a port.
+    """Require both DeepSeek roles to use a local loopback endpoint with a port.
 
     Args:
         monkeypatch: Pytest fixture used to install recorded runtime metadata.
         field: Student or proposer endpoint changed by the test.
         value: Missing, external, or incomplete loopback endpoint.
     """
-    for name, runtime_value in GLM_SCIENTIFIC_RUNTIME.items():
+    for name, runtime_value in DEEPSEEK_SCIENTIFIC_RUNTIME.items():
         monkeypatch.setenv(name, runtime_value)
     values = {
         "enforce_scientific_contract": True,
         "max_metric_calls": 13_742,
-        "solver_model": GLM_5_3_FLASH_MODEL,
-        "reflection_model": GLM_5_3_FLASH_MODEL,
+        "solver_model": DEEPSEEK_V4_FLASH_MODEL,
+        "reflection_model": DEEPSEEK_V4_FLASH_MODEL,
         "solver_api_base": LOCAL_API_BASE,
         "reflection_api_base": LOCAL_API_BASE,
         "train_limit": None,
@@ -789,7 +788,7 @@ def test_complete_run_keys_cover_budget_seed_retrieval_and_data_identity() -> No
         hotpotqa_run_key("vanilla", _hotpot_args(max_metric_calls=101)),
         hotpotqa_run_key(
             "vanilla",
-            _hotpot_args(solver_model=GLM_5_3_FLASH_MODEL, reflection_model=GLM_5_3_FLASH_MODEL),
+            _hotpot_args(solver_model=DEEPSEEK_V4_FLASH_MODEL, reflection_model=DEEPSEEK_V4_FLASH_MODEL),
         ),
         hotpotqa_run_key("vanilla", _hotpot_args(solver_api_base="https://solver.example/v1")),
         hotpotqa_run_key("vanilla", _hotpot_args(reflection_api_base="https://other-reflection.example/v1")),
@@ -985,13 +984,10 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
         "env_spec_sha256": None,
         "gepa_env_sha256": None,
         "serving_engine": None,
-        "serving_image_uri": None,
-        "serving_image_sha256": None,
         "posit_commit": None,
         "posit_env_sha256": None,
         "gpu_runtime": None,
         "vllm_version": None,
-        "sglang_version": None,
         "torch_version": None,
         "cuda_version": None,
         "cuda_module": None,
@@ -1040,75 +1036,74 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
     assert hover_run_key("react_v2", hover_args) != hover_run_key("react_v2", _hotpot_args(final_retrieval_k=11))
 
 
-def test_glm_contract_uses_the_glm_pair_and_local_request_settings() -> None:
-    """Record GLM decoding and maximum-reasoning template arguments."""
+def test_deepseek_contract_uses_the_deepseek_pair_and_local_request_settings() -> None:
+    """Record DeepSeek decoding and maximum-reasoning template arguments."""
     args = _hotpot_args(
-        solver_model=GLM_5_3_FLASH_MODEL,
-        reflection_model=GLM_5_3_FLASH_MODEL,
+        solver_model=DEEPSEEK_V4_FLASH_MODEL,
+        reflection_model=DEEPSEEK_V4_FLASH_MODEL,
         solver_api_base=LOCAL_API_BASE,
         reflection_api_base=LOCAL_API_BASE,
     )
 
     contract = build_hotpotqa_run_contract("react_v2", args)
-    glm_decoding = {**experiment_decoding(GLM_5_3_FLASH_MODEL), "seed": 0}
-    glm_request_overrides = experiment_request_overrides(GLM_5_3_FLASH_MODEL)
+    deepseek_decoding = {**experiment_decoding(DEEPSEEK_V4_FLASH_MODEL), "seed": 0}
+    deepseek_request_overrides = experiment_request_overrides(DEEPSEEK_V4_FLASH_MODEL)
 
     assert contract["models"] == {
         "api_profile": "direct",
         "runtime_profile": "scientific",
-        "solver": GLM_5_3_FLASH_MODEL,
-        "solver_runtime": GLM_5_3_FLASH_MODEL,
-        "solver_version": GLM_5_3_FLASH_REVISION,
+        "solver": DEEPSEEK_V4_FLASH_MODEL,
+        "solver_runtime": DEEPSEEK_V4_FLASH_MODEL,
+        "solver_version": DEEPSEEK_V4_FLASH_REVISION,
         "solver_api_base": LOCAL_API_BASE,
-        "solver_decoding": glm_decoding,
-        "solver_request_overrides": glm_request_overrides,
+        "solver_decoding": deepseek_decoding,
+        "solver_request_overrides": deepseek_request_overrides,
         "solver_num_retries": 0,
-        "reflection": GLM_5_3_FLASH_MODEL,
-        "reflection_runtime": GLM_5_3_FLASH_MODEL,
-        "reflection_version": GLM_5_3_FLASH_REVISION,
+        "reflection": DEEPSEEK_V4_FLASH_MODEL,
+        "reflection_runtime": DEEPSEEK_V4_FLASH_MODEL,
+        "reflection_version": DEEPSEEK_V4_FLASH_REVISION,
         "reflection_api_base": LOCAL_API_BASE,
-        "reflection_decoding": glm_decoding,
+        "reflection_decoding": deepseek_decoding,
         "reflection_role_decoding": {
             "controller": {
-                "requested": glm_decoding,
+                "requested": deepseek_decoding,
                 "provider_ignored_fields": [],
             },
             "manifestor": {
-                "requested": {**glm_decoding, "temperature": 0},
+                "requested": {**deepseek_decoding, "temperature": 0},
                 "provider_ignored_fields": [],
             },
             "react_v2_proposer": {
-                "requested": glm_decoding,
+                "requested": deepseek_decoding,
                 "provider_ignored_fields": [],
             },
         },
-        "reflection_request_overrides": glm_request_overrides,
+        "reflection_request_overrides": deepseek_request_overrides,
         "reflection_num_retries": 0,
     }
 
 
-def test_glm_serving_image_identity_is_material_to_contract_and_run_key(monkeypatch) -> None:
-    """Persist the local SGLang image identity and isolate image changes.
+def test_deepseek_serving_environment_is_material_to_contract_and_run_key(monkeypatch) -> None:
+    """Persist local vLLM environment identity and isolate runtime changes.
 
     Args:
-        monkeypatch: Pytest fixture used to change the serving image digest.
+        monkeypatch: Pytest fixture used to change the serving environment digest.
     """
-    for name, value in GLM_SCIENTIFIC_RUNTIME.items():
+    for name, value in DEEPSEEK_SCIENTIFIC_RUNTIME.items():
         monkeypatch.setenv(name, value)
     args = _hotpot_args(
-        solver_model=GLM_5_3_FLASH_MODEL,
-        reflection_model=GLM_5_3_FLASH_MODEL,
+        solver_model=DEEPSEEK_V4_FLASH_MODEL,
+        reflection_model=DEEPSEEK_V4_FLASH_MODEL,
         solver_api_base=LOCAL_API_BASE,
         reflection_api_base=LOCAL_API_BASE,
     )
     first_contract = build_hotpotqa_run_contract("react_v2", args)
     first_key = hotpotqa_run_key("react_v2", args)
 
-    assert first_contract["execution_runtime"]["serving_engine"] == "sglang"
-    assert first_contract["execution_runtime"]["serving_image_uri"] == GLM_SGLANG_IMAGE_URI
-    assert first_contract["execution_runtime"]["serving_image_sha256"] == "3" * 64
+    assert first_contract["execution_runtime"]["serving_engine"] == "vllm"
+    assert first_contract["execution_runtime"]["posit_env_sha256"] == "1" * 64
 
-    monkeypatch.setenv("HOTPOTQA_SERVING_IMAGE_SHA256", "4" * 64)
+    monkeypatch.setenv("HOTPOTQA_POSIT_ENV_SHA256", "4" * 64)
 
     assert hotpotqa_run_key("react_v2", args) != first_key
 
@@ -1117,7 +1112,7 @@ def test_glm_serving_image_identity_is_material_to_contract_and_run_key(monkeypa
     ("canonical_model", "runtime_model"),
     [
         (QWEN3_8_27B_MODEL, QWEN3_8_27B_OPENROUTER_MODEL),
-        (GLM_5_3_FLASH_MODEL, GLM_5_3_FLASH_OPENROUTER_MODEL),
+        (DEEPSEEK_V4_FLASH_MODEL, DEEPSEEK_V4_FLASH_OPENROUTER_MODEL),
     ],
 )
 def test_openrouter_profile_separates_experiment_identity_from_runtime(
@@ -1224,8 +1219,8 @@ def test_hotpot_technical_runtime_profile_bounds_qwen_without_changing_its_route
     assert hotpotqa_run_key("react_v2", args) != hotpotqa_run_key("react_v2", scientific_args)
 
 
-def test_hotpot_technical_runtime_profile_bounds_glm_without_changing_its_route() -> None:
-    """Bound GLM's smoke-time reasoning while preserving its provider."""
+def test_hotpot_technical_runtime_profile_bounds_deepseek_without_changing_its_route() -> None:
+    """Bound DeepSeek's smoke-time reasoning while preserving its provider."""
     provenance = {
         "backend": "hotpotqa-technical-mini-bm25s",
         "mode": "technical-smoke-only",
@@ -1241,13 +1236,13 @@ def test_hotpot_technical_runtime_profile_bounds_glm_without_changing_its_route(
         runtime_profile="technical-smoke",
         technical_mini_index=True,
         retrieval_provenance=provenance,
-        solver_model=GLM_5_3_FLASH_MODEL,
-        reflection_model=GLM_5_3_FLASH_MODEL,
+        solver_model=DEEPSEEK_V4_FLASH_MODEL,
+        reflection_model=DEEPSEEK_V4_FLASH_MODEL,
         solver_api_base=None,
         reflection_api_base=None,
     )
 
-    runtime_model = GLM_5_3_FLASH_OPENROUTER_MODEL
+    runtime_model = DEEPSEEK_V4_FLASH_OPENROUTER_MODEL
     reflection_kwargs = resolve_hotpotqa_lm_kwargs(runtime_model, None, "technical-smoke")
     contract = build_hotpotqa_run_contract("react_v2", args)
     config, _ = build_hotpotqa_config("react_v2", args, reflection_kwargs)
@@ -1364,9 +1359,9 @@ def test_openrouter_pin_reaches_react_native_tool_calls(monkeypatch) -> None:
 
 
 def test_experiment_model_pair_rejects_cross_model_runs() -> None:
-    """Reject a Qwen student paired with the GLM proposer."""
+    """Reject a Qwen student paired with the DeepSeek proposer."""
     with pytest.raises(ValueError, match="same model"):
-        validate_experiment_model_pair(QWEN3_8_27B_MODEL, GLM_5_3_FLASH_MODEL)
+        validate_experiment_model_pair(QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL)
 
 
 def test_experiment_model_pair_rejects_unknown_models() -> None:
@@ -1452,10 +1447,7 @@ def test_random_controller_react_v2_changes_only_controller_selection(
     assert verbalized_strategy.template_family == random_strategy.template_family
     assert verbalized_strategy.rng.getstate() == random_strategy.rng.getstate() == random.Random(args.seed).getstate()
     assert verbalized_contract["optimizer"]["semantic_controller_policy"] == CONTROLLER_POLICY_CONTRACT
-    assert (
-        random_contract["optimizer"]["semantic_controller_policy"]
-        == UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT
-    )
+    assert random_contract["optimizer"]["semantic_controller_policy"] == UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT
     assert random_contract["optimizer"]["stateless_action_menu"] is None
     assert random_contract["optimizer"]["stateless_selector_policy"] is None
 

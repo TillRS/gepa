@@ -10,17 +10,17 @@ from pathlib import Path
 from huggingface_hub import HfApi, snapshot_download  # type: ignore[import-not-found]
 
 from examples.common.experiment_models import (
-    GLM_5_3_FLASH_REPO,
-    GLM_5_3_FLASH_REVISION,
+    DEEPSEEK_V4_FLASH_REPO,
+    DEEPSEEK_V4_FLASH_REVISION,
     QWEN3_8_27B_REPO,
     QWEN3_8_27B_REVISION,
 )
 
 QWEN3_8_27B_PROFILE = "qwen3.8-27b"
-GLM_5_3_FLASH_PROFILE = "glm-5.3-flash"
+DEEPSEEK_V4_FLASH_PROFILE = "deepseek-v4-flash"
 MODEL_SNAPSHOT_SPECS = {
     QWEN3_8_27B_PROFILE: (QWEN3_8_27B_REPO, QWEN3_8_27B_REVISION),
-    GLM_5_3_FLASH_PROFILE: (GLM_5_3_FLASH_REPO, GLM_5_3_FLASH_REVISION),
+    DEEPSEEK_V4_FLASH_PROFILE: (DEEPSEEK_V4_FLASH_REPO, DEEPSEEK_V4_FLASH_REVISION),
 }
 MODEL_INTEGRITY_NAME = ".gepa-model-integrity.json"
 
@@ -287,9 +287,7 @@ def verify_model_snapshot(root: str | Path, model_profile: str) -> dict[str, obj
         if source_oid_kind == "lfs_sha256":
             authoritative_match = len(source_oid) == 64 and digest == source_oid
         else:
-            authoritative_match = (
-                len(source_oid) == 40 and _git_blob_sha1(path, int(record["size"])) == source_oid
-            )
+            authoritative_match = len(source_oid) == 40 and _git_blob_sha1(path, int(record["size"])) == source_oid
         if not authoritative_match:
             raise ModelSnapshotError(f"Pinned model file differs from authoritative repository bytes: {path}")
         if digest != record.get("sha256"):

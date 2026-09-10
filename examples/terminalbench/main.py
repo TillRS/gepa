@@ -20,8 +20,8 @@ from typing import Any
 from examples.common.experiment_models import (
     EXPERIMENT_NUM_RETRIES,
     QWEN3_8_27B_MODEL,
-    QWEN3_8_27B_MODEL_INFO,
     experiment_decoding,
+    experiment_model_info,
     experiment_request_overrides,
     resolve_experiment_model,
     validate_experiment_model_pair,
@@ -213,11 +213,7 @@ def build_run_contract(
         "student_api_base": args.student_api_base,
         "student_decoding": experiment_decoding(args.student_model),
         "student_model": args.student_model,
-        "student_model_info": (
-            dict(QWEN3_8_27B_MODEL_INFO)
-            if args.student_model == QWEN3_8_27B_MODEL and args.api_profile == "direct"
-            else None
-        ),
+        "student_model_info": experiment_model_info(student_runtime_model),
         "student_num_retries": EXPERIMENT_NUM_RETRIES,
         "student_request_overrides": experiment_request_overrides(student_runtime_model),
         "student_runtime_model": student_runtime_model,
@@ -259,8 +255,8 @@ def main() -> None:
             **experiment_request_overrides(student_runtime_model),
         }
     }
-    if args.student_model == QWEN3_8_27B_MODEL and args.api_profile == "direct":
-        student_agent_kwargs["model_info"] = dict(QWEN3_8_27B_MODEL_INFO)
+    if model_info := experiment_model_info(student_runtime_model):
+        student_agent_kwargs["model_info"] = model_info
 
     harbor = HarborCLI(
         student_model=student_runtime_model,

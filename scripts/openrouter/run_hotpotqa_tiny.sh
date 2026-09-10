@@ -23,12 +23,12 @@ smoke_key_limit_usd="${OPENROUTER_SMOKE_KEY_LIMIT_USD:-25}"
 smoke_start_arm="${OPENROUTER_SMOKE_START_ARM:-1}"
 
 arm_names=(
-    glm-standard-vanilla
-    glm-standard-react-v2
-    glm-standard-react-v2-random
-    glm-standard-action
-    glm-expanded-vanilla
-    glm-expanded-react-v2
+    deepseek-standard-vanilla
+    deepseek-standard-react-v2
+    deepseek-standard-react-v2-random
+    deepseek-standard-action
+    deepseek-expanded-vanilla
+    deepseek-expanded-react-v2
     qwen-standard-vanilla
     qwen-standard-react-v2
     qwen-standard-react-v2-random
@@ -37,12 +37,12 @@ arm_names=(
     qwen-expanded-react-v2
 )
 models=(
-    hosted_vllm/zai-org/GLM-5.3-Flash
-    hosted_vllm/zai-org/GLM-5.3-Flash
-    hosted_vllm/zai-org/GLM-5.3-Flash
-    hosted_vllm/zai-org/GLM-5.3-Flash
-    hosted_vllm/zai-org/GLM-5.3-Flash
-    hosted_vllm/zai-org/GLM-5.3-Flash
+    hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731
+    hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731
+    hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731
+    hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731
+    hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731
+    hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731
     hosted_vllm/Qwen/Qwen3.8-27B
     hosted_vllm/Qwen/Qwen3.8-27B
     hosted_vllm/Qwen/Qwen3.8-27B
@@ -181,20 +181,20 @@ if ! jq -e '
     exit 1
 fi
 
-glm_endpoints="$(curl -fsS https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints)"
+deepseek_endpoints="$(curl -fsS https://openrouter.ai/api/v1/models/deepseek/deepseek-v4-flash-0731/endpoints)"
 if ! jq -e '
     any(
         .data.endpoints[];
-        .tag == "z-ai/fp8"
+        .tag == "deepinfra/fp8"
         and .status == 0
         and .quantization == "fp8"
         and (["tools", "tool_choice", "reasoning", "reasoning_effort", "temperature", "top_p"] - .supported_parameters | length == 0)
     )
-' >/dev/null <<<"$glm_endpoints"; then
-    echo "Z.AI's GLM-5.3-Flash FP8 endpoint is missing, unhealthy, or incompatible." >&2
+' >/dev/null <<<"$deepseek_endpoints"; then
+    echo "DeepInfra's DeepSeek-V4-Flash-0731 FP8 endpoint is missing, unhealthy, or incompatible." >&2
     exit 1
 fi
-echo "OpenRouter endpoint preflight: AkashML Qwen BF16 and Z.AI GLM FP8 verified"
+echo "OpenRouter endpoint preflight: AkashML Qwen BF16 and DeepInfra DeepSeek FP8 verified"
 
 if ! key_json="$(
     curl -fsS --config - <<CURL_CONFIG
