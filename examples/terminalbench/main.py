@@ -6,8 +6,8 @@ The held-out test split is not evaluated automatically.
 * ``react_v2`` uses the Controller -> Manifestor -> ReAct V2 workflow.
 
 Within each model arm, all conditions use the same official Harbor rewards,
-manifest, student/proposer model, task splits, editable documents, and metric-call
-budget. The experiment must be selected explicitly; neither is primary.
+manifest, student/proposer model, task splits, editable documents, and four-epoch
+training budget. The experiment must be selected explicitly; neither is primary.
 """
 
 from __future__ import annotations
@@ -42,6 +42,8 @@ from gepa.adapters.terminal_bench_adapter.documents import (
 )
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
+from gepa.strategies.proposal_sampling import SingleMutationSampling
+from gepa.utils.stop_condition import MaxCandidateProposalsStopper
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENT_MANIFESTS = {
@@ -51,6 +53,7 @@ EXPERIMENT_MANIFESTS = {
 SYSTEM_PROMPT_SEED_PATH = Path(__file__).with_name("terminus-system-prompt.txt")
 
 RUN_CONTRACT_FILENAME = "terminalbench-run-contract.json"
+TRAINING_EPOCHS = 4
 TemplateFamily = Literal["generic", "openai", "anthropic", "google", "alibaba"]
 
 
@@ -143,7 +146,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--student-api-base", default=None)
     parser.add_argument("--proposer-api-base", default=None)
-    parser.add_argument("--max-metric-calls", type=int, required=True)
+    parser.add_argument(
+        "--max-metric-calls",
+        type=int,
+        default=None,
+        help="Optional early-stop cap on task evaluations; the default budget is four training epochs",
+    )
     parser.add_argument("--reflection-minibatch-size", type=int, default=3)
     parser.add_argument("--n-concurrent", type=int, default=1)
     parser.add_argument("--train-limit", type=int, default=None)
@@ -205,11 +213,19 @@ def build_run_contract(
     validate_experiment_model_pair(args.student_model, args.proposer_model)
     if manifest.experiment != args.experiment:
         raise ValueError("--manifest must match the selected --experiment")
+    if not trainset or not valset:
+        raise ValueError("train and validation selections must both be non-empty")
+    if args.reflection_minibatch_size <= 0:
+        raise ValueError("--reflection-minibatch-size must be positive")
+    if args.max_metric_calls is not None and args.max_metric_calls <= 0:
+        raise ValueError("--max-metric-calls must be positive")
+    iterations_per_epoch = (len(trainset) + args.reflection_minibatch_size - 1) // args.reflection_minibatch_size
+    sampled_tasks_per_epoch = iterations_per_epoch * args.reflection_minibatch_size
     candidate, _ = seed_candidate(args.student_model, resolved_family, args.experiment)
     operated = condition == "react_v2"
     reflection_level = args.reflection_level if operated else 0
     return {
-        "schema_version": 6,
+        "schema_version": 7,
         "experiment": manifest.experiment,
         "optimization_target": "system_prompt" if manifest.experiment == "tb2-system-prompt" else "agent_text",
         "condition": condition,
@@ -224,6 +240,18 @@ def build_run_contract(
         "harbor_process_timeout_sec": args.harbor_process_timeout_sec,
         "manifest": str(manifest.path),
         "max_metric_calls": args.max_metric_calls,
+        "optimization_budget": {
+            "unit": "training_epochs",
+            "reference": "https://arxiv.org/html/2608.23041v1#A2",
+            "training_epochs": TRAINING_EPOCHS,
+            "iterations_per_epoch": iterations_per_epoch,
+            "max_iterations": TRAINING_EPOCHS * iterations_per_epoch,
+            "sampled_training_tasks": TRAINING_EPOCHS * sampled_tasks_per_epoch,
+            "padding_tasks_per_epoch": sampled_tasks_per_epoch - len(trainset),
+            "batch_sampler": "epoch_shuffled",
+            "sampling_strategy": "single_mutation",
+            "use_merge": False,
+        },
         "n_concurrent": args.n_concurrent,
         "proposer_api_base": args.proposer_api_base,
         "proposer_backend": "react_v2" if operated else "stateless",
@@ -274,7 +302,10 @@ def main() -> None:
 
     candidate, resolved_family = seed_candidate(args.student_model, args.template_family, args.experiment)
     condition = "react_v2" if args.condition == "action" else args.condition
-    contract = build_run_contract(args, manifest, trainset, valset, condition, resolved_family)
+    try:
+        contract = build_run_contract(args, manifest, trainset, valset, condition, resolved_family)
+    except ValueError as exc:
+        parser.error(str(exc))
     ensure_run_contract(args.run_dir, contract)
 
     student_agent_kwargs: dict[str, Any] = {
@@ -318,7 +349,11 @@ def main() -> None:
         reflection_lm=args.proposer_model,
         reflection_lm_kwargs=reflection_lm_kwargs,
         max_metric_calls=args.max_metric_calls,
+        stop_callbacks=MaxCandidateProposalsStopper(contract["optimization_budget"]["max_iterations"]),
+        batch_sampler="epoch_shuffled",
         reflection_minibatch_size=args.reflection_minibatch_size,
+        sampling_strategy=SingleMutationSampling(),
+        use_merge=False,
         run_dir=str(args.run_dir),
         seed=args.seed,
         reflection_level=reflection_level,

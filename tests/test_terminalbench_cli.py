@@ -27,8 +27,10 @@ from examples.terminalbench.main import (
     ensure_run_contract,
     seed_candidate,
 )
+from gepa import optimize
 from gepa.adapters.terminal_bench_adapter import load_terminalbench_manifest
 from gepa.adapters.terminal_bench_adapter.documents import COMPONENT_KINDS
+from gepa.core.adapter import EvaluationBatch
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
 
@@ -175,7 +177,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 6
+    assert contract["schema_version"] == 7
     assert contract["component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
@@ -271,6 +273,10 @@ def test_deepseek_settings_reach_both_runtime_roles(
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
     assert set(optimize_kwargs["seed_candidate"]) == set(manifest.component_kinds)
     assert optimize_kwargs["reflection_level"] == (0 if condition == "vanilla" else 2)
+    assert optimize_kwargs["stop_callbacks"].max_proposals == 4
+    assert optimize_kwargs["max_metric_calls"] == 4
+    assert optimize_kwargs["batch_sampler"] == "epoch_shuffled"
+    assert optimize_kwargs["use_merge"] is False
     contract = json.loads((tmp_path / "run" / "terminalbench-run-contract.json").read_text())
     assert contract["experiment"] == experiment
     assert (
@@ -281,6 +287,114 @@ def test_deepseek_settings_reach_both_runtime_roles(
     assert (
         contract["student_request_overrides"] == contract["proposer_request_overrides"] == {"extra_body": expected_body}
     )
+
+
+@pytest.mark.parametrize("experiment,iterations,padding", [("tb2-system-prompt", 40, 0), ("tb4-agent-text", 32, 1)])
+@pytest.mark.parametrize("outcome", ["accepted", "rejected", "perfect"])
+def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, iterations: int, padding: int, outcome: str
+) -> None:
+    """Complete four covered epochs across resume regardless of proposal success."""
+    run_dir = tmp_path / "run"
+    stop_file = run_dir / "gepa.stop"
+    parent_batches = []
+    evaluations = []
+    trainset = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment]).tasks("train")
+
+    class SamplingRecorder:
+        """Record each sampling step once and pause partway through an epoch."""
+
+        def on_minibatch_sampled(self, event):
+            """Pause after the fifth minibatch while letting its evaluations finish."""
+            parent_batches.append([trainset[index].task_id for index in event["minibatch_ids"]])
+            if len(parent_batches) == 5:
+                stop_file.touch()
+
+    class BudgetAdapter:
+        """Exercise real sampling, stopping, validation, and checkpoints offline."""
+
+        def evaluate(self, batch, candidate, capture_traces=False):
+            """Return controlled rewards for training and validation tasks."""
+            evaluations.append([task.task_id for task in batch])
+            score = sum(text.count("budget_step") for text in candidate.values()) / 100
+            if outcome != "accepted":
+                score = 1.0 if outcome == "perfect" else 0.0
+            return EvaluationBatch(
+                outputs=[{} for _ in batch],
+                scores=[score for _ in batch],
+                trajectories=[{} for _ in batch] if capture_traces else None,
+                num_metric_calls=len(batch),
+            )
+
+        def make_reflective_dataset(self, candidate, eval_batch, components_to_update):
+            """Supply deterministic feedback without invoking a model."""
+            return {key: [{"feedback": "Try the next revision"}] for key in components_to_update}
+
+        def propose_new_texts(self, candidate, reflective_dataset, components_to_update):
+            """Append a revision marker inside each selected document."""
+            return {key: candidate[key] + "\nbudget_step" for key in components_to_update}
+
+    results = []
+
+    def optimize_offline(**kwargs):
+        """Keep CLI budget wiring while replacing model work with the adapter."""
+        kwargs["reflection_lm"] = None
+        kwargs["callbacks"] = [SamplingRecorder()]
+        results.append(optimize(**kwargs, display_progress_bar=False, raise_on_exception=True))
+
+    monkeypatch.setattr(terminalbench_main.HarborCLI, "check_requirements", Mock())
+    monkeypatch.setattr(terminalbench_main, "TerminalBenchAdapter", lambda *args: BudgetAdapter())
+    monkeypatch.setattr(terminalbench_main, "optimize", optimize_offline)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "terminalbench",
+            "--experiment",
+            experiment,
+            "--condition",
+            "vanilla",
+            "--run-dir",
+            str(run_dir),
+            "--harbor-work-dir",
+            str(tmp_path / "harbor"),
+        ],
+    )
+
+    terminalbench_main.main()
+    assert len(parent_batches) == 5
+    stop_file.unlink()
+    terminalbench_main.main()
+    assert len(parent_batches) == iterations
+    terminalbench_main.main()
+    assert len(parent_batches) == iterations
+
+    contract = json.loads((run_dir / "terminalbench-run-contract.json").read_text())
+    budget = contract["optimization_budget"]
+    assert contract["max_metric_calls"] is None
+    assert budget["training_epochs"] == 4
+    assert budget["max_iterations"] == iterations
+    assert budget["padding_tasks_per_epoch"] == padding
+    assert budget["sampled_training_tasks"] == sum(map(len, parent_batches)) == iterations * 3
+    for start in range(0, iterations, iterations // 4):
+        epoch_ids = [task_id for batch in parent_batches[start : start + iterations // 4] for task_id in batch]
+        assert set(epoch_ids) == set(contract["train_task_ids"])
+        assert len(epoch_ids) == len(contract["train_task_ids"]) + padding
+    assert not set(contract["test_task_ids"]).intersection(task_id for batch in evaluations for task_id in batch)
+    per_iteration = 3 if outcome == "perfect" else 6
+    if outcome == "accepted":
+        per_iteration += len(contract["val_task_ids"])
+    assert results[-1].total_metric_calls == len(contract["val_task_ids"]) + iterations * per_iteration
+
+
+@pytest.mark.parametrize("field,value", [("reflection_minibatch_size", 0), ("max_metric_calls", -1)])
+def test_run_contract_rejects_invalid_budget_inputs(tmp_path: Path, field: str, value: int) -> None:
+    """Reject invalid budget arithmetic before starting any Harbor work."""
+    args = _model_args(tmp_path, QWEN3_8_27B_MODEL, QWEN3_8_27B_MODEL)
+    setattr(args, field, value)
+    manifest = load_terminalbench_manifest(MANIFEST_PATH)
+    with pytest.raises(ValueError, match="must be positive"):
+        build_run_contract(args, manifest, manifest.tasks("train"), manifest.tasks("val"), "vanilla", "alibaba")
 
 
 def test_run_contract_rejects_a_cross_model_pair(tmp_path: Path) -> None:

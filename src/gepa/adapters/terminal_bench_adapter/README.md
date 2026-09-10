@@ -3,7 +3,7 @@
 Select one of two independent experiments with `--experiment`. Neither has an
 implicit default or primary status. Both support vanilla GEPA (`vanilla`) and
 FOREST (`react_v2`) with identical seeds, editable components, task splits,
-student/proposer models, and metric-call budgets within an experiment.
+student/proposer models, and four-epoch training budgets within an experiment.
 
 | Experiment | Dataset | Editable target | Train / validation / test |
 | --- | --- | --- | --- |
@@ -34,7 +34,9 @@ This matches the **optimization surface**, not an exact reproduction of a paper'
 reported score. The checked-in task identities use our deterministic hash split
 with AutoSaddler's split sizes; the paper's exact identities and harness revision
 were not established from its released artifacts. The existing homogeneous model
-arms, provider section wrapper, and caller-selected budget are our configuration.
+arms and provider section wrapper are our configuration. The four-epoch budget
+follows the paper; minibatch size three and the sampler are our GEPA settings,
+pending verification against the authors' unreleased TB2 configuration.
 In particular, this is not the ReASearch paper's GPT-5/Bash-prompt setup.
 
 The intended TB2 protocol follows AutoSaddler's GEPA baseline. The checked-in
@@ -99,6 +101,40 @@ manifest, or configuration requires a fresh run directory. Old TB3 checkpoints
 cannot resume as TB4, and single-prompt candidates cannot enter the full bundle
 experiment. The held-out test split is never evaluated automatically.
 
+#### Optimization budget
+
+Both experiments use **four training epochs**, following the TB2 GEPA budget in
+[AutoSaddler, Appendix B](https://arxiv.org/html/2608.23041v1#A2). TB4 receives the
+same number of passes through its own training split. With the default minibatch
+size of three, the stopping rule is `4 * ceil(train_tasks / 3)` iterations:
+
+| Experiment | Training tasks | Iterations per epoch | Total iterations | Training task draws |
+| --- | --- | --- | --- | --- |
+| TB2 | 30 | 10 | 40 | 120 |
+| TB4 | 23 | 8 | 32 | 96 |
+
+GEPA's epoch sampler pads each final minibatch to the configured size. For TB4,
+each epoch covers all 23 training tasks and repeats one, giving 92 unpadded draws
+plus four padding draws over the run. A training limit or different minibatch
+size changes the iteration count using the same rule. These counts describe
+sampled training tasks, not total task executions or model calls.
+
+Each iteration samples one minibatch for one mutation attempt; merging is off.
+Perfect minibatches or unsuccessful proposals still consume their iteration.
+Parent and proposed-candidate evaluations, plus initial and conditional full
+validation, contribute to the measured `total_metric_calls`. Validation is
+allowed to finish and does not reduce the number of training epochs. Thus the
+methods have equal training-pass budgets, not necessarily equal task-execution,
+token, or wall-time costs. The run contract records the epoch rule, iteration
+limit, sampler, and padding. Resuming continues the original budget rather than
+granting four additional epochs.
+
+`--max-metric-calls` is an optional additional early-stop cap for pilot or
+operational runs. It is checked at iteration boundaries and can be exceeded by
+the final iteration's evaluations. A run stopped by that cap before four epochs
+does not complete the standard protocol. The normal commands omit this cap.
+Final held-out test evaluation remains separate.
+
 #### Run
 
 From the repository root, with Docker and the selected model endpoint available:
@@ -110,20 +146,18 @@ uv tool install --python 3.12 harbor==0.22.0
 uv run python -m examples.terminalbench.main \
   --experiment tb2-system-prompt \
   --condition vanilla \
-  --max-metric-calls 400 \
   --run-dir runs/tb2-system-prompt/vanilla \
   --harbor-work-dir runs/tb2-system-prompt/vanilla/harbor
 
 uv run python -m examples.terminalbench.main \
   --experiment tb4-agent-text \
   --condition vanilla \
-  --max-metric-calls 400 \
   --run-dir runs/tb4-agent-text/vanilla \
   --harbor-work-dir runs/tb4-agent-text/vanilla/harbor
 ```
 
 Use `--condition react_v2` and matching separate output directories for FOREST.
-The displayed 400-call budget is an example, not a paper reproduction preset.
+Both commands use the four-epoch budget above.
 An optional `--manifest` must match the explicitly selected experiment.
 
 Both experiments support two separate model arms: Qwen3.8-27B with Qwen3.8-27B
@@ -144,7 +178,6 @@ uv run python -m examples.terminalbench.main \
   --proposer-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
-  --max-metric-calls 400 \
   --run-dir runs/tb2-system-prompt/deepseek/vanilla \
   --harbor-work-dir runs/tb2-system-prompt/deepseek/vanilla/harbor
 ```
