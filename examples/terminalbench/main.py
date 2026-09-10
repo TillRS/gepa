@@ -1,4 +1,4 @@
-"""Configure a pinned Terminal-Bench v3 GEPA optimization run.
+"""Configure separate Terminal-Bench 2 prompt and Terminal-Bench 4 text experiments.
 
 The held-out test split is not evaluated automatically.
 
@@ -6,8 +6,8 @@ The held-out test split is not evaluated automatically.
 * ``react_v2`` uses the Controller -> Manifestor -> ReAct V2 workflow.
 
 Within each model arm, all conditions use the same official Harbor rewards,
-manifest, student/proposer model, task splits, document bundle, and metric-call
-budget. Both methods can revise every prompt and skill in the bundle.
+manifest, student/proposer model, task splits, editable documents, and metric-call
+budget. The experiment must be selected explicitly; neither is primary.
 """
 
 from __future__ import annotations
@@ -36,30 +36,48 @@ from gepa.adapters.terminal_bench_adapter import (
 )
 from gepa.adapters.terminal_bench_adapter.documents import (
     BUNDLE_VERSION,
-    COMPONENT_KINDS,
-    document_digest,
     seed_documents,
 )
+from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MANIFEST = Path(__file__).with_name("terminalbench-v3-manifest.json")
+EXPERIMENT_MANIFESTS = {
+    "tb2-system-prompt": Path(__file__).with_name("terminalbench-v2-manifest.json"),
+    "tb4-agent-text": Path(__file__).with_name("terminalbench-v4-manifest.json"),
+}
+SYSTEM_PROMPT_SEED_PATH = Path(__file__).with_name("terminus-system-prompt.txt")
 
 RUN_CONTRACT_FILENAME = "terminalbench-run-contract.json"
 TemplateFamily = Literal["generic", "openai", "anthropic", "google", "alibaba"]
 
 
-def seed_candidate(student_model: str, template_family: str) -> tuple[dict[str, str], TemplateFamily]:
-    """Build the complete agent document bundle with the selected provider template.
+def seed_candidate(student_model: str, template_family: str, experiment: str) -> tuple[dict[str, str], TemplateFamily]:
+    """Build the experiment's seed with the selected provider template.
 
     Args:
         student_model: Task model used for automatic provider inference.
         template_family: Explicit provider family or ``"auto"``.
+        experiment: Single system prompt or the full agent text and skills.
 
     Returns:
-        All prompt and skill components and its resolved template family.
+        Editable components and their resolved template family.
     """
     resolved_family = cast(TemplateFamily, resolve_template_family(template_family, student_model))
+    if experiment == "tb2-system-prompt":
+        template = TEMPLATE_FAMILIES[resolved_family]["system_prompt"]
+        section = {
+            "generic": "Task",
+            "openai": "Instructions",
+            "anthropic": "Instructions",
+            "google": "Instructions",
+            "alibaba": "Objective",
+        }[resolved_family]
+        return {
+            "system_prompt": template.render({section: SYSTEM_PROMPT_SEED_PATH.read_text(encoding="utf-8")})
+        }, resolved_family
+    if experiment != "tb4-agent-text":
+        raise ValueError(f"Unknown Terminal-Bench experiment: {experiment!r}")
     return seed_documents(resolved_family), resolved_family
 
 
@@ -98,7 +116,13 @@ def build_parser() -> argparse.ArgumentParser:
     Returns:
         Configured argument parser.
     """
-    parser = argparse.ArgumentParser(description="GEPA on pinned Terminal-Bench v3 through Harbor")
+    parser = argparse.ArgumentParser(description="GEPA on pinned Terminal-Bench 2 or 4 through Harbor")
+    parser.add_argument(
+        "--experiment",
+        choices=tuple(EXPERIMENT_MANIFESTS),
+        required=True,
+        help="TB2: one unified system prompt; TB4: all 13 prompts and two skills",
+    )
     parser.add_argument(
         "--condition",
         choices=("vanilla", "react_v2", "action"),
@@ -141,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("auto", "generic", "openai", "anthropic", "google", "alibaba"),
         default="auto",
     )
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--manifest", type=Path, default=None, help="Optional manifest path; must match --experiment")
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--harbor-work-dir", type=Path, required=True)
     parser.add_argument("--harbor-executable", default="harbor")
@@ -177,18 +201,26 @@ def build_run_contract(
         JSON-serializable run contract including exact task identities.
     """
     validate_experiment_model_pair(args.student_model, args.proposer_model)
+    if manifest.experiment != args.experiment:
+        raise ValueError("--manifest must match the selected --experiment")
+    candidate, _ = seed_candidate(args.student_model, resolved_family, args.experiment)
     operated = condition == "react_v2"
     reflection_level = args.reflection_level if operated else 0
     return {
-        "schema_version": 5,
+        "schema_version": 6,
+        "experiment": manifest.experiment,
+        "optimization_target": "system_prompt" if manifest.experiment == "tb2-system-prompt" else "agent_text",
         "condition": condition,
-        "component_kinds": dict(COMPONENT_KINDS),
-        "document_bundle_version": BUNDLE_VERSION,
-        "seed_document_digest": document_digest(seed_documents(resolved_family)),
+        "component_kinds": manifest.component_kinds,
+        "document_bundle_version": BUNDLE_VERSION if manifest.experiment == "tb4-agent-text" else None,
+        "seed_document_digest": manifest.candidate_digest(candidate),
         "dataset": manifest.dataset,
+        "split_policy": manifest.split_policy,
+        "task_refs": manifest.task_refs,
+        "test_task_ids": [task.task_id for task in manifest.tasks("test")],
         "edit_tool_set": args.edit_tool_set,
         "harbor_process_timeout_sec": args.harbor_process_timeout_sec,
-        "manifest": str(args.manifest.resolve()),
+        "manifest": str(manifest.path),
         "max_metric_calls": args.max_metric_calls,
         "n_concurrent": args.n_concurrent,
         "proposer_api_base": args.proposer_api_base,
@@ -225,13 +257,16 @@ def main() -> None:
         validate_experiment_model_pair(args.student_model, args.proposer_model)
     except ValueError as exc:
         parser.error(str(exc))
-    manifest = load_terminalbench_manifest(args.manifest)
+    manifest_path = args.manifest or EXPERIMENT_MANIFESTS[args.experiment]
+    manifest = load_terminalbench_manifest(manifest_path)
+    if manifest.experiment != args.experiment:
+        parser.error("--manifest must match the selected --experiment")
     trainset = manifest.tasks("train", args.train_limit)
     valset = manifest.tasks("val", args.val_limit)
     if not trainset or not valset:
         raise ValueError("train and validation selections must both be non-empty")
 
-    candidate, resolved_family = seed_candidate(args.student_model, args.template_family)
+    candidate, resolved_family = seed_candidate(args.student_model, args.template_family, args.experiment)
     condition = "react_v2" if args.condition == "action" else args.condition
     contract = build_run_contract(args, manifest, trainset, valset, condition, resolved_family)
     ensure_run_contract(args.run_dir, contract)
@@ -243,6 +278,7 @@ def main() -> None:
         student_agent_kwargs["model_info"] = dict(QWEN3_8_27B_MODEL_INFO)
 
     harbor = HarborCLI(
+        manifest=manifest,
         student_model=args.student_model,
         student_api_base=args.student_api_base,
         work_dir=args.harbor_work_dir,
@@ -277,7 +313,7 @@ def main() -> None:
         seed=args.seed,
         reflection_level=reflection_level,
         edit_tool_set=args.edit_tool_set,
-        component_kinds=dict(COMPONENT_KINDS),
+        component_kinds=manifest.component_kinds,
         template_family=resolved_family,
         template_model=args.student_model,
     )

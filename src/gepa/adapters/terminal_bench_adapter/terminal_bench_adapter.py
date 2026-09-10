@@ -1,4 +1,4 @@
-"""Terminal-Bench v3 adapter backed by the pinned Harbor CLI.
+"""Terminal-Bench 2 and 4 experiments backed by the pinned Harbor CLI.
 
 Harbor runs in a separate Python environment through a subprocess, so GEPA
 retains Python 3.10+ support. Harbor supplies the official Docker verifier and
@@ -20,7 +20,7 @@ from typing import Any, TypedDict
 
 from gepa.adapters.terminal_bench_adapter.documents import (
     COMPONENT_KINDS,
-    document_digest,
+    escape_document,
     render_instruction,
     validate_documents,
     write_document_bundle,
@@ -28,15 +28,38 @@ from gepa.adapters.terminal_bench_adapter.documents import (
 from gepa.core.adapter import EvaluationBatch, GEPAAdapter
 
 PINNED_HARBOR_VERSION = "0.22.0"
-PINNED_DATASET_IDENTIFIER = "terminal-bench/terminal-bench"
-PINNED_DATASET_VERSION = "3.0.0"
-PINNED_DATASET_REFERENCE = f"{PINNED_DATASET_IDENTIFIER}@{PINNED_DATASET_VERSION}"
-PINNED_DATASET_CONTENT_HASH = "sha256:a32a61879ea94eb9dc16fa1fbeb398759f0c07ca633d9d1f6aec760207036da3"
-PINNED_SOURCE_REPOSITORY = "https://github.com/harbor-framework/terminal-bench"
-PINNED_SOURCE_TAG = "v3.0.0"
-PINNED_SOURCE_COMMIT = "2b0442c3c583b710ca8da14c8e601b99f2f1f244"
-PINNED_TASK_COUNT = 74
+EXPERIMENT_DATASETS = {
+    "tb2-system-prompt": {
+        "identifier": "terminal-bench",
+        "version": "2.0",
+        "reference": "terminal-bench@2.0",
+        "registry_content_hash": None,
+        "source_repository": "https://github.com/laude-institute/terminal-bench-2.git",
+        "source_tag": None,
+        "source_commit": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "task_count": 89,
+        "task_refs_digest": "ad453479e7854db2737c4ff246fbfdcd26b7dbd02df285f03c19f51aefec7efc",
+        "harbor_version": PINNED_HARBOR_VERSION,
+    },
+    "tb4-agent-text": {
+        "identifier": "terminal-bench/terminal-bench",
+        "version": "4.0.0",
+        "reference": "terminal-bench/terminal-bench@4.0.0",
+        "registry_content_hash": "sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732",
+        "source_repository": "https://github.com/harbor-framework/terminal-bench",
+        "source_tag": "v4.0.0",
+        "source_commit": "452bf305c6daa62fc59061d22133a7cbc7c1572e",
+        "task_count": 66,
+        "task_refs_digest": "9d42a27a42495d96844f4a9beac1c856f0ba8ec658d358ec4463e963f5882b57",
+        "harbor_version": PINNED_HARBOR_VERSION,
+    },
+}
+EXPERIMENT_SPLIT_COUNTS = {
+    "tb2-system-prompt": {"train": 30, "val": 19, "test": 40},
+    "tb4-agent-text": {"train": 26, "val": 20, "test": 20},
+}
 PROMPTED_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:PromptedTerminus"
+SYSTEM_PROMPT_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:SystemPromptTerminus"
 SPLIT_NAMES = ("train", "val", "test")
 SPLIT_WEIGHTS = {"train": 0.40, "val": 0.30, "test": 0.30}
 SUPPORTED_ATIF_SCHEMA_VERSIONS = {f"ATIF-v1.{minor}" for minor in range(8)}
@@ -78,8 +101,8 @@ class TerminalBenchTask:
     """One pinned Terminal-Bench task selected from the checked-in manifest.
 
     Args:
-        task_id: Fully qualified Harbor task ID, such as
-            ``terminal-bench/cad-model``.
+        task_id: Harbor task ID: a bare Git task name for TB2, or a qualified
+            package name such as ``terminal-bench/cad-model`` for TB4.
     """
 
     task_id: str
@@ -90,10 +113,43 @@ class TerminalBenchManifest:
     """Validated task refs and deterministic train/validation/test splits."""
 
     path: Path
+    experiment: str
     dataset: dict[str, Any]
     split_policy: dict[str, Any]
     task_refs: dict[str, str]
     splits: dict[str, list[str]]
+
+    @property
+    def component_kinds(self) -> dict[str, str]:
+        """Return only the documents editable in this experiment."""
+        return {"system_prompt": "system_prompt"} if self.experiment == "tb2-system-prompt" else dict(COMPONENT_KINDS)
+
+    def validate_candidate(self, candidate: Mapping[str, str]) -> None:
+        """Reject candidates from a different optimization target.
+
+        Args:
+            candidate: Documents proposed for this experiment.
+
+        Raises:
+            ValueError: The component set or value types differ from the target.
+        """
+        if self.experiment == "tb4-agent-text":
+            validate_documents(candidate)
+        elif set(candidate) != {"system_prompt"} or not isinstance(candidate["system_prompt"], str):
+            raise ValueError("tb2-system-prompt requires exactly one string component: system_prompt")
+
+    def candidate_digest(self, candidate: Mapping[str, str]) -> str:
+        """Hash the experiment identity together with its candidate text.
+
+        Args:
+            candidate: Complete candidate for this experiment.
+
+        Returns:
+            Stable SHA-256 digest independent of component insertion order.
+        """
+        self.validate_candidate(candidate)
+        payload = {"experiment": self.experiment, "documents": dict(candidate)}
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def tasks(self, split: str, limit: int | None = None) -> list[TerminalBenchTask]:
         """Return tasks from one split without changing manifest order.
@@ -252,18 +308,21 @@ def _load_atif_trajectory(trajectory_path: Path) -> dict[str, Any]:
     return trajectory
 
 
-def derive_terminalbench_splits(task_ids: Sequence[str], seed: str) -> dict[str, list[str]]:
-    """Derive stable 40/30/30 splits with hash ordering and Hamilton allocation.
+def derive_terminalbench_splits(
+    task_ids: Sequence[str], seed: str, counts: Mapping[str, int] | None = None
+) -> dict[str, list[str]]:
+    """Derive stable splits with hash ordering and explicit or 40/30/30 counts.
 
     Args:
         task_ids: Unique fully qualified task IDs.
         seed: Versioned text seed recorded in the manifest.
+        counts: Explicit split sizes; omitted uses Hamilton 40/30/30 allocation.
 
     Returns:
         ``train``, ``val``, and ``test`` lists in deterministic hash order.
 
     Raises:
-        ValueError: Task IDs are empty or contain duplicates.
+        ValueError: Task IDs are empty or duplicated, or counts are invalid.
     """
     if not task_ids:
         raise ValueError("task_ids must not be empty")
@@ -276,12 +335,19 @@ def derive_terminalbench_splits(task_ids: Sequence[str], seed: str) -> dict[str,
             (hashlib.sha256(f"{seed}\0{task_id}".encode()).hexdigest(), task_id) for task_id in task_ids
         )
     ]
-    quotas = {name: len(ordered) * SPLIT_WEIGHTS[name] for name in SPLIT_NAMES}
-    counts = {name: int(quotas[name]) for name in SPLIT_NAMES}
-    unassigned = len(ordered) - sum(counts.values())
-    remainder_order = [name for _, name in sorted((-(quotas[name] - counts[name]), name) for name in SPLIT_NAMES)]
-    for name in remainder_order[:unassigned]:
-        counts[name] += 1
+    if counts is None:
+        quotas = {name: len(ordered) * SPLIT_WEIGHTS[name] for name in SPLIT_NAMES}
+        counts = {name: int(quotas[name]) for name in SPLIT_NAMES}
+        unassigned = len(ordered) - sum(counts.values())
+        remainder_order = [name for _, name in sorted((-(quotas[name] - counts[name]), name) for name in SPLIT_NAMES)]
+        for name in remainder_order[:unassigned]:
+            counts[name] += 1
+    elif (
+        set(counts) != set(SPLIT_NAMES)
+        or any(type(count) is not int or count < 0 for count in counts.values())
+        or sum(counts.values()) != len(ordered)
+    ):
+        raise ValueError("split counts must be non-negative integers covering every task exactly once")
 
     train_end = counts["train"]
     val_end = train_end + counts["val"]
@@ -293,7 +359,7 @@ def derive_terminalbench_splits(task_ids: Sequence[str], seed: str) -> dict[str,
 
 
 def load_terminalbench_manifest(path: str | Path) -> TerminalBenchManifest:
-    """Load and verify the pinned v3 manifest before any benchmark work begins.
+    """Load and verify either pinned experiment before benchmark work begins.
 
     Args:
         path: JSON manifest generated from the official Harbor registry.
@@ -306,23 +372,16 @@ def load_terminalbench_manifest(path: str | Path) -> TerminalBenchManifest:
     """
     manifest_path = Path(path).expanduser().resolve()
     payload = json.loads(manifest_path.read_text())
-    if payload.get("schema_version") != 1:
-        raise ValueError("Terminal-Bench manifest schema_version must be 1")
+    if payload.get("schema_version") != 2:
+        raise ValueError("Terminal-Bench manifest schema_version must be 2")
+    experiment = payload.get("experiment")
+    if experiment not in EXPERIMENT_DATASETS:
+        raise ValueError(f"Unknown Terminal-Bench experiment: {experiment!r}")
 
     dataset = payload.get("dataset")
     if not isinstance(dataset, dict):
         raise ValueError("Terminal-Bench manifest must contain a dataset object")
-    expected_pins = {
-        "identifier": PINNED_DATASET_IDENTIFIER,
-        "version": PINNED_DATASET_VERSION,
-        "reference": PINNED_DATASET_REFERENCE,
-        "registry_content_hash": PINNED_DATASET_CONTENT_HASH,
-        "source_repository": PINNED_SOURCE_REPOSITORY,
-        "source_tag": PINNED_SOURCE_TAG,
-        "source_commit": PINNED_SOURCE_COMMIT,
-        "task_count": PINNED_TASK_COUNT,
-        "harbor_version": PINNED_HARBOR_VERSION,
-    }
+    expected_pins = EXPERIMENT_DATASETS[experiment]
     for field, expected in expected_pins.items():
         if dataset.get(field) != expected:
             raise ValueError(f"manifest dataset.{field} must be {expected!r}; got {dataset.get(field)!r}")
@@ -331,15 +390,18 @@ def load_terminalbench_manifest(path: str | Path) -> TerminalBenchManifest:
         raise ValueError("Terminal-Bench manifest task_refs must be a non-empty object")
     normalized_refs: dict[str, str] = {}
     for task_id, ref in task_refs.items():
-        if not isinstance(task_id, str) or not task_id.startswith("terminal-bench/"):
+        if not isinstance(task_id, str) or not task_id:
             raise ValueError(f"invalid Terminal-Bench task ID: {task_id!r}")
-        if not isinstance(ref, str) or not ref.startswith("sha256:"):
-            raise ValueError(f"task {task_id!r} must have a sha256 registry ref")
+        if not isinstance(ref, str):
+            raise ValueError(f"task {task_id!r} must have an immutable source ref")
         normalized_refs[task_id] = ref
     if dataset.get("task_count") != len(normalized_refs):
         raise ValueError(
             f"manifest task_count is {dataset.get('task_count')!r}, but task_refs contains {len(normalized_refs)} tasks"
         )
+    refs_digest = hashlib.sha256(json.dumps(normalized_refs, sort_keys=True).encode()).hexdigest()
+    if refs_digest != dataset["task_refs_digest"]:
+        raise ValueError("manifest task refs differ from the pinned official task set")
 
     split_policy = payload.get("split_policy")
     if not isinstance(split_policy, dict) or not isinstance(split_policy.get("seed"), str):
@@ -359,7 +421,9 @@ def load_terminalbench_manifest(path: str | Path) -> TerminalBenchManifest:
         raise ValueError("Terminal-Bench manifest splits overlap")
     if set(flattened) != set(normalized_refs):
         raise ValueError("Terminal-Bench manifest splits must contain every task ref exactly once")
-    expected_splits = derive_terminalbench_splits(list(normalized_refs), split_policy["seed"])
+    expected_splits = derive_terminalbench_splits(
+        list(normalized_refs), split_policy["seed"], EXPERIMENT_SPLIT_COUNTS[experiment]
+    )
     if normalized_splits != expected_splits:
         raise ValueError("Terminal-Bench manifest splits do not match the recorded deterministic split policy")
     expected_counts = {name: len(expected_splits[name]) for name in SPLIT_NAMES}
@@ -368,6 +432,7 @@ def load_terminalbench_manifest(path: str | Path) -> TerminalBenchManifest:
 
     return TerminalBenchManifest(
         path=manifest_path,
+        experiment=experiment,
         dataset=dataset,
         split_policy=split_policy,
         task_refs=normalized_refs,
@@ -388,9 +453,10 @@ def render_terminus_prompt(candidate: Mapping[str, str]) -> str:
 
 
 class HarborCLI:
-    """Create isolated document-bundle jobs and execute them with pinned Harbor.
+    """Run pinned experiment candidates in isolated Harbor jobs.
 
     Args:
+        manifest: Validated experiment whose dataset and target this runner uses.
         student_model: Model used by Terminus to solve benchmark tasks.
         work_dir: Root for immutable document-bundle/config/job artifacts.
         agent_python_path: Directory added to ``PYTHONPATH`` so Harbor can load
@@ -409,6 +475,7 @@ class HarborCLI:
     def __init__(
         self,
         *,
+        manifest: TerminalBenchManifest,
         student_model: str,
         work_dir: str | Path,
         agent_python_path: str | Path,
@@ -422,6 +489,7 @@ class HarborCLI:
         """Configure the pinned Harbor subprocess boundary.
 
         Args:
+            manifest: Validated experiment whose dataset and target this runner uses.
             student_model: Model used by Terminus to solve benchmark tasks.
             work_dir: Root for candidate prompt, config, and job artifacts.
             agent_python_path: Directory added to ``PYTHONPATH`` for the
@@ -464,6 +532,7 @@ class HarborCLI:
         if overridden:
             raise ValueError(f"student_agent_kwargs cannot override fixed harness keys: {sorted(overridden)}")
 
+        self.manifest = manifest
         self.student_model = student_model
         self.work_dir = Path(work_dir).expanduser().resolve()
         self.agent_python_path = Path(agent_python_path).expanduser().resolve()
@@ -540,16 +609,16 @@ class HarborCLI:
         task_ids: Sequence[str],
         *,
         prompt_path: Path,
-        bundle_path: Path,
+        bundle_path: Path | None,
         jobs_dir: Path,
         job_name: str,
     ) -> dict[str, Any]:
         """Build the exact Harbor job for one candidate/batch evaluation.
 
         Args:
-            task_ids: Fully qualified pinned task IDs.
+            task_ids: Pinned task IDs using this dataset's native naming.
             prompt_path: Candidate-specific rendered Terminus template.
-            bundle_path: Complete candidate prompts and skill metadata.
+            bundle_path: Complete prompts and skills for the full-text experiment.
             jobs_dir: Candidate-specific Harbor jobs directory.
             job_name: Unique job name inside ``jobs_dir``.
 
@@ -558,7 +627,6 @@ class HarborCLI:
         """
         agent_kwargs: dict[str, Any] = {
             "prompt_template_path": str(prompt_path),
-            "document_bundle_path": str(bundle_path),
             "record_terminal_session": True,
             "store_all_messages": True,
             "trajectory_config": {"linear_history": False},
@@ -566,7 +634,17 @@ class HarborCLI:
         }
         if self.student_api_base is not None:
             agent_kwargs["api_base"] = self.student_api_base
-        return {
+        if self.manifest.experiment == "tb4-agent-text":
+            if bundle_path is None:
+                raise ValueError("tb4-agent-text requires a document bundle")
+            agent_kwargs["document_bundle_path"] = str(bundle_path)
+            agent_import_path = PROMPTED_TERMINUS_IMPORT_PATH
+        else:
+            agent_import_path = SYSTEM_PROMPT_TERMINUS_IMPORT_PATH
+        unknown = sorted(set(task_ids).difference(self.manifest.task_refs))
+        if unknown:
+            raise ValueError(f"tasks are not in pinned {self.manifest.dataset['reference']}: {unknown}")
+        config: dict[str, Any] = {
             "job_name": job_name,
             "jobs_dir": str(jobs_dir),
             "n_attempts": 1,
@@ -576,27 +654,39 @@ class HarborCLI:
             "environment": {"type": "docker", "force_build": False, "delete": True},
             "agents": [
                 {
-                    "import_path": PROMPTED_TERMINUS_IMPORT_PATH,
+                    "import_path": agent_import_path,
                     "model_name": self.student_model,
                     "skills": [],
                     "kwargs": agent_kwargs,
                 }
             ],
-            "datasets": [
+        }
+        if self.manifest.experiment == "tb4-agent-text":
+            config["datasets"] = [
                 {
-                    "name": PINNED_DATASET_IDENTIFIER,
-                    "ref": PINNED_DATASET_CONTENT_HASH,
+                    "name": self.manifest.dataset["identifier"],
+                    "ref": self.manifest.dataset["registry_content_hash"],
                     "task_names": list(task_ids),
                 }
-            ],
-        }
+            ]
+        else:
+            # Explicit Git sources avoid resolving a mutable legacy registry at run time.
+            config["tasks"] = [
+                {
+                    "path": task_id,
+                    "git_url": self.manifest.dataset["source_repository"],
+                    "git_commit_id": self.manifest.task_refs[task_id],
+                }
+                for task_id in task_ids
+            ]
+        return config
 
     def run(self, task_ids: Sequence[str], candidate: Mapping[str, str]) -> HarborEvaluation:
         """Run one isolated Harbor job and parse every task by exact ID.
 
         Args:
-            task_ids: Unique fully qualified task IDs in desired output order.
-            candidate: Complete GEPA document bundle.
+            task_ids: Unique pinned task IDs in desired output order.
+            candidate: Complete set of editable documents for this experiment.
 
         Returns:
             Evaluation metadata and a task-ID keyed trial map.
@@ -615,15 +705,31 @@ class HarborCLI:
             raise ValueError("task_ids must not be empty")
         if len(set(task_ids)) != len(task_ids):
             raise ValueError("task_ids must be unique within one Harbor job")
-        validate_documents(candidate)
+        self.manifest.validate_candidate(candidate)
         harbor, _docker = self.check_requirements()
 
-        candidate_digest = document_digest(candidate)
+        candidate_digest = self.manifest.candidate_digest(candidate)
         evaluation_id = f"{candidate_digest[:12]}-{uuid.uuid4().hex}"
         evaluation_dir = self.work_dir / "evaluations" / evaluation_id
         evaluation_dir.mkdir(parents=True, exist_ok=False)
         prompt_path = evaluation_dir / "terminus-prompt.txt"
-        bundle_path = write_document_bundle(evaluation_dir, candidate)
+        bundle_path = None
+        if self.manifest.experiment == "tb4-agent-text":
+            bundle_path = write_document_bundle(evaluation_dir, candidate)
+        else:
+            prompt = escape_document(candidate["system_prompt"])
+            prompt_path.write_text(
+                prompt + "\n\nTask Description:\n{instruction}\n\nCurrent terminal state:\n{terminal_state}\n",
+                encoding="utf-8",
+            )
+        (evaluation_dir / "candidate.json").write_text(
+            json.dumps(
+                {"experiment": self.manifest.experiment, "digest": candidate_digest, "documents": dict(candidate)},
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         jobs_dir = evaluation_dir / "jobs"
         job_name = f"candidate-{candidate_digest[:12]}"
         config = self.build_job_config(
@@ -753,10 +859,10 @@ class HarborCLI:
 
 
 class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, TerminalBenchOutput]):
-    """Evaluate an agent document bundle with Terminus and official Harbor rewards.
+    """Evaluate the selected text target with Terminus and official Harbor rewards.
 
     Args:
-        manifest: Checked-in, validated v3 manifest.
+        manifest: Checked-in, validated experiment manifest.
         harbor: Pinned Harbor subprocess runner configured with the student
             model. The proposer model is supplied separately to ``gepa.optimize``.
     """
@@ -765,9 +871,14 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
         """Bind the validated manifest to its Harbor runner.
 
         Args:
-            manifest: Checked-in, validated Terminal-Bench v3 manifest.
+            manifest: Checked-in, validated experiment manifest.
             harbor: Pinned runner configured with the student model.
+
+        Raises:
+            ValueError: The adapter and runner use different manifests.
         """
+        if manifest != harbor.manifest:
+            raise ValueError("Adapter and Harbor runner must use the same Terminal-Bench manifest")
         self.manifest = manifest
         self.harbor = harbor
 
@@ -781,7 +892,7 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
 
         Args:
             batch: Pinned task records.
-            candidate: Complete reusable prompts and skills.
+            candidate: The single system prompt or full prompt-and-skill bundle.
             capture_traces: Whether to return full ATIF/result evidence to GEPA.
 
         Returns:
@@ -791,11 +902,11 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
             ValueError: Candidate components or task IDs violate the harness
                 contract.
         """
-        validate_documents(candidate)
+        self.manifest.validate_candidate(candidate)
         task_ids = [task.task_id for task in batch]
         unknown = sorted(set(task_ids).difference(self.manifest.task_refs))
         if unknown:
-            raise ValueError(f"tasks are not in pinned {PINNED_DATASET_REFERENCE}: {unknown}")
+            raise ValueError(f"tasks are not in pinned {self.manifest.dataset['reference']}: {unknown}")
         evaluation = self.harbor.run(task_ids, candidate)
 
         outputs: list[TerminalBenchOutput] = []
@@ -861,9 +972,9 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
             ValueError: A component is unknown or the candidate is incomplete.
             RuntimeError: The evaluation omitted trajectories.
         """
-        if not components_to_update or not set(components_to_update).issubset(COMPONENT_KINDS):
+        if not components_to_update or not set(components_to_update).issubset(self.manifest.component_kinds):
             raise ValueError(f"Unknown Terminal Bench document selection: {components_to_update}")
-        validate_documents(candidate)
+        self.manifest.validate_candidate(candidate)
         if eval_batch.trajectories is None:
             raise RuntimeError("Terminal-Bench reflection requires capture_traces=True")
 
@@ -872,7 +983,8 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
             rows.append(
                 {
                     "Inputs": {
-                        "dataset": PINNED_DATASET_REFERENCE,
+                        "dataset": self.manifest.dataset["reference"],
+                        "experiment": self.manifest.experiment,
                         "task_id": trajectory["task_id"],
                     },
                     "Generated Outputs": {
@@ -898,7 +1010,11 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
             component: [
                 {
                     **row,
-                    "Document": {"name": component, "kind": COMPONENT_KINDS[component], "text": candidate[component]},
+                    "Document": {
+                        "name": component,
+                        "kind": self.manifest.component_kinds[component],
+                        "text": candidate[component],
+                    },
                 }
                 for row in rows
             ]

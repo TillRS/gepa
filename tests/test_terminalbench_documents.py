@@ -75,12 +75,16 @@ def test_prompt_only_candidates_cannot_resume_as_complete_bundles() -> None:
         validate_documents({"instruction_prompt": "old experiment"})
 
 
-def test_cli_gives_both_methods_the_same_documents_and_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("experiment", cli.EXPERIMENT_MANIFESTS)
+def test_cli_gives_both_methods_the_same_documents_and_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str
+) -> None:
     """Exercise the real CLI wiring without starting model calls or Docker.
 
     Args:
         tmp_path: Separate run directories for the two conditions.
         monkeypatch: Fixture replacing only external execution boundaries.
+        experiment: Each independently selectable benchmark and optimization target.
     """
     optimize = Mock()
     monkeypatch.setattr(cli, "optimize", optimize)
@@ -90,6 +94,8 @@ def test_cli_gives_both_methods_the_same_documents_and_runtime(tmp_path: Path, m
             "sys.argv",
             [
                 "terminalbench",
+                "--experiment",
+                experiment,
                 "--condition",
                 condition,
                 "--max-metric-calls",
@@ -115,9 +121,16 @@ def test_cli_gives_both_methods_the_same_documents_and_runtime(tmp_path: Path, m
         assert vanilla[key] == forest[key]
     assert vanilla["reflection_level"] == 0
     assert forest["reflection_level"] == 2
-    assert vanilla["component_kinds"] == COMPONENT_KINDS
-    assert set(vanilla["seed_candidate"]) == set(COMPONENT_KINDS)
+    expected = COMPONENT_KINDS if experiment == "tb4-agent-text" else {"system_prompt": "system_prompt"}
+    assert vanilla["component_kinds"] == expected
+    assert set(vanilla["seed_candidate"]) == set(expected)
+    for invocation in (vanilla, forest):
+        assert invocation["adapter"].manifest.experiment == experiment
+        assert invocation["adapter"].harbor.manifest.experiment == experiment
+        test_ids = set(invocation["adapter"].manifest.splits["test"])
+        assert not test_ids.intersection(task.task_id for task in invocation["trainset"] + invocation["valset"])
     old_contract = json.loads((tmp_path / "vanilla" / cli.RUN_CONTRACT_FILENAME).read_text())
+    assert old_contract["experiment"] == experiment
     old_contract["schema_version"] = 4
     with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
         cli.ensure_run_contract(tmp_path / "vanilla", old_contract)

@@ -26,7 +26,7 @@ from harbor.models.job.config import JobConfig
 from harbor.models.trajectories import Step
 
 from examples.terminalbench.terminus_agent import PromptedTerminus
-from gepa.adapters.terminal_bench_adapter import HarborCLI
+from gepa.adapters.terminal_bench_adapter import HarborCLI, load_terminalbench_manifest
 from gepa.adapters.terminal_bench_adapter.documents import seed_documents, write_document_bundle
 
 
@@ -172,7 +172,14 @@ def test_job_config_is_accepted_by_pinned_harbor(runtime: tuple) -> None:
         runtime: Fixture providing a materialized candidate bundle.
     """
     _, _, _, root = runtime
-    runner = HarborCLI(student_model="openai/gpt-4o-mini", work_dir=root, agent_python_path=Path(__file__).parents[2])
+    runner = HarborCLI(
+        manifest=load_terminalbench_manifest(
+            Path(__file__).parents[2] / "examples/terminalbench/terminalbench-v4-manifest.json"
+        ),
+        student_model="openai/gpt-4o-mini",
+        work_dir=root,
+        agent_python_path=Path(__file__).parents[2],
+    )
     config = runner.build_job_config(
         ["terminal-bench/cad-model"],
         prompt_path=root / "terminus-prompt.txt",
