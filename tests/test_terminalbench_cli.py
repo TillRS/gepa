@@ -176,7 +176,9 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 12
+    assert contract["schema_version"] == 13
+    assert contract["failure_policy"]["accepted_trial_exceptions"] == ["AgentTimeoutError"]
+    assert contract["failure_policy"]["harbor_max_retries"] == 0
     assert contract["reflection_feedback"]["reflection_split"] == "train"
     assert contract["reflection_feedback"]["max_bytes_per_verifier_log"] == 8192
     assert contract["component_kinds"] == COMPONENT_KINDS
@@ -377,7 +379,8 @@ def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
         """Keep CLI budget wiring while replacing model work with the adapter."""
         kwargs["reflection_lm"] = None
         kwargs["callbacks"] = [SamplingRecorder()]
-        results.append(optimize(**kwargs, display_progress_bar=False, raise_on_exception=True))
+        assert kwargs["raise_on_exception"] is True
+        results.append(optimize(**kwargs, display_progress_bar=False))
 
     monkeypatch.setattr(terminalbench_main.HarborCLI, "check_requirements", Mock())
     monkeypatch.setattr(terminalbench_main, "TerminalBenchAdapter", lambda *args: BudgetAdapter())

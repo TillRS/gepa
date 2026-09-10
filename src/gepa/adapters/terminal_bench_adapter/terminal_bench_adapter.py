@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -65,15 +66,26 @@ SUPPORTED_ATIF_SCHEMA_VERSIONS = {f"ATIF-v1.{minor}" for minor in range(8)}
 VERIFIER_LOG_FILENAMES = ("test-stdout.txt", "test-stderr.txt")
 MAX_VERIFIER_LOG_BYTES = 8192
 REFLECTION_FEEDBACK_CONTRACT = {
-    "version": 1,
+    "version": 2,
     "score": "official_verifier_reward",
     "reflection_split": "train",
+    "trajectory_directories": ["agent", "steps/*/agent"],
     "verifier_log_filenames": list(VERIFIER_LOG_FILENAMES),
     "verifier_log_directories": ["verifier", "steps/*/verifier"],
     "max_bytes_per_verifier_log": MAX_VERIFIER_LOG_BYTES,
     "log_truncation": "equal_head_and_tail_with_omitted_byte_marker",
     "log_decoding": "utf-8-replace",
     "missing_verifier_logs": "explicitly_unavailable",
+}
+FAILURE_POLICY_CONTRACT = {
+    "version": 1,
+    "accepted_trial_exceptions": ["AgentTimeoutError"],
+    "agent_timeout_score": "official_verifier_reward",
+    "timed_out_step_requires_verifier_rewards": True,
+    "harbor_max_retries": 0,
+    "infrastructure_or_evidence_failure": "raise_without_score",
+    "recovery": "explicit_resume_after_repair",
+    "failed_job_usage": "preserved_in_harbor_artifacts_separate_from_scored_evaluations",
 }
 
 
@@ -260,17 +272,20 @@ def _read_verifier_logs(trial_dir: Path) -> dict[str, str]:
     return logs
 
 
-def _validate_job_result(raw_result: Any, expected_trials: int, result_path: Path) -> None:
-    """Require Harbor's completed-job counters to describe a clean run.
+def _validate_job_result(raw_result: Any, expected_trials: int, result_path: Path, *, verified_timeouts: int) -> None:
+    """Reconcile Harbor's completed-job counters with verified timeout trials.
 
     Args:
         raw_result: Decoded Harbor job result.
         expected_trials: Exact requested trial count.
         result_path: Result path included in boundary errors.
+        verified_timeouts: Trial-level timeouts already validated against
+            official verifier results. Harbor counts these as both completed
+            and errored; step-level exceptions do not increment that counter.
 
     Raises:
         HarborExecutionError: The result shape, completion marker, or trial
-            counters do not describe a clean finished job.
+            counters do not describe a complete, single-attempt evaluation.
     """
     if not isinstance(raw_result, dict):
         raise HarborExecutionError(f"Harbor job result {result_path} is not a JSON object")
@@ -286,19 +301,51 @@ def _validate_job_result(raw_result: Any, expected_trials: int, result_path: Pat
             "n_running_trials",
             "n_pending_trials",
             "n_cancelled_trials",
+            "n_retries",
         )
     }
     if (
         raw_result.get("finished_at") is None
         or raw_result.get("n_total_trials") != expected_trials
         or counts["n_completed_trials"] != expected_trials
-        or any(counts[name] != 0 for name in counts if name != "n_completed_trials")
+        or counts["n_errored_trials"] != verified_timeouts
+        or any(counts[name] != 0 for name in counts if name not in {"n_completed_trials", "n_errored_trials"})
     ):
         raise HarborExecutionError(
-            f"Harbor job result {result_path} is not a clean completed job: "
+            f"Harbor job result {result_path} is not a complete single-attempt job: "
             f"finished_at={raw_result.get('finished_at')!r}, "
             f"n_total_trials={raw_result.get('n_total_trials')!r}, stats={counts!r}"
         )
+
+
+def _read_verifier_rewards(
+    raw_result: Mapping[str, Any], task_id: str, *, require_canonical: bool = True
+) -> dict[str, float]:
+    """Require finite official rewards before accepting a trial or timed-out step.
+
+    Args:
+        raw_result: Trial or step result containing verifier evidence.
+        task_id: Task identity, including step name when applicable.
+        require_canonical: Require the overall trial's canonical score key.
+
+    Returns:
+        Official verifier rewards converted to finite floats.
+
+    Raises:
+        HarborExecutionError: Verification is missing or its rewards are invalid.
+    """
+    verifier_result = raw_result.get("verifier_result")
+    raw_rewards = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
+    if not isinstance(raw_rewards, dict) or not raw_rewards or (require_canonical and "reward" not in raw_rewards):
+        required = "canonical verifier reward" if require_canonical else "verifier rewards"
+        raise HarborExecutionError(f"Harbor trial {task_id!r} did not return the required {required}")
+    try:
+        rewards = {name: float(value) for name, value in raw_rewards.items()}
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HarborExecutionError(f"Harbor trial {task_id!r} returned non-numeric rewards") from exc
+    if not all(math.isfinite(value) for value in rewards.values()):
+        raise HarborExecutionError(f"Harbor trial {task_id!r} returned non-finite verifier rewards")
+    return rewards
 
 
 def _load_atif_trajectory(trajectory_path: Path) -> dict[str, Any]:
@@ -697,6 +744,7 @@ class HarborCLI:
             "job_name": job_name,
             "jobs_dir": str(jobs_dir),
             "n_attempts": 1,
+            "retry": {"max_retries": FAILURE_POLICY_CONTRACT["harbor_max_retries"]},
             "timeout_multiplier": 1.0,
             "n_concurrent_trials": self.n_concurrent,
             "quiet": True,
@@ -825,7 +873,6 @@ class HarborCLI:
             raw_job_result = json.loads(job_result_path.read_text())
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise HarborExecutionError(f"Harbor job result {job_result_path} is unreadable") from exc
-        _validate_job_result(raw_job_result, len(task_ids), job_result_path)
 
         trials: dict[str, HarborTrialResult] = {}
         for result_path in sorted(job_dir.glob("*/result.json")):
@@ -836,37 +883,32 @@ class HarborCLI:
             if task_id in trials:
                 raise HarborExecutionError(f"Harbor produced duplicate results for task {task_id!r}")
 
-            verifier_result = raw_result.get("verifier_result")
-            raw_rewards = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
-            if not isinstance(raw_rewards, dict) or "reward" not in raw_rewards:
-                raise HarborExecutionError(
-                    f"Harbor trial {task_id!r} did not return the canonical verifier reward in {result_path}"
-                )
-            try:
-                rewards = {name: float(value) for name, value in raw_rewards.items()}
-            except (TypeError, ValueError) as exc:
-                raise HarborExecutionError(f"Harbor trial {task_id!r} returned non-numeric rewards") from exc
+            rewards = _read_verifier_rewards(raw_result, task_id)
             errors: list[str] = []
-            exception_info = raw_result.get("exception_info")
-            if isinstance(exception_info, dict):
+            step_results = raw_result.get("step_results")
+            if step_results is not None and not isinstance(step_results, list):
+                raise HarborExecutionError(f"Harbor trial {task_id!r} returned invalid step results")
+            for record in [raw_result, *(step_results or [])]:
+                if not isinstance(record, dict):
+                    raise HarborExecutionError(f"Harbor trial {task_id!r} returned an invalid step result")
+                exception_info = record.get("exception_info")
+                if exception_info is None:
+                    continue
+                if not isinstance(exception_info, dict):
+                    raise HarborExecutionError(f"Harbor trial {task_id!r} returned invalid exception evidence")
                 exception_type = exception_info.get("exception_type", "Exception")
                 exception_message = exception_info.get("exception_message", "")
-                errors.append(f"{exception_type}: {exception_message}".rstrip())
-            step_results = raw_result.get("step_results")
-            if isinstance(step_results, list):
-                for step in step_results:
-                    if not isinstance(step, dict) or not isinstance(step.get("exception_info"), dict):
-                        continue
-                    step_exception = step["exception_info"]
-                    step_name = step.get("step_name", "unknown step")
-                    exception_type = step_exception.get("exception_type", "Exception")
-                    exception_message = step_exception.get("exception_message", "")
-                    errors.append(f"{step_name}: {exception_type}: {exception_message}".rstrip())
-            if errors:
-                raise HarborExecutionError(f"Harbor trial {task_id!r} reported execution errors: {'; '.join(errors)}")
-            agent_dir = result_path.parent / "agent"
+                scope = f"{record.get('step_name', 'unknown step')}: " if record is not raw_result else ""
+                error = f"{scope}{exception_type}: {exception_message}".rstrip()
+                if exception_type not in FAILURE_POLICY_CONTRACT["accepted_trial_exceptions"]:
+                    raise HarborExecutionError(f"Harbor trial {task_id!r} reported execution errors: {error}")
+                if record is not raw_result:
+                    _read_verifier_rewards(record, f"{task_id}/{record.get('step_name')}", require_canonical=False)
+                errors.append(error)
             atif_trajectories: list[dict[str, Any]] = []
-            for trajectory_path in sorted(agent_dir.glob("trajectory*.json")):
+            trajectory_paths = sorted(result_path.parent.glob("agent/trajectory*.json"))
+            trajectory_paths.extend(sorted(result_path.parent.glob("steps/*/agent/trajectory*.json")))
+            for trajectory_path in trajectory_paths:
                 atif_trajectories.append(_load_atif_trajectory(trajectory_path))
             if not atif_trajectories:
                 raise HarborExecutionError(f"Harbor trial {task_id!r} did not emit an ATIF trajectory")
@@ -888,6 +930,12 @@ class HarborCLI:
             raise HarborExecutionError(
                 f"Harbor result/task mismatch for evaluation {evaluation_id}: missing={missing}, unexpected={unexpected}"
             )
+        _validate_job_result(
+            raw_job_result,
+            len(task_ids),
+            job_result_path,
+            verified_timeouts=sum(trial.raw_result.get("exception_info") is not None for trial in trials.values()),
+        )
         return HarborEvaluation(
             evaluation_id=evaluation_id,
             candidate_digest=candidate_digest,

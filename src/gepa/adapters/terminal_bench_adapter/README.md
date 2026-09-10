@@ -101,6 +101,35 @@ and held-out test feedback cannot enter optimization. The run contract pins the
 feedback version, log locations, byte limit, decoding, and missing-log policy.
 Earlier runs without this feedback contract require fresh directories.
 
+#### Task failures, timeouts, and recovery
+
+All six configurations on both benchmarks use the same policy. A completed
+task keeps its official verifier reward, including zero for unsuccessful work.
+An `AgentTimeoutError` also keeps the official reward when valid verification
+and a trajectory exist; the timeout remains visible in reflection feedback.
+Reaching the agent time limit can still score one if the final work passes.
+Harbor's job error counter must match exactly these verified trial timeouts.
+For multi-step tasks, a timed-out step must have its own verifier rewards;
+an aggregate reward cannot hide an unverified step. ATIF trajectories are read
+from both `agent/` and Harbor's archived `steps/*/agent/` directories.
+
+Provider, container, verifier, subprocess, and missing/invalid-evidence failures
+stop optimization or final testing without a fabricated score. This follows
+HotPotQA's distinction between task outcomes and systemic failures; HotPotQA
+also scores its specific malformed task-output case as zero. Terminal-Bench's
+timeout handling uses Harbor's verifier instead of assigning an automatic zero.
+
+Every Harbor job explicitly uses `n_attempts=1` and `retry.max_retries=0`.
+There are no automatic retries of failed jobs or extra attempts to improve a
+completed score. Repair infrastructure before explicitly resuming. Completed
+test repetitions remain reusable; an interrupted, unrecorded repetition starts
+again as described below. Failed-job logs and any Harbor-recorded token/cost
+counters remain in their original evaluation directories, separate from scored
+GEPA evaluations. Those recovery costs must be reported separately rather than
+inferred from `total_metric_calls`; unavailable usage is not zero cost.
+Run contracts pin this policy and reject earlier or changed policies on resume
+and when freezing final comparisons.
+
 #### Reference protocol and pending confirmation
 
 The working decision is to optimize the full text surface on both benchmarks.

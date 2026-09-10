@@ -104,7 +104,7 @@ def _write_job_result(job_dir: Path, task_count: int, *, errored_trials: int = 0
     Args:
         job_dir: Harbor job directory receiving ``result.json``.
         task_count: Expected and completed trial count.
-        errored_trials: Error counter used to construct invalid job evidence.
+        errored_trials: Reported trial exceptions, including verified timeouts.
     """
     payload = {
         "finished_at": "2026-08-22T12:00:00Z",
@@ -115,6 +115,7 @@ def _write_job_result(job_dir: Path, task_count: int, *, errored_trials: int = 0
             "n_running_trials": 0,
             "n_pending_trials": 0,
             "n_cancelled_trials": 0,
+            "n_retries": 0,
         },
     }
     (job_dir / "result.json").write_text(json.dumps(payload))
@@ -559,7 +560,7 @@ def test_runner_isolates_candidates_and_adapter_maps_complete_evidence_by_task_i
     ("failure", "match"),
     [
         ("process", "exited with status 1"),
-        ("job", "not a clean completed job"),
+        ("job", "not a complete single-attempt job"),
         ("missing_task", "result/task mismatch"),
         ("missing_reward", "canonical verifier reward"),
         ("missing_atif", "ATIF trajectory"),
@@ -665,6 +666,106 @@ def test_runner_preserves_valid_verified_zero_reward(tmp_path: Path, monkeypatch
     assert evaluated.outputs[0]["errors"] == []
     assert evaluated.trajectories is not None
     assert evaluated.trajectories[0]["atif_trajectories"]
+
+
+@pytest.mark.parametrize("manifest_path", [TB2_MANIFEST_PATH, MANIFEST_PATH], ids=["tb2", "tb4"])
+@pytest.mark.parametrize("reward", [0.0, 1.0])
+@pytest.mark.parametrize("scope", ["trial", "step"])
+def test_verified_agent_timeout_counts_once_and_reaches_reflection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manifest_path: Path, reward: float, scope: str
+) -> None:
+    """Keep the actual timeout reward and diagnostics without retrying the task."""
+    manifest = load_terminalbench_manifest(manifest_path)
+    runner = HarborCLI(work_dir=tmp_path, **{**_RUNNER_OPTIONS, "manifest": manifest})
+    monkeypatch.setattr(runner, "check_requirements", Mock(return_value=("/mock/harbor", "/mock/docker")))
+    task = manifest.tasks("train", 1)[0]
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        """Emit a verified task whose agent reached the official time limit."""
+        config = json.loads(Path(command[command.index("--config") + 1]).read_text())
+        assert config["n_attempts"] == 1
+        assert config["retry"]["max_retries"] == 0
+        job_dir = Path(config["jobs_dir"]) / config["job_name"]
+        job_dir.mkdir(parents=True)
+        _write_job_result(job_dir, 1, errored_trials=int(scope == "trial"))
+        _write_trial_result(job_dir, task.task_id, reward=reward)
+        result_path = job_dir / "trial-0/result.json"
+        result = json.loads(result_path.read_text())
+        exception = {"exception_type": "AgentTimeoutError", "exception_message": "Official agent time limit reached"}
+        if scope == "trial":
+            result["exception_info"] = exception
+        else:
+            result["step_results"] = [
+                {"step_name": "solve", "exception_info": exception, "verifier_result": {"rewards": {"reward": reward}}}
+            ]
+            step_dir = result_path.parent / "steps/solve"
+            step_dir.mkdir(parents=True)
+            (result_path.parent / "agent").rename(step_dir / "agent")
+        result_path.write_text(json.dumps(result))
+        return subprocess.CompletedProcess(command, 0, stdout="complete", stderr="")
+
+    process = Mock(side_effect=run)
+    monkeypatch.setattr(terminalbench_module.subprocess, "run", process)
+    adapter = TerminalBenchAdapter(manifest, runner)
+    candidate = _candidate()
+    evaluated = adapter.evaluate([task], candidate, capture_traces=True)
+
+    process.assert_called_once()
+    assert evaluated.scores == [reward]
+    assert evaluated.num_metric_calls == 1
+    assert "AgentTimeoutError" in evaluated.outputs[0]["errors"][0]
+    rows = adapter.make_reflective_dataset(candidate, evaluated, list(COMPONENT_KINDS))
+    for entries in rows.values():
+        feedback = json.loads(entries[0]["Feedback"])
+        assert feedback["reward"] == reward
+        assert "Official agent time limit reached" in feedback["errors"][0]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["unverified_timeout", "unverified_step_timeout", "provider", "verifier", "nan_reward", "retried", "error_count"],
+)
+def test_timeout_policy_rejects_unverified_infrastructure_and_extra_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Never let a timeout exception conceal missing evidence or an infrastructure error."""
+    runner = HarborCLI(work_dir=tmp_path, **_RUNNER_OPTIONS)
+    monkeypatch.setattr(runner, "check_requirements", Mock(return_value=("/mock/harbor", "/mock/docker")))
+    task = runner.manifest.tasks("train", 1)[0]
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        """Write a nominally completed job with one invalid timeout-policy condition."""
+        config = json.loads(Path(command[command.index("--config") + 1]).read_text())
+        job_dir = Path(config["jobs_dir"]) / config["job_name"]
+        job_dir.mkdir(parents=True)
+        _write_job_result(job_dir, 1, errored_trials=0 if failure in {"unverified_step_timeout", "error_count"} else 1)
+        _write_trial_result(job_dir, task.task_id, reward=None if failure == "unverified_timeout" else 1.0)
+        result_path = job_dir / "trial-0/result.json"
+        result = json.loads(result_path.read_text())
+        exception_type = {"provider": "ConnectionError", "verifier": "VerifierTimeoutError"}.get(
+            failure, "AgentTimeoutError"
+        )
+        exception = {"exception_type": exception_type, "exception_message": "failed"}
+        result["exception_info"] = exception
+        if failure == "unverified_step_timeout":
+            result["exception_info"] = None
+            result["step_results"] = [{"step_name": "solve", "exception_info": exception, "verifier_result": None}]
+        if failure == "nan_reward":
+            result["verifier_result"]["rewards"]["reward"] = float("nan")
+        result_path.write_text(json.dumps(result))
+        if failure == "retried":
+            job_path = job_dir / "result.json"
+            job = json.loads(job_path.read_text())
+            job["stats"]["n_retries"] = 1
+            job_path.write_text(json.dumps(job))
+        return subprocess.CompletedProcess(command, 0, stdout="complete", stderr="")
+
+    process = Mock(side_effect=run)
+    monkeypatch.setattr(terminalbench_module.subprocess, "run", process)
+    with pytest.raises(HarborExecutionError):
+        TerminalBenchAdapter(runner.manifest, runner).evaluate([task], _candidate(), capture_traces=True)
+    process.assert_called_once()
+    assert len(list(tmp_path.glob("evaluations/*/jobs/*/trial-0/result.json"))) == 1
 
 
 @pytest.mark.parametrize("manifest_path", [TB2_MANIFEST_PATH, MANIFEST_PATH], ids=["tb2", "tb4"])

@@ -49,10 +49,10 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
     )
     monkeypatch.setattr(Terminus2, "_init_llm", Mock(return_value=model))
     root = Path(__file__).parents[2]
-    manifest = load_terminalbench_manifest(root / f"examples/terminalbench/terminalbench-v{request.param}-manifest.json")
-    runner = HarborCLI(
-        manifest=manifest, student_model="openai/gpt-4o-mini", work_dir=tmp_path, agent_python_path=root
+    manifest = load_terminalbench_manifest(
+        root / f"examples/terminalbench/terminalbench-v{request.param}-manifest.json"
     )
+    runner = HarborCLI(manifest=manifest, student_model="openai/gpt-4o-mini", work_dir=tmp_path, agent_python_path=root)
     config = runner.build_job_config(
         [manifest.tasks("train", 1)[0].task_id],
         prompt_path=tmp_path / "terminus-prompt.txt",
@@ -187,6 +187,8 @@ def test_job_config_is_accepted_by_pinned_harbor(runtime: tuple) -> None:
     _, _, _, root = runtime
     config = json.loads((root / "job-config.json").read_text())
     parsed = JobConfig.model_validate(config)
+    assert parsed.n_attempts == 1
+    assert parsed.retry.max_retries == 0
     assert parsed.agents[0].kwargs["document_bundle_path"] == str(root / "document-bundle.json")
     assert parsed.agents[0].import_path == "examples.terminalbench.terminus_agent:PromptedTerminus"
     assert parsed.agents[0].override_timeout_sec is None

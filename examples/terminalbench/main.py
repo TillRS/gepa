@@ -45,7 +45,10 @@ from gepa.adapters.terminal_bench_adapter.documents import (
     BUNDLE_VERSION,
     seed_documents,
 )
-from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import REFLECTION_FEEDBACK_CONTRACT
+from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import (
+    FAILURE_POLICY_CONTRACT,
+    REFLECTION_FEEDBACK_CONTRACT,
+)
 from gepa.lm import LM
 from gepa.strategies.action_space import stateless_selector_policy_contract
 from gepa.strategies.intervention import (
@@ -260,7 +263,7 @@ def build_run_contract(
         UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT if condition == "react_v2_random" else CONTROLLER_POLICY_CONTRACT
     )
     return {
-        "schema_version": 12,
+        "schema_version": 13,
         "experiment": manifest.experiment,
         "optimization_target": "agent_text",
         "condition": condition,
@@ -280,6 +283,7 @@ def build_run_contract(
         "max_metric_calls": args.max_metric_calls,
         "evaluation_protocol": dict(EVALUATION_PROTOCOL),
         "reflection_feedback": deepcopy(REFLECTION_FEEDBACK_CONTRACT),
+        "failure_policy": deepcopy(FAILURE_POLICY_CONTRACT),
         "optimization_budget": {
             "unit": "training_epochs",
             "reference": "https://arxiv.org/html/2608.23041v1#A2",
@@ -423,6 +427,7 @@ def main() -> None:
         sampling_strategy=SingleMutationSampling(),
         module_selector=contract["module_selector"],
         use_merge=False,
+        raise_on_exception=True,
         run_dir=str(args.run_dir),
         seed=args.seed,
         reflection_level=contract["reflection_level"],
