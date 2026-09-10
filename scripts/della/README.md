@@ -33,3 +33,13 @@ Each HotPotQA arm contains the existing six optimization cells. DeepSeek first
 runs the multi-tool canary; a failed canary prevents its campaign from starting.
 Use a fresh campaign ID after changing models or serving environments. Previous
 GLM results and checkpoints cannot be resumed as DeepSeek runs.
+
+HotPotQA reflection uses the configured model context window without an
+additional 8,000-character Manifestor trace cap. Exact repeated long text and
+paragraphs are shown once per request with references for later occurrences;
+long identical-line runs retain one line and a repetition count. Distinct
+passages, reasoning, task outcomes, and gold feedback remain available. FOREST
+reads feedback once in the per-example traces. Original evaluation records are
+unchanged. Context overflow remains a provider error that stops the run; it
+does not silently truncate evidence. The reflection policy is part of run
+identity, so earlier checkpoints require a fresh campaign.

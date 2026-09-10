@@ -411,7 +411,7 @@ def test_three_role_run_contract_blocks_catalog_or_policy_drift(tmp_path: Path) 
     """
     strat, _ = strategy(2)
     contract = strat.run_contract({"sys": PROMPT})
-    assert contract["schema_version"] == 4
+    assert contract["schema_version"] == 5
     assert contract["component_kinds"] == {"sys": "system_prompt"}
     assert contract["controller"]["version"] == 4
     assert contract["controller"]["factorization"] == "P(region, action)"
@@ -809,6 +809,29 @@ def test_manifestor_receives_only_selected_section_feedback_and_trace() -> None:
     assert "Output: vague answer" in manifestor_prompt
 
 
+def test_long_context_roles_receive_late_evidence_and_feedback_once() -> None:
+    """Preserve the end of a long trace and avoid a second copy of feedback."""
+    lm = ThreeRoleLM(list(DIRECT_REEXPRESS_REPLIES))
+    strat, _ = strategy(2, lm=lm, manifestor_traces_chars=None)
+    evidence = "\n".join(f"Distinct command {index} produced observation {index}" for index in range(400))
+    entries = {
+        "sys": [
+            {
+                "Not rendered": evidence + "\nLATE_EVIDENCE",
+                "Inputs": "question",
+                "Generated Outputs": evidence + "\nLATE_EVIDENCE",
+                "Feedback": "TASK_ERROR",
+            }
+        ]
+    }
+    strat.reflect({"sys": PROMPT}, entries, ["sys"])
+    manifestor_prompt = next(call for call in lm.string_calls if "Write the next instruction" in call)
+    react_prompt = json.dumps(lm.react_calls[0])
+    for prompt in (manifestor_prompt, react_prompt):
+        assert "LATE_EVIDENCE" in prompt
+        assert prompt.count("TASK_ERROR") == 1
+
+
 def test_reconstructed_component_enforces_the_full_length_cap() -> None:
     """Reject a section body that fits alone but overflows its parent document."""
     lm = ThreeRoleLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be much nicer")])
@@ -1038,8 +1061,7 @@ def test_reflect_many_aligns_each_job_with_its_own_history() -> None:
                     {
                         "role": "user",
                         "content": (
-                            "Optimizer result: accepted; the branch now contains this edit. "
-                            "Edit target: sys:Rules."
+                            "Optimizer result: accepted; the branch now contains this edit. Edit target: sys:Rules."
                         ),
                     },
                 ]
@@ -1050,8 +1072,7 @@ def test_reflect_many_aligns_each_job_with_its_own_history() -> None:
                     {
                         "role": "user",
                         "content": (
-                            "Optimizer result: accepted; the branch now contains this edit. "
-                            "Edit target: sys:Rules."
+                            "Optimizer result: accepted; the branch now contains this edit. Edit target: sys:Rules."
                         ),
                     },
                 ]

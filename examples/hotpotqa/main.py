@@ -99,6 +99,7 @@ from gepa.strategies.intervention import (
 )
 from gepa.strategies.proposal_sampling import SingleMutationSampling
 from gepa.strategies.proposal_selection import AllImprovements
+from gepa.strategies.reflection_context import REFLECTION_CONTEXT_CONTRACT
 
 # GEPA artifact components: summarize1 -> create_query_hop2 -> summarize2 -> final_answer.
 SEED_CANDIDATE = {
@@ -548,7 +549,7 @@ def build_run_contract(condition: str, args) -> dict:
         else:
             semantic_controller_policy = deepcopy(CONTROLLER_POLICY_CONTRACT)
     return {
-        "schema_version": 15,
+        "schema_version": 16,
         "benchmark": "hotpotqa-fullwiki-wiki17",
         "reference_artifact_commit": GEPA_ARTIFACT_COMMIT,
         "scientific_contract_enforced": scientific_contract,
@@ -587,6 +588,8 @@ def build_run_contract(condition: str, args) -> dict:
             "batch_sampler": "epoch_shuffled",
             "reflection_minibatch_size": 3,
             "component_selector": "round_robin",
+            "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
+            "manifestor_traces_chars": None,
             "skip_perfect_score": True,
             "perfect_score": 1.0,
             "merge": merge,
@@ -1174,6 +1177,7 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
             component_kinds=_component_kinds(args.program),
             controller_selection="uniform_random" if condition == "react_v2_random" else "verbalized",
             rng=random.Random(args.seed),
+            manifestor_traces_chars=None,
         )
 
     merge_config = None

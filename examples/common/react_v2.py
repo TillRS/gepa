@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from gepa.lm import LM
+from gepa.proposer.reflective_mutation.manifestor import MAX_TRACES_CHARS
 from gepa.proposer.reflective_mutation.three_role import ThreeRoleReflectionLM
 from gepa.strategies.document_template import TEMPLATE_FAMILIES, infer_template_family
 
@@ -197,6 +198,7 @@ def build_react_v2_strategy(
     component_kinds: dict[str, str] | None = None,
     controller_selection: str = "verbalized",
     rng: random.Random | None = None,
+    manifestor_traces_chars: int | None = MAX_TRACES_CHARS,
 ) -> tuple[ThreeRoleReflectionLM, str]:
     """Build Controller -> Manifestor -> ReAct V2 with deterministic guidance.
 
@@ -213,6 +215,8 @@ def build_react_v2_strategy(
         component_kinds: Optional message role for each optimized component.
         controller_selection: ``"verbalized"`` or ``"uniform_random"``.
         rng: Optional Controller RNG kept separate from GEPA's engine RNG.
+        manifestor_traces_chars: Trace character cap, or ``None`` to rely on
+            the configured model's context window.
 
     Returns:
         Configured three-role strategy and its resolved template family.
@@ -234,5 +238,6 @@ def build_react_v2_strategy(
         manifestor_lm=LM(reflection_model, **manifestor_kwargs),
         proposer_model=proposer_model or reflection_model,
         rng=rng,
+        manifestor_traces_chars=manifestor_traces_chars,
     )
     return strategy, resolved_family
