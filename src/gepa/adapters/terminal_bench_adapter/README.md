@@ -111,6 +111,33 @@ Use `--condition react_v2` and matching separate output directories for FOREST.
 The displayed 400-call budget is an example, not a paper reproduction preset.
 An optional `--manifest` must match the explicitly selected experiment.
 
+Both experiments support two separate model arms: Qwen3.8-27B with Qwen3.8-27B
+(the model default), and DeepSeek V4 Flash with DeepSeek V4 Flash. Student,
+proposer, and Controller use the same model within an arm. Both are served through
+local vLLM. DeepSeek uses the pinned July 31 checkpoint, maximum thinking, and the
+native `deepseek_v4` tokenizer and parsers on vLLM 0.25.0 or newer; see the
+[serving configuration](../../../../scripts/della/README.md).
+
+For the DeepSeek arm, point both roles at the prepared endpoint and use separate
+output directories:
+
+```bash
+uv run python -m examples.terminalbench.main \
+  --experiment tb2-system-prompt \
+  --condition vanilla \
+  --student-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
+  --proposer-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
+  --student-api-base http://localhost:8000/v1 \
+  --proposer-api-base http://localhost:8000/v1 \
+  --max-metric-calls 400 \
+  --run-dir runs/tb2-system-prompt/deepseek/vanilla \
+  --harbor-work-dir runs/tb2-system-prompt/deepseek/vanilla/harbor
+```
+
+Use the same model and endpoint flags for `tb4-agent-text`, with matching separate
+output paths. Model identity, checkpoint revision, and thinking settings are
+recorded in the resume contract; changing any of them requires a fresh run.
+
 Offline tests in `tests/harbor/` exercise both actual agent loops and Harbor job
 schemas with simulated model and terminal boundaries. They make no paid model
 calls and do not require Docker. The upstream prompt and adapted methods are

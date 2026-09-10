@@ -1,8 +1,10 @@
 """Offline tests for the Terminal-Bench experiment CLI contract."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -10,11 +12,13 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from examples.common.experiment_models import (
     DEEPSEEK_V4_FLASH_MODEL,
+    DEEPSEEK_V4_FLASH_MODEL_INFO,
     EXPERIMENT_NUM_RETRIES,
     QWEN3_8_27B_MODEL,
     QWEN3_8_27B_MODEL_INFO,
     experiment_decoding,
 )
+from examples.terminalbench import main as terminalbench_main
 from examples.terminalbench.main import (
     EXPERIMENT_MANIFESTS,
     SYSTEM_PROMPT_SEED_PATH,
@@ -205,8 +209,78 @@ def test_deepseek_run_contract_uses_the_separate_same_model_condition(tmp_path: 
     assert contract["student_model"] == DEEPSEEK_V4_FLASH_MODEL
     assert contract["proposer_model"] == DEEPSEEK_V4_FLASH_MODEL
     assert contract["student_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL)
-    assert contract["student_model_info"] is None
+    assert contract["student_model_info"] == DEEPSEEK_V4_FLASH_MODEL_INFO
     assert contract["proposer_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL)
+
+
+@pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
+@pytest.mark.parametrize("condition", ["vanilla", "react_v2"])
+def test_deepseek_settings_reach_both_runtime_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, condition: str
+) -> None:
+    """Forward DeepSeek thinking and context settings through both experiment CLIs."""
+    requirements = Mock()
+    monkeypatch.setattr(terminalbench_main.HarborCLI, "check_requirements", requirements)
+    harbor_factory = Mock(wraps=terminalbench_main.HarborCLI)
+    optimizer = Mock()
+    monkeypatch.setattr(terminalbench_main, "HarborCLI", harbor_factory)
+    monkeypatch.setattr(terminalbench_main, "optimize", optimizer)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "terminalbench",
+            "--experiment",
+            experiment,
+            "--condition",
+            condition,
+            "--student-model",
+            DEEPSEEK_V4_FLASH_MODEL,
+            "--proposer-model",
+            DEEPSEEK_V4_FLASH_MODEL,
+            "--student-api-base",
+            "http://localhost:8000/v1",
+            "--proposer-api-base",
+            "http://localhost:8000/v1",
+            "--max-metric-calls",
+            "4",
+            "--train-limit",
+            "1",
+            "--val-limit",
+            "1",
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--harbor-work-dir",
+            str(tmp_path / "harbor"),
+        ],
+    )
+
+    terminalbench_main.main()
+
+    requirements.assert_called_once_with()
+    harbor_kwargs = harbor_factory.call_args.kwargs
+    optimize_kwargs = optimizer.call_args.kwargs
+    student_kwargs = harbor_kwargs["student_agent_kwargs"]
+    expected_body = {"chat_template_kwargs": {"thinking": True, "reasoning_effort": "max"}}
+    assert harbor_kwargs["student_model"] == optimize_kwargs["reflection_lm"] == DEEPSEEK_V4_FLASH_MODEL
+    assert student_kwargs["model_info"] == DEEPSEEK_V4_FLASH_MODEL_INFO
+    assert student_kwargs["llm_kwargs"]["extra_body"] == expected_body
+    assert optimize_kwargs["reflection_lm_kwargs"]["extra_body"] == expected_body
+    assert harbor_kwargs["student_api_base"] == optimize_kwargs["reflection_lm_kwargs"]["api_base"]
+    assert len(optimize_kwargs["trainset"]) == len(optimize_kwargs["valset"]) == 1
+    manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
+    assert set(optimize_kwargs["seed_candidate"]) == set(manifest.component_kinds)
+    assert optimize_kwargs["reflection_level"] == (0 if condition == "vanilla" else 2)
+    contract = json.loads((tmp_path / "run" / "terminalbench-run-contract.json").read_text())
+    assert contract["experiment"] == experiment
+    assert (
+        contract["student_model_version"]
+        == contract["proposer_model_version"]
+        == ("7872f01b1d1fe23eabc4c98b48bffcef5a386062")
+    )
+    assert (
+        contract["student_request_overrides"] == contract["proposer_request_overrides"] == {"extra_body": expected_body}
+    )
 
 
 def test_run_contract_rejects_a_cross_model_pair(tmp_path: Path) -> None:
