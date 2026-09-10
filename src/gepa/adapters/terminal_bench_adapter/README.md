@@ -172,6 +172,11 @@ or claim direct comparability to its reported scores. TB4 retains its approved
   the user's approved working decision.
 - [ ] Ask Lakshya to confirm the train/validation/test splits for TB2 (30/19/40)
   and TB4 (23/23/20), including how tasks are assigned to each split.
+- [ ] Gilad: review all implemented deduplication and redundant-context removal
+  for HotPotQA, TB2, and TB4: exact-text and paragraph references, repeated log
+  lines, Harbor copied history, excluded metadata, duplicate feedback/document
+  text, and remaining limits. Check useful-evidence preservation and the final
+  model prompts, including JSON-encoded verifier logs.
 
 #### Dataset pins and run identity
 
