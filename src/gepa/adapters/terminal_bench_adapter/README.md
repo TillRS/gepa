@@ -1,62 +1,23 @@
 ### Terminal-Bench experiments
 
-Select one of two independent experiments with `--experiment`. Neither has an
-implicit default or primary status. Both support vanilla GEPA (`vanilla`) and
-FOREST (`react_v2`) with identical seeds, editable components, task splits,
+Select `--experiment tb2` or `--experiment tb4`. Both benchmarks optimize the
+same full agent text and skills. Vanilla GEPA (`vanilla`) and FOREST (`react_v2`)
+receive identical initial documents, editable components, task splits,
 student/proposer models, and four-epoch training budgets within an experiment.
+Neither benchmark is the default or designated primary.
 
 | Experiment | Dataset | Editable target | Train / validation / test |
 | --- | --- | --- | --- |
-| `tb2-system-prompt` | Terminal-Bench 2.0, 89 tasks | One unified `system_prompt` | 30 / 19 / 40 |
-| `tb4-agent-text` | Terminal-Bench 4.0.0, 66 tasks | 13 prompts and two skills | 23 / 23 / 20 |
+| `tb2` | Terminal-Bench 2.0, 89 tasks | 14 prompts and two skills | 30 / 19 / 40 |
+| `tb4` | Terminal-Bench 4.0.0, 66 tasks | 14 prompts and two skills | 23 / 23 / 20 |
 
-#### TB2: the published optimization surface
+#### Editable agent text and skills
 
-The GEPA comparison in [AutoSaddler, Appendix B](https://arxiv.org/html/2608.23041v1#A2)
-optimizes Terminus 2's unified system prompt on TB2, with 30/19/40 task splits.
-This experiment exposes that same kind of artifact as one component. Tool-use
-guidance and response-format instructions inside the prompt are editable; the
-parser, tools, agent loop, auxiliary prompts, and verifier remain fixed.
-
-This restriction describes the paper's **GEPA baseline**. AutoSaddler itself
-edits a broader harness: its [TB2 patch catalog](https://arxiv.org/html/2608.23041v1#A15)
-includes prompt changes, completion reminders, output limits, and startup code.
-
-`SystemPromptTerminus` inherits Harbor 0.22.0's recovery, summarization, and
-completion behavior. It replaces only the initial prompt and disables additional
-skill discovery. Terminus delivers this unified prompt in its initial **user**
-message; the component name follows the literature's terminology and does not
-change the message role.
-
-The seed in `examples/terminalbench/terminus-system-prompt.txt` preserves the
-instructions from Harbor 0.22.0's `terminus-json-plain.txt`. Both optimizers receive
-the same provider-specific section wrapper. Actual task instructions and terminal
-state are appended separately, so they are never optimized or interpreted as
-candidate placeholders. Candidate JSON braces remain literal.
-
-This matches the **optimization surface**, not an exact reproduction of a paper's
-reported score. The checked-in task identities use our deterministic hash split
-with AutoSaddler's split sizes; the paper's exact identities and harness revision
-were not established from its released artifacts. The existing homogeneous model
-arms and provider section wrapper are our configuration. The four-epoch budget
-follows the paper; minibatch size three and the sampler are our GEPA settings,
-pending verification against the authors' unreleased TB2 configuration.
-In particular, this is not the ReASearch paper's GPT-5/Bash-prompt setup.
-
-The intended TB2 protocol follows AutoSaddler's GEPA baseline. The checked-in
-30/19/40 partition remains provisional until the authors' exact task assignments
-can be verified; matching the published counts does not establish an exact split.
-On September 10, 2026, the [released AutoSaddler repository](https://github.com/microsoft/AutoSaddler/tree/9df6d2e3e1d3946057243690bca28e136fa81179)
-contains GAIA2 split manifests and lists Terminal-Bench integration as forthcoming.
-The approved Qwen and DeepSeek model arms remain our explicit experimental choice.
-
-#### TB4: full agent text and skills
-
-`PromptedTerminus` exposes the existing 15-component document bundle:
+`PromptedTerminus` runs the same 16-component document bundle for both benchmarks:
 
 | Surface | Components |
 | --- | --- |
-| Initial instructions | `instruction_prompt`, `terminal_tool`, `skill_discovery` |
+| Initial and tool instructions | `instruction_prompt`, `terminal_tool`, `command_format`, `skill_discovery` |
 | Context management | `summary`, `summary_questions`, `summary_answers`, `handoff`, `short_summary`, `context_recovery` |
 | Completion and recovery | `completion`, `timeout`, `parse_error`, `output_limit` |
 | Reusable skills | `skill_debugging`, `skill_verification` |
@@ -65,23 +26,49 @@ Prompts use the selected provider's `user_prompt` template. Skills use the `skil
 template: Name, Description, Instructions, and Examples. Their metadata appears
 in the initial context, and the agent reads each full `SKILL.md` through the
 terminal when needed. Both optimizers can rewrite skill metadata and bodies.
+Command-format guidance and completion instructions are editable text too.
 
 Both methods explicitly use `module_selector="all"`: each proposal selects all
-15 documents, revises them separately using the same minibatch evidence, and
+16 documents, revises them separately using the same minibatch evidence, and
 evaluates the combined harness as one child candidate. This applies the
 [GEPA FAQ's multi-module efficiency guidance](https://gepa-ai.github.io/gepa/guides/faq/#how-do-i-optimize-multi-module-dspy-programs-efficiently)
-to the TB4 text bundle. It increases optimizer-side editing work without adding
-separate task evaluations for each document. The four-epoch budget stays fixed;
-minibatches already scoring perfectly still skip mutation. TB2 explicitly keeps
-`module_selector="round_robin"`, which always selects its sole prompt. The run
-contract pins this policy for resume and final-test comparisons, so older runs
-using implicit component selection require a fresh run directory.
+to both benchmarks. Optimizer-side editing work is measured separately; selecting
+all documents does not require a separate task evaluation for each document.
+The four-epoch budget stays fixed, and perfectly scored minibatches still skip
+mutation. Run contracts pin the full component set, document bundle version,
+and selection policy for resume and final-test comparisons.
 
-The JSON command interface, execution policy, task inputs, runtime observations,
-and official verifier remain fixed. TB4's resource limits and agent timeouts come
-from the [official 4.0.0 release](https://www.tbench.ai/news/terminal-bench-4-0),
-without local timeout overrides. A caller may set `--harbor-process-timeout-sec`
-as a whole-job operational limit; it is recorded in the run contract.
+The optimization target is **model-facing text and skills**. Python agent logic,
+tool implementations, the actual JSON parser/command interface, task inputs,
+runtime observations, and the official verifier stay fixed. Rewriting the text
+that describes a tool does not change its implementation. Task and terminal-state
+fields are appended separately, and candidate braces remain literal. Both
+benchmarks retain their official task resource limits and agent timeouts, without
+local overrides. An optional `--harbor-process-timeout-sec` is a whole-job
+operational limit recorded in the run contract.
+
+#### Reference protocol and pending confirmation
+
+The working decision is to optimize the full text surface on both benchmarks.
+It supersedes the earlier TB2 restriction to one unified prompt. The
+[AutoSaddler GEPA baseline](https://arxiv.org/html/2608.23041v1#A2) optimized only
+that prompt, while AutoSaddler itself could also change executable harness code.
+Our GEPA and FOREST comparison now shares the broader text-and-skill scope,
+with execution code fixed for both methods.
+
+TB2 retains the paper-inspired 30/19/40 split sizes, four-epoch budget, and
+three repeated final evaluations. Its checked-in task assignments remain our
+deterministic split; the authors' exact identities and harness revision were
+not established from released artifacts. The broader editable surface, common
+seed bundle, homogeneous Qwen/DeepSeek arms, and provider section wrappers are
+our experiment configuration. This does not reproduce the paper's GEPA setup
+or claim direct comparability to its reported scores. TB4 retains its approved
+23/23/20 split and the same normalized training-budget rule.
+
+- [ ] Ask Lakshya to confirm the full model-facing text and skill scope for both
+  TB2 and TB4, with identical editable components for GEPA and FOREST and fixed
+  execution code. This is a research follow-up; the current implementation uses
+  the user's approved working decision.
 
 #### Dataset pins and run identity
 
@@ -112,9 +99,12 @@ This replaces the earlier 26/20/20 allocation without moving any test tasks.
 
 The resume contract records the experiment, dataset, complete task refs and
 splits, target, seed digest, models, decoding, and budget. A different experiment,
-manifest, or configuration requires a fresh run directory. Old TB3 checkpoints
-cannot resume as TB4, and single-prompt candidates cannot enter the full bundle
-experiment. The held-out test split is never evaluated automatically.
+manifest, or configuration requires a fresh run directory. Old prompt-only or
+earlier document-bundle checkpoints cannot resume under the new scope.
+Experiment IDs are now `tb2` and `tb4`; the former
+`tb2-system-prompt` and `tb4-agent-text` IDs are rejected rather than silently
+changing the optimization target. The held-out test split is never evaluated
+automatically.
 
 #### Optimization budget
 
@@ -184,9 +174,9 @@ Run final testing only after both matching optimization runs have completed:
 
 ```bash
 uv run python -m examples.terminalbench.evaluate \
-  --vanilla-run-dir runs/tb2-system-prompt/vanilla \
-  --forest-run-dir runs/tb2-system-prompt/react_v2 \
-  --output-dir runs/tb2-system-prompt/test
+  --vanilla-run-dir runs/tb2/vanilla \
+  --forest-run-dir runs/tb2/react_v2 \
+  --output-dir runs/tb2/test
 ```
 
 Use the corresponding directories for TB4 and for the separate DeepSeek arm.
@@ -219,16 +209,16 @@ uv sync --extra dev
 uv tool install --python 3.12 harbor==0.22.0
 
 uv run python -m examples.terminalbench.main \
-  --experiment tb2-system-prompt \
+  --experiment tb2 \
   --condition vanilla \
-  --run-dir runs/tb2-system-prompt/vanilla \
-  --harbor-work-dir runs/tb2-system-prompt/vanilla/harbor
+  --run-dir runs/tb2/vanilla \
+  --harbor-work-dir runs/tb2/vanilla/harbor
 
 uv run python -m examples.terminalbench.main \
-  --experiment tb4-agent-text \
+  --experiment tb4 \
   --condition vanilla \
-  --run-dir runs/tb4-agent-text/vanilla \
-  --harbor-work-dir runs/tb4-agent-text/vanilla/harbor
+  --run-dir runs/tb4/vanilla \
+  --harbor-work-dir runs/tb4/vanilla/harbor
 ```
 
 Use `--condition react_v2` and matching separate output directories for FOREST.
@@ -247,21 +237,21 @@ output directories:
 
 ```bash
 uv run python -m examples.terminalbench.main \
-  --experiment tb2-system-prompt \
+  --experiment tb2 \
   --condition vanilla \
   --student-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
   --proposer-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
-  --run-dir runs/tb2-system-prompt/deepseek/vanilla \
-  --harbor-work-dir runs/tb2-system-prompt/deepseek/vanilla/harbor
+  --run-dir runs/tb2/deepseek/vanilla \
+  --harbor-work-dir runs/tb2/deepseek/vanilla/harbor
 ```
 
-Use the same model and endpoint flags for `tb4-agent-text`, with matching separate
+Use the same model and endpoint flags for `tb4`, with matching separate
 output paths. Model identity, checkpoint revision, and thinking settings are
 recorded in the resume contract; changing any of them requires a fresh run.
 
-Offline tests in `tests/harbor/` exercise both actual agent loops and Harbor job
+Offline tests in `tests/harbor/` exercise the shared actual agent loop for both benchmarks and Harbor job
 schemas with simulated model and terminal boundaries. They make no paid model
 calls and do not require Docker. The upstream prompt and adapted methods are
 Apache-2.0; see `examples/terminalbench/HARBOR_LICENSE`.

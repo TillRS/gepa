@@ -20,7 +20,6 @@ from typing import Any, TypedDict
 
 from gepa.adapters.terminal_bench_adapter.documents import (
     COMPONENT_KINDS,
-    escape_document,
     render_instruction,
     validate_documents,
     write_document_bundle,
@@ -29,7 +28,7 @@ from gepa.core.adapter import EvaluationBatch, GEPAAdapter
 
 PINNED_HARBOR_VERSION = "0.22.0"
 EXPERIMENT_DATASETS = {
-    "tb2-system-prompt": {
+    "tb2": {
         "identifier": "terminal-bench",
         "version": "2.0",
         "reference": "terminal-bench@2.0",
@@ -41,7 +40,7 @@ EXPERIMENT_DATASETS = {
         "task_refs_digest": "ad453479e7854db2737c4ff246fbfdcd26b7dbd02df285f03c19f51aefec7efc",
         "harbor_version": PINNED_HARBOR_VERSION,
     },
-    "tb4-agent-text": {
+    "tb4": {
         "identifier": "terminal-bench/terminal-bench",
         "version": "4.0.0",
         "reference": "terminal-bench/terminal-bench@4.0.0",
@@ -55,11 +54,10 @@ EXPERIMENT_DATASETS = {
     },
 }
 EXPERIMENT_SPLIT_COUNTS = {
-    "tb2-system-prompt": {"train": 30, "val": 19, "test": 40},
-    "tb4-agent-text": {"train": 23, "val": 23, "test": 20},
+    "tb2": {"train": 30, "val": 19, "test": 40},
+    "tb4": {"train": 23, "val": 23, "test": 20},
 }
 PROMPTED_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:PromptedTerminus"
-SYSTEM_PROMPT_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:SystemPromptTerminus"
 SPLIT_NAMES = ("train", "val", "test")
 SPLIT_WEIGHTS = {"train": 0.40, "val": 0.30, "test": 0.30}
 SUPPORTED_ATIF_SCHEMA_VERSIONS = {f"ATIF-v1.{minor}" for minor in range(8)}
@@ -121,8 +119,8 @@ class TerminalBenchManifest:
 
     @property
     def component_kinds(self) -> dict[str, str]:
-        """Return only the documents editable in this experiment."""
-        return {"system_prompt": "system_prompt"} if self.experiment == "tb2-system-prompt" else dict(COMPONENT_KINDS)
+        """Return the same full text and skill surface for both benchmarks."""
+        return dict(COMPONENT_KINDS)
 
     def validate_candidate(self, candidate: Mapping[str, str]) -> None:
         """Reject candidates from a different optimization target.
@@ -133,10 +131,7 @@ class TerminalBenchManifest:
         Raises:
             ValueError: The component set or value types differ from the target.
         """
-        if self.experiment == "tb4-agent-text":
-            validate_documents(candidate)
-        elif set(candidate) != {"system_prompt"} or not isinstance(candidate["system_prompt"], str):
-            raise ValueError("tb2-system-prompt requires exactly one string component: system_prompt")
+        validate_documents(candidate)
 
     def candidate_digest(self, candidate: Mapping[str, str]) -> str:
         """Hash the experiment identity together with its candidate text.
@@ -441,7 +436,7 @@ def load_terminalbench_manifest(path: str | Path) -> TerminalBenchManifest:
 
 
 def render_terminus_prompt(candidate: Mapping[str, str]) -> str:
-    """Render every main-agent document above the fixed JSON command API.
+    """Render main-agent guidance and command instructions above runtime inputs.
 
     Args:
         candidate: Complete candidate bundle.
@@ -634,13 +629,9 @@ class HarborCLI:
         }
         if self.student_api_base is not None:
             agent_kwargs["api_base"] = self.student_api_base
-        if self.manifest.experiment == "tb4-agent-text":
-            if bundle_path is None:
-                raise ValueError("tb4-agent-text requires a document bundle")
-            agent_kwargs["document_bundle_path"] = str(bundle_path)
-            agent_import_path = PROMPTED_TERMINUS_IMPORT_PATH
-        else:
-            agent_import_path = SYSTEM_PROMPT_TERMINUS_IMPORT_PATH
+        if bundle_path is None:
+            raise ValueError(f"{self.manifest.experiment} requires a document bundle")
+        agent_kwargs["document_bundle_path"] = str(bundle_path)
         unknown = sorted(set(task_ids).difference(self.manifest.task_refs))
         if unknown:
             raise ValueError(f"tasks are not in pinned {self.manifest.dataset['reference']}: {unknown}")
@@ -654,14 +645,14 @@ class HarborCLI:
             "environment": {"type": "docker", "force_build": False, "delete": True},
             "agents": [
                 {
-                    "import_path": agent_import_path,
+                    "import_path": PROMPTED_TERMINUS_IMPORT_PATH,
                     "model_name": self.student_model,
                     "skills": [],
                     "kwargs": agent_kwargs,
                 }
             ],
         }
-        if self.manifest.experiment == "tb4-agent-text":
+        if self.manifest.experiment == "tb4":
             config["datasets"] = [
                 {
                     "name": self.manifest.dataset["identifier"],
@@ -713,15 +704,7 @@ class HarborCLI:
         evaluation_dir = self.work_dir / "evaluations" / evaluation_id
         evaluation_dir.mkdir(parents=True, exist_ok=False)
         prompt_path = evaluation_dir / "terminus-prompt.txt"
-        bundle_path = None
-        if self.manifest.experiment == "tb4-agent-text":
-            bundle_path = write_document_bundle(evaluation_dir, candidate)
-        else:
-            prompt = escape_document(candidate["system_prompt"])
-            prompt_path.write_text(
-                prompt + "\n\nTask Description:\n{instruction}\n\nCurrent terminal state:\n{terminal_state}\n",
-                encoding="utf-8",
-            )
+        bundle_path = write_document_bundle(evaluation_dir, candidate)
         (evaluation_dir / "candidate.json").write_text(
             json.dumps(
                 {"experiment": self.manifest.experiment, "digest": candidate_digest, "documents": dict(candidate)},

@@ -30,13 +30,14 @@ from gepa.adapters.terminal_bench_adapter import HarborCLI, load_terminalbench_m
 from gepa.adapters.terminal_bench_adapter.documents import seed_documents, write_document_bundle
 
 
-@pytest.fixture
-def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
+@pytest.fixture(params=(2, 4), ids=("tb2", "tb4"))
+def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> tuple:
     """Create a real Terminus instance with a deterministic model boundary.
 
     Args:
         tmp_path: Evaluation and trial artifact directory.
         monkeypatch: Fixture replacing model initialization.
+        request: Benchmark whose real job configuration supplies the agent settings.
 
     Returns:
         Agent, complete candidate, fake model, and source directory.
@@ -47,12 +48,24 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
         call=AsyncMock(), get_model_context_limit=lambda: 32768, get_model_output_limit=lambda: 4096
     )
     monkeypatch.setattr(Terminus2, "_init_llm", Mock(return_value=model))
+    root = Path(__file__).parents[2]
+    manifest = load_terminalbench_manifest(root / f"examples/terminalbench/terminalbench-v{request.param}-manifest.json")
+    runner = HarborCLI(
+        manifest=manifest, student_model="openai/gpt-4o-mini", work_dir=tmp_path, agent_python_path=root
+    )
+    config = runner.build_job_config(
+        [manifest.tasks("train", 1)[0].task_id],
+        prompt_path=tmp_path / "terminus-prompt.txt",
+        bundle_path=bundle,
+        jobs_dir=tmp_path / "jobs",
+        job_name="runtime-test",
+    )
+    (tmp_path / "job-config.json").write_text(json.dumps(config))
+    settings = config["agents"][0]
     agent = PromptedTerminus(
         logs_dir=tmp_path / "logs",
-        prompt_template_path=str(tmp_path / "terminus-prompt.txt"),
-        document_bundle_path=str(bundle),
-        model_name="openai/gpt-4o-mini",
-        record_terminal_session=False,
+        model_name=settings["model_name"],
+        **{**settings["kwargs"], "record_terminal_session": False},
     )
     return agent, candidate, model, tmp_path
 
@@ -172,23 +185,13 @@ def test_job_config_is_accepted_by_pinned_harbor(runtime: tuple) -> None:
         runtime: Fixture providing a materialized candidate bundle.
     """
     _, _, _, root = runtime
-    runner = HarborCLI(
-        manifest=load_terminalbench_manifest(
-            Path(__file__).parents[2] / "examples/terminalbench/terminalbench-v4-manifest.json"
-        ),
-        student_model="openai/gpt-4o-mini",
-        work_dir=root,
-        agent_python_path=Path(__file__).parents[2],
-    )
-    config = runner.build_job_config(
-        ["terminal-bench/cad-model"],
-        prompt_path=root / "terminus-prompt.txt",
-        bundle_path=root / "document-bundle.json",
-        jobs_dir=root / "jobs",
-        job_name="schema-test",
-    )
+    config = json.loads((root / "job-config.json").read_text())
     parsed = JobConfig.model_validate(config)
     assert parsed.agents[0].kwargs["document_bundle_path"] == str(root / "document-bundle.json")
+    assert parsed.agents[0].import_path == "examples.terminalbench.terminus_agent:PromptedTerminus"
+    assert parsed.agents[0].override_timeout_sec is None
+    assert parsed.timeout_multiplier == 1.0
+    assert len(parsed.tasks) + len(parsed.datasets) == 1
 
 
 def test_real_agent_loop_discovers_then_reads_skills_and_repairs_json(
@@ -267,7 +270,7 @@ def test_real_agent_loop_discovers_then_reads_skills_and_repairs_json(
     ]
     asyncio.run(agent.run("TASK_INPUT", environment, AgentContext()))
     prompts = [call.kwargs["prompt"] for call in model.call.call_args_list]
-    for name in ("instruction_prompt", "terminal_tool", "skill_discovery"):
+    for name in ("instruction_prompt", "terminal_tool", "skill_discovery", "command_format"):
         assert candidate[name] in prompts[0]
     assert "terminal-debugging" in prompts[0] and "terminal-verification" in prompts[0]
     assert "SENTINEL_skill_debugging" not in prompts[0]

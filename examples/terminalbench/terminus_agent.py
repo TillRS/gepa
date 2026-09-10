@@ -26,45 +26,6 @@ from harbor.models.trajectories import Step, SubagentTrajectoryRef
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
 
-class SystemPromptTerminus(Terminus2):
-    """Replace only Terminus's unified initial prompt for the TB2 experiment."""
-
-    def __init__(self, logs_dir: Path, prompt_template_path: str, **kwargs: Any) -> None:
-        """Load one candidate prompt and retain Harbor's auxiliary instructions.
-
-        Args:
-            logs_dir: Harbor trial's agent log directory.
-            prompt_template_path: Candidate prompt with fixed task and state fields.
-            **kwargs: Standard pinned Terminus model settings.
-
-        Raises:
-            ValueError: The installed Harbor runtime differs from the experiment pin.
-        """
-        if version("harbor") != "0.22.0":
-            raise ValueError("System prompt experiment requires Harbor 0.22.0")
-        self._candidate_prompt_template_path = Path(prompt_template_path).resolve()
-        kwargs.pop("skills_dir", None)
-        kwargs.pop("mcp_servers", None)
-        super().__init__(logs_dir=logs_dir, skills_dir=None, mcp_servers=[], **kwargs)
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        (logs_dir / "system-prompt.txt").write_text(self._prompt_template, encoding="utf-8")
-
-    def _get_prompt_template_path(self) -> Path:
-        """Return the sole editable prompt for this candidate."""
-        return self._candidate_prompt_template_path
-
-    async def _build_skills_section(self, environment: BaseEnvironment) -> str:
-        """Keep additional skill instructions outside the TB2 experiment.
-
-        Args:
-            environment: Task container supplied by Harbor.
-
-        Returns:
-            An empty skill-discovery section.
-        """
-        return ""
-
-
 class PromptedTerminus(Terminus2):
     """Run the fixed terminal agent with one candidate's reusable documents."""
 
@@ -87,7 +48,7 @@ class PromptedTerminus(Terminus2):
         digest = hashlib.sha256(
             json.dumps(self._bundle["documents"], sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
-        if self._bundle["version"] != 1 or digest != self._bundle["digest"]:
+        if self._bundle["version"] != 2 or digest != self._bundle["digest"]:
             raise ValueError("Invalid Terminal Bench document bundle")
         self._candidate_prompt_template_path = Path(prompt_template_path).resolve()
         if self._candidate_prompt_template_path.parent != self._bundle_path.parent:

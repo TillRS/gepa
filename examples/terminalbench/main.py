@@ -1,4 +1,4 @@
-"""Configure separate Terminal-Bench 2 prompt and Terminal-Bench 4 text experiments.
+"""Configure full agent-text experiments on Terminal-Bench 2 and 4.
 
 The held-out test split is not evaluated automatically.
 
@@ -40,18 +40,15 @@ from gepa.adapters.terminal_bench_adapter.documents import (
     BUNDLE_VERSION,
     seed_documents,
 )
-from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
 from gepa.strategies.proposal_sampling import SingleMutationSampling
 from gepa.utils.stop_condition import MaxCandidateProposalsStopper
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENT_MANIFESTS = {
-    "tb2-system-prompt": Path(__file__).with_name("terminalbench-v2-manifest.json"),
-    "tb4-agent-text": Path(__file__).with_name("terminalbench-v4-manifest.json"),
+    "tb2": Path(__file__).with_name("terminalbench-v2-manifest.json"),
+    "tb4": Path(__file__).with_name("terminalbench-v4-manifest.json"),
 }
-SYSTEM_PROMPT_SEED_PATH = Path(__file__).with_name("terminus-system-prompt.txt")
-
 RUN_CONTRACT_FILENAME = "terminalbench-run-contract.json"
 TRAINING_EPOCHS = 4
 TEST_REPETITIONS = 3
@@ -72,25 +69,13 @@ def seed_candidate(student_model: str, template_family: str, experiment: str) ->
     Args:
         student_model: Task model used for automatic provider inference.
         template_family: Explicit provider family or ``"auto"``.
-        experiment: Single system prompt or the full agent text and skills.
+        experiment: Benchmark receiving the shared full agent text and skills.
 
     Returns:
         Editable components and their resolved template family.
     """
     resolved_family = cast(TemplateFamily, resolve_template_family(template_family, student_model))
-    if experiment == "tb2-system-prompt":
-        template = TEMPLATE_FAMILIES[resolved_family]["system_prompt"]
-        section = {
-            "generic": "Task",
-            "openai": "Instructions",
-            "anthropic": "Instructions",
-            "google": "Instructions",
-            "alibaba": "Objective",
-        }[resolved_family]
-        return {
-            "system_prompt": template.render({section: SYSTEM_PROMPT_SEED_PATH.read_text(encoding="utf-8")})
-        }, resolved_family
-    if experiment != "tb4-agent-text":
+    if experiment not in EXPERIMENT_MANIFESTS:
         raise ValueError(f"Unknown Terminal-Bench experiment: {experiment!r}")
     return seed_documents(resolved_family), resolved_family
 
@@ -135,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--experiment",
         choices=tuple(EXPERIMENT_MANIFESTS),
         required=True,
-        help="TB2: one unified system prompt; TB4: all 13 prompts and two skills",
+        help="Both benchmarks optimize the full prompt, tool-description, and skill text",
     )
     parser.add_argument(
         "--condition",
@@ -234,13 +219,13 @@ def build_run_contract(
     operated = condition == "react_v2"
     reflection_level = args.reflection_level if operated else 0
     return {
-        "schema_version": 9,
+        "schema_version": 10,
         "experiment": manifest.experiment,
-        "optimization_target": "system_prompt" if manifest.experiment == "tb2-system-prompt" else "agent_text",
+        "optimization_target": "agent_text",
         "condition": condition,
         "component_kinds": manifest.component_kinds,
-        "module_selector": "all" if manifest.experiment == "tb4-agent-text" else "round_robin",
-        "document_bundle_version": BUNDLE_VERSION if manifest.experiment == "tb4-agent-text" else None,
+        "module_selector": "all",
+        "document_bundle_version": BUNDLE_VERSION,
         "seed_document_digest": manifest.candidate_digest(candidate),
         "dataset": manifest.dataset,
         "split_policy": manifest.split_policy,

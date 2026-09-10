@@ -21,7 +21,12 @@ from gepa.adapters.terminal_bench_adapter import (
     load_terminalbench_manifest,
     render_terminus_prompt,
 )
-from gepa.adapters.terminal_bench_adapter.documents import COMMAND_CONTRACT, COMPONENT_KINDS, seed_documents
+from gepa.adapters.terminal_bench_adapter.documents import (
+    COMMAND_FORMAT_SEED,
+    COMPONENT_KINDS,
+    TASK_FIELDS,
+    seed_documents,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "examples" / "terminalbench" / "terminalbench-v4-manifest.json"
@@ -272,11 +277,21 @@ def test_rendered_prompt_preserves_candidate_braces_and_runtime_fields() -> None
     assert "Current terminal state:\nSTATE" in formatted
 
 
-def test_empty_candidate_renders_only_the_fixed_terminus_contract() -> None:
-    """Keep an all-empty user template out of the task text while retaining the adapter contract."""
+def test_empty_candidate_preserves_only_observed_task_and_terminal_inputs() -> None:
+    """Keep runtime inputs even when all candidate-authored instructions are empty."""
     rendered = render_terminus_prompt(dict.fromkeys(COMPONENT_KINDS, ""))
-    assert rendered == COMMAND_CONTRACT
+    assert rendered == TASK_FIELDS
     assert "Task Description:\nTASK" in rendered.format(instruction="TASK", terminal_state="STATE")
+
+
+def test_command_instructions_are_editable_without_reintroducing_the_seed() -> None:
+    """Let edits replace tool-format guidance while preserving literal braces."""
+    seed = render_terminus_prompt(_candidate()).format(instruction="TASK", terminal_state="STATE")
+    assert COMMAND_FORMAT_SEED.strip() in seed
+    edited = render_terminus_prompt(_candidate(command_format="Changed tool instructions {literal}."))
+    formatted = edited.format(instruction="TASK", terminal_state="STATE")
+    assert "Changed tool instructions {literal}." in formatted
+    assert COMMAND_FORMAT_SEED.strip() not in formatted
 
 
 @pytest.mark.parametrize("path", [TB2_MANIFEST_PATH, MANIFEST_PATH])
@@ -296,7 +311,7 @@ def test_manifest_pins_reject_task_ref_changes_and_split_overlap(path: Path, tmp
         load_terminalbench_manifest(invalid)
 
 
-def test_tb2_jobs_pin_git_tasks_and_only_replace_the_system_prompt(tmp_path: Path) -> None:
+def test_tb2_jobs_pin_git_tasks_and_load_the_complete_document_bundle(tmp_path: Path) -> None:
     """Run legacy TB2 task sources through modern Harbor without registry re-resolution."""
     manifest = load_terminalbench_manifest(TB2_MANIFEST_PATH)
     assert manifest.dataset["reference"] == "terminal-bench@2.0"
@@ -306,7 +321,7 @@ def test_tb2_jobs_pin_git_tasks_and_only_replace_the_system_prompt(tmp_path: Pat
     config = runner.build_job_config(
         ["bn-fit-modify"],
         prompt_path=tmp_path / "prompt.txt",
-        bundle_path=None,
+        bundle_path=tmp_path / "document-bundle.json",
         jobs_dir=tmp_path / "jobs",
         job_name="tb2",
     )
@@ -319,8 +334,8 @@ def test_tb2_jobs_pin_git_tasks_and_only_replace_the_system_prompt(tmp_path: Pat
         }
     ]
     agent = config["agents"][0]
-    assert agent["import_path"].endswith(":SystemPromptTerminus")
-    assert "document_bundle_path" not in agent["kwargs"]
+    assert agent["import_path"].endswith(":PromptedTerminus")
+    assert agent["kwargs"]["document_bundle_path"] == str(tmp_path / "document-bundle.json")
     assert agent["skills"] == []
     with pytest.raises(ValueError, match="same Terminal-Bench manifest"):
         TerminalBenchAdapter(load_terminalbench_manifest(MANIFEST_PATH), runner)
@@ -328,7 +343,7 @@ def test_tb2_jobs_pin_git_tasks_and_only_replace_the_system_prompt(tmp_path: Pat
         runner.build_job_config(
             ["terminal-bench/cad-model"],
             prompt_path=tmp_path / "prompt.txt",
-            bundle_path=None,
+            bundle_path=tmp_path / "document-bundle.json",
             jobs_dir=tmp_path,
             job_name="wrong-version",
         )
@@ -337,11 +352,11 @@ def test_tb2_jobs_pin_git_tasks_and_only_replace_the_system_prompt(tmp_path: Pat
 def test_tb2_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Follow a single-prompt candidate through materialization, scoring, and reflection."""
+    """Follow TB2's full text bundle through materialization, scoring, and reflection."""
     manifest = load_terminalbench_manifest(TB2_MANIFEST_PATH)
     runner = HarborCLI(work_dir=tmp_path, **{**_RUNNER_OPTIONS, "manifest": manifest})
     monkeypatch.setattr(runner, "check_requirements", Mock(return_value=("/mock/harbor", "/mock/docker")))
-    candidate = {"system_prompt": "Inspect {literal} and {instruction}; שלום."}
+    candidate = _candidate(instruction_prompt="Inspect {literal} and {instruction}; שלום.")
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         """Write verifier evidence while checking the actual rendered model input."""
@@ -352,14 +367,17 @@ def test_tb2_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
             .read_text()
             .format(instruction="REAL_TASK", terminal_state="REAL_STATE")
         )
-        assert candidate["system_prompt"] in prompt
+        assert candidate["instruction_prompt"] in prompt
+        assert candidate["command_format"] in prompt
         assert "Task Description:\nREAL_TASK" in prompt
         assert "Current terminal state:\nREAL_STATE" in prompt
-        assert not (config_path.parent / "skills").exists()
-        assert not (config_path.parent / "document-bundle.json").exists()
+        assert (config_path.parent / "skills/skill_debugging/SKILL.md").exists()
+        assert (config_path.parent / "skills/skill_verification/SKILL.md").exists()
+        bundle = json.loads(Path(config["agents"][0]["kwargs"]["document_bundle_path"]).read_text())
+        assert bundle["documents"] == candidate
         saved = json.loads((config_path.parent / "candidate.json").read_text())
         assert saved["documents"] == candidate
-        assert saved["experiment"] == "tb2-system-prompt"
+        assert saved["experiment"] == "tb2"
         job_dir = Path(config["jobs_dir"]) / config["job_name"]
         job_dir.mkdir(parents=True)
         _write_job_result(job_dir, 1)
@@ -368,15 +386,16 @@ def test_tb2_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
 
     monkeypatch.setattr(terminalbench_module.subprocess, "run", run)
     adapter = TerminalBenchAdapter(manifest, runner)
-    with pytest.raises(ValueError, match="exactly one string"):
-        adapter.evaluate(manifest.tasks("train", 1), _candidate())
+    with pytest.raises(ValueError, match="complete document bundle"):
+        adapter.evaluate(manifest.tasks("train", 1), {"system_prompt": "old experiment"})
     result = adapter.evaluate(manifest.tasks("train", 1), candidate, capture_traces=True)
     assert result.scores == [1.0] and result.num_metric_calls == 1
-    rows = adapter.make_reflective_dataset(candidate, result, ["system_prompt"])
-    assert rows["system_prompt"][0]["Inputs"]["dataset"] == "terminal-bench@2.0"
-    assert rows["system_prompt"][0]["Document"]["kind"] == "system_prompt"
+    rows = adapter.make_reflective_dataset(candidate, result, list(candidate))
+    assert set(rows) == set(COMPONENT_KINDS)
+    assert all(entries[0]["Inputs"]["dataset"] == "terminal-bench@2.0" for entries in rows.values())
+    assert all(entries[0]["Document"]["kind"] == COMPONENT_KINDS[name] for name, entries in rows.items())
     with pytest.raises(ValueError, match="Unknown Terminal Bench document selection"):
-        adapter.make_reflective_dataset(candidate, result, ["skill_debugging"])
+        adapter.make_reflective_dataset(candidate, result, ["system_prompt"])
 
 
 def test_requirements_fail_when_harbor_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

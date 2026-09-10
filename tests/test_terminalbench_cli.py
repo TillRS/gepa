@@ -21,7 +21,6 @@ from examples.common.experiment_models import (
 from examples.terminalbench import main as terminalbench_main
 from examples.terminalbench.main import (
     EXPERIMENT_MANIFESTS,
-    SYSTEM_PROMPT_SEED_PATH,
     build_parser,
     build_run_contract,
     ensure_run_contract,
@@ -51,7 +50,7 @@ def _model_args(tmp_path: Path, student_model: str, proposer_model: str) -> argp
     return build_parser().parse_args(
         [
             "--experiment",
-            "tb4-agent-text",
+            "tb4",
             "--condition",
             "react_v2",
             "--student-model",
@@ -72,7 +71,7 @@ def _model_args(tmp_path: Path, student_model: str, proposer_model: str) -> argp
 
 def test_qwen_student_uses_alibaba_user_prompt_template() -> None:
     """Render the Qwen seed as a sparse Alibaba user prompt."""
-    candidate, family = seed_candidate(QWEN3_8_27B_MODEL, "auto", "tb4-agent-text")
+    candidate, family = seed_candidate(QWEN3_8_27B_MODEL, "auto", "tb4")
     prompt = candidate["instruction_prompt"]
     bodies = TEMPLATE_FAMILIES[family]["user_prompt"].parse(prompt)
 
@@ -84,7 +83,7 @@ def test_qwen_student_uses_alibaba_user_prompt_template() -> None:
 
 def test_deepseek_student_uses_generic_user_prompt_template() -> None:
     """Render the DeepSeek seed as a sparse generic user prompt."""
-    candidate, family = seed_candidate(DEEPSEEK_V4_FLASH_MODEL, "auto", "tb4-agent-text")
+    candidate, family = seed_candidate(DEEPSEEK_V4_FLASH_MODEL, "auto", "tb4")
     prompt = candidate["instruction_prompt"]
     bodies = TEMPLATE_FAMILIES[family]["user_prompt"].parse(prompt)
 
@@ -113,7 +112,7 @@ def test_parser_defaults_both_roles_to_qwen3_8_27b(tmp_path: Path) -> None:
     args = build_parser().parse_args(
         [
             "--experiment",
-            "tb4-agent-text",
+            "tb4",
             "--condition",
             "react_v2",
             "--max-metric-calls",
@@ -152,7 +151,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     args = build_parser().parse_args(
         [
             "--experiment",
-            "tb4-agent-text",
+            "tb4",
             "--condition",
             "react_v2",
             "--max-metric-calls",
@@ -177,7 +176,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 9
+    assert contract["schema_version"] == 10
     assert contract["component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
@@ -276,7 +275,7 @@ def test_deepseek_settings_reach_both_runtime_roles(
     assert optimize_kwargs["stop_callbacks"].max_proposals == 4
     assert optimize_kwargs["max_metric_calls"] == 4
     assert optimize_kwargs["batch_sampler"] == "epoch_shuffled"
-    assert optimize_kwargs["module_selector"] == ("all" if experiment == "tb4-agent-text" else "round_robin")
+    assert optimize_kwargs["module_selector"] == "all"
     assert optimize_kwargs["use_merge"] is False
     contract = json.loads((tmp_path / "run" / "terminalbench-run-contract.json").read_text())
     assert contract["experiment"] == experiment
@@ -291,7 +290,7 @@ def test_deepseek_settings_reach_both_runtime_roles(
     )
 
 
-@pytest.mark.parametrize("experiment,iterations,padding", [("tb2-system-prompt", 40, 0), ("tb4-agent-text", 32, 1)])
+@pytest.mark.parametrize("experiment,iterations,padding", [("tb2", 40, 0), ("tb4", 32, 1)])
 @pytest.mark.parametrize("outcome", ["accepted", "rejected", "perfect"])
 def test_four_epoch_cli_budget_stops_and_resumes_with_real_engine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, iterations: int, padding: int, outcome: str
@@ -475,14 +474,17 @@ def test_experiment_has_no_implicit_default(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("family", TEMPLATE_FAMILIES)
-def test_tb2_seed_contains_only_the_unified_terminus_prompt(family: str) -> None:
-    """Preserve native Terminus instructions inside one editable prompt component."""
-    candidate, resolved = seed_candidate(QWEN3_8_27B_MODEL, family, "tb2-system-prompt")
-    assert set(candidate) == {"system_prompt"}
-    sections = TEMPLATE_FAMILIES[resolved]["system_prompt"].parse(candidate["system_prompt"])
-    assert [body.strip() for body in sections.values() if body.strip()] == [SYSTEM_PROMPT_SEED_PATH.read_text().strip()]
-    assert "{instruction}" not in candidate["system_prompt"]
-    assert "{terminal_state}" not in candidate["system_prompt"]
+def test_both_benchmarks_start_from_identical_full_text_and_skills(family: str) -> None:
+    """Give both benchmarks the same editable components and initial instructions."""
+    tb2, tb2_family = seed_candidate(QWEN3_8_27B_MODEL, family, "tb2")
+    tb4, tb4_family = seed_candidate(QWEN3_8_27B_MODEL, family, "tb4")
+    assert tb2 == tb4
+    assert tb2_family == tb4_family == family
+    assert set(tb2) == set(COMPONENT_KINDS)
+    assert len(tb2) == 16
+    assert {"command_format", "skill_debugging", "skill_verification"}.issubset(tb2)
+    assert "{instruction}" not in "".join(tb2.values())
+    assert "{terminal_state}" not in "".join(tb2.values())
 
 
 def test_experiment_manifest_mismatch_and_cross_experiment_resume_are_rejected(tmp_path: Path) -> None:
@@ -499,6 +501,6 @@ def test_experiment_manifest_mismatch_and_cross_experiment_resume_are_rejected(t
     ensure_run_contract(tmp_path / "resume", contracts[0])
     with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
         ensure_run_contract(tmp_path / "resume", contracts[1])
-    manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS["tb2-system-prompt"])
+    manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS["tb2"])
     with pytest.raises(ValueError, match="must match"):
         build_run_contract(args, manifest, manifest.tasks("train"), manifest.tasks("val"), "vanilla", "generic")

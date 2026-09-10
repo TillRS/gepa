@@ -60,7 +60,7 @@ def test_all_documents_are_materialized_without_evaluating_candidate_braces(tmp_
     initial = (tmp_path / "terminus-prompt.txt").read_text().format(**fields)
     assert "OBSERVED_instruction" in initial
     assert "OBSERVED_terminal_state" in initial
-    for name in ("instruction_prompt", "terminal_tool", "skill_discovery"):
+    for name in ("instruction_prompt", "terminal_tool", "skill_discovery", "command_format"):
         assert candidate[name] in initial
     for name in CONTEXT_FIELDS:
         assert candidate[name] in bundle["prompts"][name].format(**fields)
@@ -111,6 +111,7 @@ def test_cli_gives_both_methods_the_same_documents_and_runtime(
     for key in (
         "seed_candidate",
         "component_kinds",
+        "module_selector",
         "trainset",
         "valset",
         "max_metric_calls",
@@ -121,7 +122,8 @@ def test_cli_gives_both_methods_the_same_documents_and_runtime(
         assert vanilla[key] == forest[key]
     assert vanilla["reflection_level"] == 0
     assert forest["reflection_level"] == 2
-    expected = COMPONENT_KINDS if experiment == "tb4-agent-text" else {"system_prompt": "system_prompt"}
+    expected = COMPONENT_KINDS
+    assert vanilla["module_selector"] == "all"
     assert vanilla["component_kinds"] == expected
     assert set(vanilla["seed_candidate"]) == set(expected)
     for invocation in (vanilla, forest):

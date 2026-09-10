@@ -161,7 +161,7 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
     for scores in summary["harnesses"].values():
         assert scores["repetition_pass_at_1"] == [0.0, 0.5, 1.0]
         assert scores["mean_pass_at_1"] == scores["std_pass_at_1"] == 0.5
-        assert scores["task_attempts"] == (120 if experiment == "tb2-system-prompt" else 60)
+        assert scores["task_attempts"] == (120 if experiment == "tb2" else 60)
     kwargs = factory.call_args.kwargs
     contract = comparison["shared_configuration"]
     assert kwargs["student_model"] == model
@@ -178,8 +178,8 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
 
 def test_interrupted_evaluation_resumes_only_missing_repetitions(tmp_path: Path) -> None:
     """Keep completed attempts unchanged and withhold a summary until all nine jobs finish."""
-    vanilla = _write_run(tmp_path, "tb2-system-prompt", "vanilla")
-    forest = _write_run(tmp_path, "tb2-system-prompt", "react_v2")
+    vanilla = _write_run(tmp_path, "tb2", "vanilla")
+    forest = _write_run(tmp_path, "tb2", "react_v2")
     manifest, comparison = evaluate.freeze_comparison(vanilla, forest)
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir, fail_on_call=5)
@@ -198,8 +198,8 @@ def test_interrupted_evaluation_resumes_only_missing_repetitions(tmp_path: Path)
 
 def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Path) -> None:
     """Preserve fresh attempts when validation selects the initial harness for both methods."""
-    vanilla = _write_run(tmp_path, "tb4-agent-text", "vanilla")
-    forest = _write_run(tmp_path, "tb4-agent-text", "react_v2")
+    vanilla = _write_run(tmp_path, "tb4", "vanilla")
+    forest = _write_run(tmp_path, "tb4", "react_v2")
     for run_dir in (vanilla, forest):
         state = GEPAState.load(str(run_dir))
         state.prog_candidate_val_subscores[1] = dict.fromkeys(state.prog_candidate_val_subscores[1], 0.0)
@@ -221,9 +221,9 @@ def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Pat
 )
 def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, damage: str) -> None:
     """Reject unfinished optimization, pilot splits, and unmatched experimental settings."""
-    vanilla = _write_run(tmp_path, "tb4-agent-text", "vanilla")
+    vanilla = _write_run(tmp_path, "tb4", "vanilla")
     other_model = DEEPSEEK_V4_FLASH_MODEL if damage == "different_model" else QWEN3_8_27B_MODEL
-    forest = _write_run(tmp_path, "tb4-agent-text", "react_v2", other_model)
+    forest = _write_run(tmp_path, "tb4", "react_v2", other_model)
     if damage in {"incomplete", "partial_validation"}:
         state = GEPAState.load(str(forest))
         if damage == "incomplete":
@@ -247,8 +247,8 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
 
 def test_frozen_output_rejects_a_changed_validation_winner(tmp_path: Path) -> None:
     """Prevent replacing an optimized harness after test feedback has been observed."""
-    vanilla = _write_run(tmp_path, "tb4-agent-text", "vanilla")
-    forest = _write_run(tmp_path, "tb4-agent-text", "react_v2")
+    vanilla = _write_run(tmp_path, "tb4", "vanilla")
+    forest = _write_run(tmp_path, "tb4", "react_v2")
     manifest, comparison = evaluate.freeze_comparison(vanilla, forest)
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir, fail_on_call=2)
@@ -268,8 +268,8 @@ def test_frozen_output_rejects_a_changed_validation_winner(tmp_path: Path) -> No
 )
 def test_corrupt_saved_repetition_is_not_silently_reused(tmp_path: Path, damage: str) -> None:
     """Reject incomplete, mismatched, or duplicate test evidence during resume."""
-    vanilla = _write_run(tmp_path, "tb4-agent-text", "vanilla")
-    forest = _write_run(tmp_path, "tb4-agent-text", "react_v2")
+    vanilla = _write_run(tmp_path, "tb4", "vanilla")
+    forest = _write_run(tmp_path, "tb4", "react_v2")
     manifest, comparison = evaluate.freeze_comparison(vanilla, forest)
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir)
