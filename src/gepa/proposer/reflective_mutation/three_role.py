@@ -45,6 +45,7 @@ from gepa.strategies.intervention import (
     build_controller_menu,
     summarize_feedback,
 )
+from gepa.strategies.reflection_context import REFLECTION_CONTEXT_CONTRACT, compact_reflection_records
 
 MAX_HISTORY_TEXT_CHARS = 2000
 MAX_HISTORY_STEPS = 16
@@ -323,11 +324,17 @@ def _summarize_traces(entries: Sequence[Mapping[str, Any]]) -> str:
     Returns:
         One labeled block per example, or a no-traces marker.
     """
+    visible = [
+        {
+            "Inputs": entry.get("Inputs"),
+            "Output": entry.get("Generated Outputs", entry.get("Generated Output")),
+            "Feedback": entry.get("Feedback") or entry.get("execution_feedback"),
+        }
+        for entry in entries
+    ]
     blocks: list[str] = []
-    for index, entry in enumerate(entries):
-        inputs = entry.get("Inputs")
-        outputs = entry.get("Generated Outputs", entry.get("Generated Output"))
-        feedback = entry.get("Feedback") or entry.get("execution_feedback")
+    for index, entry in enumerate(compact_reflection_records(visible)):
+        inputs, outputs, feedback = entry["Inputs"], entry["Output"], entry["Feedback"]
         blocks.append(f"[example {index + 1}]\nInputs: {inputs}\nOutput: {outputs}\nFeedback: {feedback}")
     return "\n\n".join(blocks) or "(no traces available)"
 
@@ -635,7 +642,7 @@ class ThreeRoleReflectionLM:
                 "manifestor_lm_run_identity when constructing ThreeRoleReflectionLM with custom callables."
             )
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "strategy": "three_role_reflection",
             "reflection_level": self.level,
             "edit_tool_set": self.edit_tool_set,
@@ -646,15 +653,13 @@ class ThreeRoleReflectionLM:
             "reflection_prompt_template": self.reflection_prompt_template,
             "controller": controller,
             "semantic_action_spaces": (
-                {
-                    kind: deepcopy(SEMANTIC_ACTION_CATALOGS[self.templates[kind].kind])
-                    for kind in active_kinds
-                }
+                {kind: deepcopy(SEMANTIC_ACTION_CATALOGS[self.templates[kind].kind]) for kind in active_kinds}
                 if self.level >= 2
                 else None
             ),
             "max_chars": self.max_chars,
             "manifestor_traces_chars": self.manifestor_traces_chars,
+            "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
             "manifestor_delivery": "user_message",
             "branch_history": {
                 "storage": "target_scoped_user_assistant_messages",
@@ -923,6 +928,7 @@ class ThreeRoleReflectionLM:
             text = candidate[name]
             feedback = summarize_feedback(entries)
             traces = _summarize_traces(entries)
+            feedback_in_traces = "See each example's Feedback in Execution traces below."
             section_bodies = template.parse(text)
             # Sparse rendering keeps empty sections out of task-model messages.
             # The Controller still needs their occupancy to judge which semantic
@@ -987,7 +993,12 @@ class ThreeRoleReflectionLM:
                     self.manifestor_traces_chars,
                 )
                 try:
-                    steering_message = manifestor.manifest(action, region_text, feedback, traces)
+                    steering_message = manifestor.manifest(
+                        action,
+                        region_text,
+                        feedback_in_traces if self.manifestor_traces_chars is None else feedback,
+                        traces,
+                    )
                 except ManifestationError as exc:
                     error = _bounded_history_text(exc)
                     failed_proposer_record = {
@@ -1043,7 +1054,7 @@ class ThreeRoleReflectionLM:
                 action.edit_target,
                 action.edit_tool,
                 steering_message,
-                feedback,
+                feedback_in_traces,
                 traces,
                 history,
                 self.max_chars,
