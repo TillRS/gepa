@@ -69,6 +69,8 @@ or claim direct comparability to its reported scores. TB4 retains its approved
   TB2 and TB4, with identical editable components for GEPA and FOREST and fixed
   execution code. This is a research follow-up; the current implementation uses
   the user's approved working decision.
+- [ ] Ask Lakshya to confirm the train/validation/test splits for TB2 (30/19/40)
+  and TB4 (23/23/20), including how tasks are assigned to each split.
 
 #### Dataset pins and run identity
 
