@@ -4,7 +4,7 @@
 # Usage:
 #   scripts/della/submit_hotpotqa.sh
 #
-# Use MODEL_PROFILE=qwen3.8-27b or MODEL_PROFILE=glm-5.3-flash. Each
+# Use MODEL_PROFILE=qwen3.8-27b or MODEL_PROFILE=deepseek-v4-flash. Each
 # profile uses the same model for the student and proposer. The default
 # BUDGET_PROFILE=campaign submits exactly six serial jobs: vanilla, ReAct V2,
 # random-Controller ReAct V2, and selected-action GEPA at 6,871 calls, followed
@@ -78,9 +78,6 @@ TIME="${TIME:-}"
 STANDARD_TIME="${STANDARD_TIME:-}"
 EXPANDED_TIME="${EXPANDED_TIME:-}"
 MODEL_STORAGE="${MODEL_STORAGE:-/projects/BSTEWART/model_storage}"
-GLM_SGLANG_IMAGE_DIGEST="sha256:0836f0160fa785e424e68d13ef88ddd548f87e6e11ad9f0e4de982e4f9188aaf"
-GLM_SGLANG_IMAGE_URI="docker://lmsysorg/sglang@${GLM_SGLANG_IMAGE_DIGEST}"
-GLM_SGLANG_IMAGE="${MODEL_STORAGE}/runtimes/sglang-glm-5.3-flash-x86_64.sif"
 HOTPOTQA_PYTHON_VERSION="3.11.13"
 
 if [[ ! "${HOTPOTQA_CAMPAIGN_ID}" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -156,9 +153,9 @@ case "${MODEL_PROFILE}" in
         STANDARD_TIME="${STANDARD_TIME:-${TIME:-72:00:00}}"
         EXPANDED_TIME="${EXPANDED_TIME:-${TIME:-144:00:00}}"
         ;;
-    glm-5.3-flash)
+    deepseek-v4-flash)
         if [[ "${GPU_PARTITION}" != "ailab" ]]; then
-            echo "ERROR: GLM-5.3-Flash production runs require GPU_PARTITION=ailab" >&2
+            echo "ERROR: DeepSeek-V4-Flash-0731 production runs require GPU_PARTITION=ailab" >&2
             exit 1
         fi
         DELLA_GPUS="${DELLA_GPUS:-8}"
@@ -170,10 +167,11 @@ case "${MODEL_PROFILE}" in
         VLLM_DATA_PARALLEL_SIZE="${VLLM_DATA_PARALLEL_SIZE:-1}"
         VLLM_API_SERVER_COUNT="${VLLM_API_SERVER_COUNT:-1}"
         VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-8}"
-        MODEL="GLM-5.3-Flash"
+        GEN_MAX_LEN=393216
+        MODEL="DeepSeek-V4-Flash-0731"
         SOLVER_MODEL_PATH="${MODEL_STORAGE}/${MODEL}"
-        SOLVER_SERVED_NAME="zai-org/GLM-5.3-Flash"
-        SOLVER_MODEL="hosted_vllm/zai-org/GLM-5.3-Flash"
+        SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4-Flash-0731"
+        SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"
         SOLVER_API_BASE=""
         REFLECTION_API_BASE=""
         if [[ "${DELLA_GPUS}" != "8" \
@@ -181,14 +179,14 @@ case "${MODEL_PROFILE}" in
             || "${VLLM_DATA_PARALLEL_SIZE}" != "1" \
             || "${VLLM_API_SERVER_COUNT}" != "1" \
             || "${VLLM_MAX_NUM_SEQS}" != "8" ]]; then
-            echo "ERROR: scientific GLM runs require one TP8 replica on one eight-H200 node" >&2
+            echo "ERROR: scientific DeepSeek runs require one TP8 replica on one eight-H200 node" >&2
             exit 1
         fi
         STANDARD_TIME="${STANDARD_TIME:-${TIME:-144:00:00}}"
         EXPANDED_TIME="${EXPANDED_TIME:-${TIME:-144:00:00}}"
         ;;
     *)
-        echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or glm-5.3-flash" >&2
+        echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or deepseek-v4-flash" >&2
         exit 1
         ;;
 esac
@@ -302,7 +300,7 @@ echo "==> Della resources: partition=${JOB_PARTITION:-cluster-default} gpus=${DE
 if [[ "${MODEL_PROFILE}" == "qwen3.8-27b" ]]; then
     echo "==> Qwen POSIT/vLLM: tp=1 dp=8 api_servers=8 max_num_seqs=1/replica max_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS}"
 else
-    echo "==> GLM SGLang: tp=8 ep=8 max_running_requests=8 BF16-KV TileLang-DSA deep_gemm no-speculation no-DP-attention"
+    echo "==> DeepSeek POSIT/vLLM: tp=8 ep=8 dp=1 max_num_seqs=8 FP8-KV deepseek_v4 parsers no-speculation"
 fi
 
 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
@@ -387,51 +385,29 @@ if [[ ! "\${HOTPOTQA_GEPA_ENV_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
     exit 1
 fi
 
-HOTPOTQA_POSIT_ENV_SHA256=""
-HOTPOTQA_SGLANG_IMAGE_SHA256=""
-if [[ "${MODEL_PROFILE}" == "qwen3.8-27b" ]]; then
-    VLLM_PY="${POSIT_DIR}/src/.venv/bin/python"
-    if [[ ! -x "\${VLLM_PY}" ]]; then
-        echo "ERROR: missing \${VLLM_PY}; run scripts/della/build_env.sh" >&2
-        exit 1
-    fi
-    if [[ -n "\$(git -C "${POSIT_DIR}" status --porcelain --untracked-files=normal)" ]]; then
-        echo "ERROR: commit or remove local POSIT changes before a production submission" >&2
-        exit 1
-    fi
-    HOTPOTQA_POSIT_COMMIT="\$(git -C "${POSIT_DIR}" rev-parse HEAD)"
-    POSIT_ENV_MANIFEST="${SCRATCH_BASE}/.cache/gepa/posit-environments/\${HOTPOTQA_POSIT_COMMIT}.json"
-    if ! "\${GEPA_UV_BIN}" pip check --python "\${VLLM_PY}"; then
-        echo "ERROR: POSIT serving environment has inconsistent dependencies" >&2
-        exit 1
-    fi
-    if [[ ! -f "\${POSIT_ENV_MANIFEST}" ]]; then
-        echo "ERROR: POSIT serving environment is not frozen; run scripts/della/build_env.sh" >&2
-        exit 1
-    fi
-    HOTPOTQA_POSIT_ENV_SHA256="\$(sha256sum "\${POSIT_ENV_MANIFEST}" | cut -d' ' -f1)"
-    if [[ ! "\${HOTPOTQA_POSIT_ENV_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
-        echo "ERROR: POSIT serving environment is not frozen; run scripts/della/build_env.sh" >&2
-        exit 1
-    fi
-else
-    APPTAINER_BIN="\$(command -v apptainer || true)"
-    GLM_IMAGE_SOURCE_PATH="${GLM_SGLANG_IMAGE}.source"
-    GLM_IMAGE_SHA_PATH="${GLM_SGLANG_IMAGE}.sha256"
-    if [[ -z "\${APPTAINER_BIN}" \
-        || ! -f "${GLM_SGLANG_IMAGE}" \
-        || ! -f "\${GLM_IMAGE_SOURCE_PATH}" \
-        || "\$(tr -d '\n' < "\${GLM_IMAGE_SOURCE_PATH}")" != "${GLM_SGLANG_IMAGE_URI}" \
-        || ! -f "\${GLM_IMAGE_SHA_PATH}" ]]; then
-        echo "ERROR: pinned GLM SGLang runtime is absent; run scripts/della/build_env.sh" >&2
-        exit 1
-    fi
-    HOTPOTQA_SGLANG_IMAGE_SHA256="\$(sha256sum "${GLM_SGLANG_IMAGE}" | cut -d' ' -f1)"
-    if [[ "\${HOTPOTQA_SGLANG_IMAGE_SHA256}" != "\$(tr -d '\n' < "\${GLM_IMAGE_SHA_PATH}")" ]]; then
-        echo "ERROR: GLM SGLang image differs from its frozen digest" >&2
-        exit 1
-    fi
-    "\${APPTAINER_BIN}" inspect "${GLM_SGLANG_IMAGE}" >/dev/null
+VLLM_PY="${POSIT_DIR}/src/.venv/bin/python"
+if [[ ! -x "\${VLLM_PY}" ]]; then
+    echo "ERROR: missing \${VLLM_PY}; run scripts/della/build_env.sh" >&2
+    exit 1
+fi
+if [[ -n "\$(git -C "${POSIT_DIR}" status --porcelain --untracked-files=normal)" ]]; then
+    echo "ERROR: commit or remove local POSIT changes before a production submission" >&2
+    exit 1
+fi
+HOTPOTQA_POSIT_COMMIT="\$(git -C "${POSIT_DIR}" rev-parse HEAD)"
+POSIT_ENV_MANIFEST="${SCRATCH_BASE}/.cache/gepa/posit-environments/\${HOTPOTQA_POSIT_COMMIT}.json"
+if ! "\${GEPA_UV_BIN}" pip check --python "\${VLLM_PY}"; then
+    echo "ERROR: POSIT serving environment has inconsistent dependencies" >&2
+    exit 1
+fi
+if [[ ! -f "\${POSIT_ENV_MANIFEST}" ]]; then
+    echo "ERROR: POSIT serving environment is not frozen; run scripts/della/build_env.sh" >&2
+    exit 1
+fi
+HOTPOTQA_POSIT_ENV_SHA256="\$(sha256sum "\${POSIT_ENV_MANIFEST}" | cut -d' ' -f1)"
+if [[ ! "\${HOTPOTQA_POSIT_ENV_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "ERROR: POSIT serving environment is not frozen; run scripts/della/build_env.sh" >&2
+    exit 1
 fi
 
 SBATCH_BIN="\$(command -v sbatch)"
@@ -495,9 +471,6 @@ write_sbatch_export_file() {
         "HEALTH_TIMEOUT=${HEALTH_TIMEOUT}" \
         "POSIT_DIR=${POSIT_DIR}" \
         "MODEL_STORAGE=${MODEL_STORAGE}" \
-        "GLM_SGLANG_IMAGE=${GLM_SGLANG_IMAGE}" \
-        "GLM_SGLANG_IMAGE_URI=${GLM_SGLANG_IMAGE_URI}" \
-        "HOTPOTQA_SGLANG_IMAGE_SHA256=\${HOTPOTQA_SGLANG_IMAGE_SHA256}" \
         "SCRATCH_BASE=${SCRATCH_BASE}" \
         "GEPA_VENV_DIR=${GEPA_VENV_DIR}" \
         "HOME=\${HOME}" \
@@ -519,7 +492,7 @@ write_sbatch_export_file() {
 }
 
 PREVIOUS_JOB_ID=""
-if [[ "${MODEL_PROFILE}" == "glm-5.3-flash" ]]; then
+if [[ "${MODEL_PROFILE}" == "deepseek-v4-flash" ]]; then
     write_sbatch_export_file standard 6871 react_v2 1
     SBATCH_OUTPUT="\$(
         env -i \
@@ -530,7 +503,7 @@ if [[ "${MODEL_PROFILE}" == "glm-5.3-flash" ]]; then
             LC_ALL=C.UTF-8 \
             "\${SBATCH_BIN}"${SBATCH_RESOURCE_COMMAND} \
             --parsable \
-            --job-name="gepa-hp-glm-canary" \
+            --job-name="gepa-hp-deepseek-canary" \
             --output="${SCRATCH_BASE}/logs/hotpotqa-%x-%j.log" \
             --time="04:00:00" \
             --export=ALL \
@@ -539,12 +512,12 @@ if [[ "${MODEL_PROFILE}" == "glm-5.3-flash" ]]; then
     )"
     PREVIOUS_JOB_ID="\${SBATCH_OUTPUT%%;*}"
     if [[ ! "\${PREVIOUS_JOB_ID}" =~ ^[0-9]+$ ]]; then
-        echo "ERROR: sbatch returned an invalid GLM canary job id: \${SBATCH_OUTPUT}" >&2
+        echo "ERROR: sbatch returned an invalid DeepSeek canary job id: \${SBATCH_OUTPUT}" >&2
         exit 1
     fi
     rm -f -- "\${SBATCH_EXPORT_FILE}"
     SBATCH_EXPORT_FILE=""
-    echo "==> submitted pinned GLM four-tool canary: job \${PREVIOUS_JOB_ID}"
+    echo "==> submitted pinned DeepSeek four-tool canary: job \${PREVIOUS_JOB_ID}"
 fi
 
 for CELL_INDEX in "\${!SUBMIT_CONDITIONS[@]}"; do

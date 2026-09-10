@@ -12,8 +12,8 @@
 # Qwen3.8-27B direct run (the laptop submit wrapper requests the full H200 node):
 #   sbatch --partition=ailab --gres=gpu:1 --cpus-per-task=8 --mem=128G \
 #       --export=ALL,MODEL_PROFILE=qwen3.8-27b examples/hover/run_hover.sbatch
-# DeepSeek V4 Flash direct run (no GPU is needed):
-#   sbatch --cpus-per-task=32 --mem=64G \
+# DeepSeek V4 Flash local vLLM run (eight H200 GPUs):
+#   sbatch --partition=ailab --gres=gpu:8 --cpus-per-task=64 --mem=768G \
 #       --export=ALL,MODEL_PROFILE=deepseek-v4-flash examples/hover/run_hover.sbatch
 #
 # Scaled run (48h, like ifbench scaled):
@@ -80,12 +80,16 @@ case "${MODEL_PROFILE}" in
         LOCAL_SOLVER=1
         ;;
     deepseek-v4-flash)
-        MODEL=""
-        SOLVER_MODEL_PATH=""
-        SOLVER_SERVED_NAME=""
-        SOLVER_MODEL="deepseek/deepseek-v4-flash"
-        SOLVER_API_BASE=""
-        REFLECTION_API_BASE=""
+        MODEL="DeepSeek-V4-Flash-0731"
+        SOLVER_MODEL_PATH="${MODEL_STORAGE}/${MODEL}"
+        SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4-Flash-0731"
+        SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"
+        SOLVER_API_BASE="http://localhost:${GEN_PORT}/v1"
+        VLLM_DATA_PARALLEL_SIZE=1
+        VLLM_API_SERVER_COUNT=1
+        VLLM_MAX_NUM_SEQS=8
+        GEN_MAX_LEN=393216
+        LOCAL_SOLVER=1
         ;;
     *)
         echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or deepseek-v4-flash" >&2
@@ -169,12 +173,37 @@ if [[ "${LOCAL_SOLVER}" == "1" ]]; then
         echo "ERROR: vLLM data parallel size ${VLLM_DATA_PARALLEL_SIZE} exceeds ${VISIBLE_GPU_COUNT} allocated GPU(s)" >&2
         exit 1
     fi
-    VLLM_HELP="$("${VLLM_BIN}" serve --help 2>&1)"
+    MODEL_SERVE_ARGS=(--tensor-parallel-size 1 --reasoning-parser qwen3 --language-model-only)
+    if [[ "${MODEL_PROFILE}" == "deepseek-v4-flash" ]]; then
+        if (( VISIBLE_GPU_COUNT != 8 )); then
+            echo "ERROR: DeepSeek V4 Flash requires eight allocated H200 GPUs" >&2
+            exit 1
+        fi
+        if ! "${PY}" -m examples.common.model_snapshot verify \
+            --model-profile deepseek-v4-flash --root "${SOLVER_MODEL_PATH}" >/dev/null; then
+            exit 1
+        fi
+        if ! uv run --no-project --python "${POSIT_DIR}/src/.venv/bin/python" python - <<'PY'
+from importlib.metadata import version
+from examples.common.experiment_models import DEEPSEEK_V4_FLASH_MODEL, validate_experiment_vllm_version
+
+validate_experiment_vllm_version(DEEPSEEK_V4_FLASH_MODEL, version("vllm"))
+PY
+        then
+            exit 1
+        fi
+        MODEL_SERVE_ARGS=(
+            --tensor-parallel-size 8 --enable-expert-parallel --trust-remote-code
+            --tokenizer-mode deepseek_v4 --reasoning-parser deepseek_v4
+            --tool-call-parser deepseek_v4 --enable-auto-tool-choice
+            --kv-cache-dtype fp8 --block-size 256
+        )
+    fi
+    VLLM_HELP="$("${VLLM_BIN}" serve --help=all 2>&1)"
     for required_option in \
         --api-server-count \
         --data-parallel-size \
         --enable-prefix-caching \
-        --language-model-only \
         --max-num-batched-tokens
     do
         if [[ "${VLLM_HELP}" != *"${required_option}"* ]]; then
@@ -191,10 +220,9 @@ if [[ "${LOCAL_SOLVER}" == "1" ]]; then
         -u TOKENIZERS_PARALLELISM \
         "${VLLM_BIN}" serve "${SOLVER_MODEL_PATH}" \
         --served-model-name "${SOLVER_SERVED_NAME}" \
-        --reasoning-parser qwen3 \
+        "${MODEL_SERVE_ARGS[@]}" \
         --host 0.0.0.0 \
         --port "${GEN_PORT}" \
-        --tensor-parallel-size 1 \
         --data-parallel-size "${VLLM_DATA_PARALLEL_SIZE}" \
         --api-server-count "${VLLM_API_SERVER_COUNT}" \
         --gpu-memory-utilization "${GEN_GMU}" \
@@ -202,7 +230,6 @@ if [[ "${LOCAL_SOLVER}" == "1" ]]; then
         --max-num-seqs "${VLLM_MAX_NUM_SEQS}" \
         --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS}" \
         --enable-prefix-caching \
-        --language-model-only \
         > "${GEN_LOG}" 2>&1 &
     GEN_PID=$!
 
@@ -229,12 +256,7 @@ if [[ "${LOCAL_SOLVER}" == "1" ]]; then
 fi
 
 # --- Run the GEPA experiment (using GEPA's own venv) ---------------------
-if [[ "${MODEL_PROFILE}" == "deepseek-v4-flash" && -z "${DEEPSEEK_API_KEY:-}" ]]; then
-    echo "ERROR: set DEEPSEEK_API_KEY for the DeepSeek V4 Flash run" >&2
-    exit 1
-fi
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
-export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
 # Flush python output line-by-line so the SLURM log shows live progress.
 export PYTHONUNBUFFERED=1
 # The vLLM process is already running, so these limits apply only to the

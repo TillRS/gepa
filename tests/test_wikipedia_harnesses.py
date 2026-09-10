@@ -17,9 +17,9 @@ from litellm.utils import get_optional_params
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from examples.common.experiment_models import (
+    DEEPSEEK_V4_FLASH_MODEL,
+    DEEPSEEK_V4_FLASH_OPENROUTER_MODEL,
     EXPERIMENT_NUM_RETRIES,
-    GLM_5_3_FLASH_MODEL,
-    GLM_5_3_FLASH_OPENROUTER_MODEL,
     QWEN3_8_27B_MODEL,
     QWEN3_8_27B_OPENROUTER_MODEL,
     experiment_decoding,
@@ -73,7 +73,7 @@ class FakeRetriever:
 
 
 @pytest.mark.parametrize("module", [hotpot_utils, hover_utils])
-@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, GLM_5_3_FLASH_MODEL])
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
 def test_wikipedia_lm_uses_experiment_model_decoding(monkeypatch, module, model: str) -> None:
     """Keep sparse messages and model-specific decoding in solver calls.
 
@@ -116,7 +116,7 @@ def test_wikipedia_lm_uses_experiment_model_decoding(monkeypatch, module, model:
 @pytest.mark.parametrize("module", [hotpot_utils, hover_utils])
 @pytest.mark.parametrize(
     "model",
-    [QWEN3_8_27B_OPENROUTER_MODEL, GLM_5_3_FLASH_OPENROUTER_MODEL],
+    [QWEN3_8_27B_OPENROUTER_MODEL, DEEPSEEK_V4_FLASH_OPENROUTER_MODEL],
 )
 def test_wikipedia_lm_keeps_openrouter_routing_on_solver_calls(monkeypatch, module, model: str) -> None:
     """Attach the exact OpenRouter endpoint policy to every solver request.
@@ -149,7 +149,7 @@ def test_wikipedia_lm_keeps_openrouter_routing_on_solver_calls(monkeypatch, modu
 
 @pytest.mark.parametrize(
     "model",
-    [QWEN3_8_27B_OPENROUTER_MODEL, GLM_5_3_FLASH_OPENROUTER_MODEL],
+    [QWEN3_8_27B_OPENROUTER_MODEL, DEEPSEEK_V4_FLASH_OPENROUTER_MODEL],
 )
 def test_litellm_preserves_openrouter_routing_and_reasoning(model: str) -> None:
     """Keep the provider and reasoning objects intact through LiteLLM.
@@ -170,21 +170,21 @@ def test_litellm_preserves_openrouter_routing_and_reasoning(model: str) -> None:
     assert transformed["extra_body"] == request_overrides["extra_body"]
 
 
-def test_litellm_preserves_local_glm_chat_template_settings() -> None:
-    """Keep GLM maximum reasoning and clear-history settings intact."""
-    request_overrides = experiment_request_overrides(GLM_5_3_FLASH_MODEL)
+def test_litellm_preserves_local_deepseek_chat_template_settings() -> None:
+    """Keep DeepSeek maximum reasoning and clear-history settings intact."""
+    request_overrides = experiment_request_overrides(DEEPSEEK_V4_FLASH_MODEL)
 
     transformed = get_optional_params(
-        model="zai-org/GLM-5.3-Flash",
+        model="deepseek-ai/DeepSeek-V4-Flash-0731",
         custom_llm_provider="hosted_vllm",
         drop_params=True,
-        **experiment_decoding(GLM_5_3_FLASH_MODEL),
+        **experiment_decoding(DEEPSEEK_V4_FLASH_MODEL),
         **request_overrides,
     )
 
     assert transformed["extra_body"]["chat_template_kwargs"] == {
         "reasoning_effort": "max",
-        "clear_thinking": True,
+        "thinking": True,
     }
     assert transformed["temperature"] == 1.0
     assert transformed["top_p"] == 0.95
@@ -583,7 +583,7 @@ def test_hotpot_task_lm_requires_the_locked_dspy_runtime(monkeypatch) -> None:
         hotpot_utils.build_hotpotqa_task_lm(QWEN3_8_27B_MODEL, None)
 
 
-@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, GLM_5_3_FLASH_MODEL])
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
 def test_hotpot_dspy_lm_uses_the_selected_experiment_profile(monkeypatch, model: str) -> None:
     """Apply the selected solver's exact decoding settings to DSPy.
 
@@ -624,7 +624,7 @@ def test_hotpot_dspy_lm_uses_the_selected_experiment_profile(monkeypatch, model:
 
 @pytest.mark.parametrize(
     "model",
-    [QWEN3_8_27B_OPENROUTER_MODEL, GLM_5_3_FLASH_OPENROUTER_MODEL],
+    [QWEN3_8_27B_OPENROUTER_MODEL, DEEPSEEK_V4_FLASH_OPENROUTER_MODEL],
 )
 def test_hotpot_dspy_lm_forwards_openrouter_routing(monkeypatch, model: str) -> None:
     """Keep the provider pin inside DSPy's forwarded request body.
@@ -693,8 +693,8 @@ def test_hotpot_dspy_lm_accepts_the_resolved_technical_smoke_profile(monkeypatch
     lm_constructor.assert_called_once_with(model=model, cache_in_memory=False, **lm_kwargs)
 
 
-def test_hotpot_dspy_lm_uses_the_standard_local_glm_client(monkeypatch) -> None:
-    """Use DSPy's normal local OpenAI-compatible client for GLM.
+def test_hotpot_dspy_lm_uses_the_standard_local_deepseek_client(monkeypatch) -> None:
+    """Use DSPy's normal local OpenAI-compatible client for DeepSeek.
 
     Args:
         monkeypatch: Pytest fixture used to replace runtime validation and the
@@ -712,7 +712,7 @@ def test_hotpot_dspy_lm_uses_the_standard_local_glm_client(monkeypatch) -> None:
         Mock(return_value=(hotpot_utils.HOTPOTQA_DSPY_VERSION, hotpot_utils.HOTPOTQA_DSPY_COMMIT)),
     )
 
-    result = hotpot_utils.build_hotpotqa_task_lm(GLM_5_3_FLASH_MODEL, "http://127.0.0.1:8000/v1")
+    result = hotpot_utils.build_hotpotqa_task_lm(DEEPSEEK_V4_FLASH_MODEL, "http://127.0.0.1:8000/v1")
 
     assert result is lm_constructor.return_value
     lm_constructor.assert_called_once()
@@ -745,7 +745,7 @@ def test_hotpot_openrouter_launcher_mirrors_six_campaign_cells_per_model() -> No
     assert sum("--condition action " in line for line in plans) == 2
     assert sum("--condition react_v2_random " in line for line in plans) == 2
     assert all("--condition random " not in line for line in plans)
-    assert sum("--solver-model hosted_vllm/zai-org/GLM-5.3-Flash" in line for line in plans) == 6
+    assert sum("--solver-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731" in line for line in plans) == 6
     assert sum("--solver-model hosted_vllm/Qwen/Qwen3.8-27B" in line for line in plans) == 6
     assert all("--api-profile openrouter" in line for line in plans)
     assert all("--runtime-profile technical-smoke" in line for line in plans)
@@ -778,7 +778,7 @@ def test_hotpot_openrouter_launcher_resumes_from_an_explicit_arm() -> None:
 
     plans = [line for line in result.stdout.splitlines() if line.startswith("PLAN ")]
     assert len(plans) == 9
-    assert plans[0].startswith("PLAN 4/12 glm-standard-action")
+    assert plans[0].startswith("PLAN 4/12 deepseek-standard-action")
     assert plans[-1].startswith("PLAN 12/12 qwen-expanded-react-v2")
     assert "resume: arms 1-3 are skipped and not revalidated" in result.stdout
 
@@ -1439,12 +1439,7 @@ def test_wikipedia_sbatch_exposes_both_homogeneous_model_profiles(benchmark: str
 
     assert 'MODEL_PROFILE="${MODEL_PROFILE:-qwen3.8-27b}"' in script
     assert 'SOLVER_MODEL="hosted_vllm/Qwen/Qwen3.8-27B"' in script
-    secondary_model = (
-        'SOLVER_MODEL="hosted_vllm/zai-org/GLM-5.3-Flash"'
-        if benchmark == "hotpotqa"
-        else 'SOLVER_MODEL="deepseek/deepseek-v4-flash"'
-    )
-    assert secondary_model in script
+    assert 'SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"' in script
     assert 'REFLECTION_MODEL="${SOLVER_MODEL}"' in script
     if benchmark == "hover":
         assert 'if [[ "${LOCAL_SOLVER}" == "1" ]]' in script
@@ -1453,10 +1448,10 @@ def test_wikipedia_sbatch_exposes_both_homogeneous_model_profiles(benchmark: str
     if benchmark == "hotpotqa":
         assert 'export OPENAI_API_KEY="EMPTY"' in script
         assert "DEEPSEEK_API_KEY" not in script
-        assert 'SERVING_ENGINE="sglang"' in script
+        assert 'SERVING_ENGINE="vllm"' in script
     else:
         assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"' in script
-        assert 'export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"' in script
+        assert "DEEPSEEK_API_KEY" not in script
 
 
 @pytest.mark.parametrize("benchmark", ["hotpotqa", "hover"])
@@ -1480,16 +1475,16 @@ def test_wikipedia_della_submit_scales_resources_by_model_profile(benchmark: str
     assert 'VLLM_API_SERVER_COUNT="${VLLM_API_SERVER_COUNT:-${VLLM_DATA_PARALLEL_SIZE}}"' in submit
     if benchmark == "hotpotqa":
         assert "DELLA_GPUS=0" not in submit
-        assert "glm-5.3-flash)" in submit
+        assert "deepseek-v4-flash)" in submit
         assert 'VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-8}"' in submit
         assert 'VLLM_DATA_PARALLEL_SIZE="${VLLM_DATA_PARALLEL_SIZE:-1}"' in submit
         assert 'VLLM_API_SERVER_COUNT="${VLLM_API_SERVER_COUNT:-1}"' in submit
         assert 'MAX_WORKERS="${MAX_WORKERS:-8}"' in submit
     else:
-        assert "DELLA_GPUS=0" in submit
-        assert 'DELLA_MEMORY="${DELLA_MEMORY:-128G}"' in submit
-        assert 'JOB_PARTITION="${CPU_PARTITION:-}"' in submit
-        assert 'MAX_WORKERS="${MAX_WORKERS:-64}"' in submit
+        assert "DELLA_GPUS=8" in submit
+        assert 'DELLA_MEMORY="${DELLA_MEMORY:-768G}"' in submit
+        assert 'JOB_PARTITION="${GPU_PARTITION}"' in submit
+        assert 'MAX_WORKERS="${MAX_WORKERS:-8}"' in submit
         assert "VLLM_DATA_PARALLEL_SIZE=1" in submit
         assert "VLLM_API_SERVER_COUNT=1" in submit
     assert '"--cpus-per-task=${DELLA_CPUS_PER_TASK}"' in submit
@@ -1517,10 +1512,7 @@ def test_wikipedia_sbatch_configures_within_run_vllm_throughput(benchmark: str) 
     assert "#SBATCH --mem=128G" in script
     assert "#SBATCH --gres" not in script
     assert 'VLLM_DATA_PARALLEL_SIZE="${VLLM_DATA_PARALLEL_SIZE:-1}"' in script
-    assert (
-        'VLLM_API_SERVER_COUNT="${VLLM_API_SERVER_COUNT:-${VLLM_DATA_PARALLEL_SIZE}}"'
-        in script
-    )
+    assert 'VLLM_API_SERVER_COUNT="${VLLM_API_SERVER_COUNT:-${VLLM_DATA_PARALLEL_SIZE}}"' in script
     expected_max_num_seqs = "1" if benchmark == "hotpotqa" else "64"
     assert f'VLLM_MAX_NUM_SEQS="${{VLLM_MAX_NUM_SEQS:-{expected_max_num_seqs}}}"' in script
     assert 'VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"' in script
@@ -1615,10 +1607,9 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert "scientific Qwen runs require 8 H200 data-parallel replicas and 8 API servers" in submit
     assert 'SOLVER_MODEL_PATH="${MODEL_STORAGE}/${MODEL}"' in submit
     assert 'SOLVER_MODEL="hosted_vllm/Qwen/Qwen3.8-27B"' in submit
-    assert 'SOLVER_MODEL="hosted_vllm/zai-org/GLM-5.3-Flash"' in submit
+    assert 'SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"' in submit
     assert 'REFLECTION_MODEL="${SOLVER_MODEL}"' in submit
     assert "DEEPSEEK_API_KEY" not in submit
-    assert 'GLM_SGLANG_IMAGE="${MODEL_STORAGE}/runtimes/sglang-glm-5.3-flash-x86_64.sif"' in submit
     assert r'"BUDGET_PROFILE=\${run_budget_profile}"' in submit
     assert "HOTPOTQA_CAMPAIGN_ID=${HOTPOTQA_CAMPAIGN_ID}" in submit
     assert 'SBATCH_BIN="\\$(command -v sbatch)"' in submit
@@ -1688,7 +1679,7 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert ".gepa-source-commit" in submit
     assert ".gepa-source-manifest.sha256sums" in submit
     assert "HOTPOTQA_SOURCE_MANIFEST_SHA256=${HOTPOTQA_SOURCE_MANIFEST_SHA256}" in submit
-    assert 'if [[ "${MODEL_PROFILE}" == "glm-5.3-flash" ]]' in submit
+    assert 'if [[ "${MODEL_PROFILE}" == "deepseek-v4-flash" ]]' in submit
     assert "commit the complete experiment source" in submit
     assert '"${SCRIPT_DIR}/sync_to_della.sh"' in submit
     assert "NO_SYNC" not in submit
@@ -1719,10 +1710,10 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert 'MODEL="Qwen3.8-27B"' in sbatch
     assert 'SOLVER_MODEL_PATH="${MODEL_STORAGE}/${MODEL}"' in sbatch
     assert 'QWEN_REVISION="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"' in sbatch
-    assert 'GLM_REVISION="04c4e9e95c5da8862dced7e5056455116f83a7e0"' in sbatch
-    assert "DeepSeek" not in sbatch
+    assert 'DEEPSEEK_REVISION="7872f01b1d1fe23eabc4c98b48bffcef5a386062"' in sbatch
+    assert "sglang" not in sbatch
     assert 'HOTPOTQA_MODEL_REVISION="${QWEN_REVISION}"' in sbatch
-    assert 'HOTPOTQA_MODEL_REVISION="${GLM_REVISION}"' in sbatch
+    assert 'HOTPOTQA_MODEL_REVISION="${DEEPSEEK_REVISION}"' in sbatch
     assert 'SOLVER_API_BASE="http://127.0.0.1:${GEN_PORT}/v1"' in sbatch
     assert 'HOTPOTQA_MODEL_INTEGRITY_SHA256="$(sha256sum "${SOLVER_MODEL_PATH}/.gepa-model-integrity.json"' in sbatch
     assert "examples.common.model_snapshot verify" in sbatch
@@ -1762,13 +1753,11 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert 'SOLVER_API_BASE="http://127.0.0.1:${GEN_PORT}/v1"' in sbatch
     assert "generator_reports_expected_model()" in sbatch
     assert "ids == [sys.argv[1]]" in sbatch
-    assert sbatch.index('if ! kill -0 "${GEN_PID}"') < sbatch.index(
-        "if generator_reports_expected_model"
-    )
+    assert sbatch.index('if ! kill -0 "${GEN_PID}"') < sbatch.index("if generator_reports_expected_model")
     assert "--reasoning-parser qwen3" in sbatch
     assert "--enable-auto-tool-choice" in sbatch
     assert "--tool-call-parser qwen3_coder" in sbatch
-    assert 'Version("0.17.0")' in sbatch
+    assert "validate_experiment_vllm_version(sys.argv[1], sys.argv[2])" in sbatch
     assert '"${VLLM_BIN}" serve --help=all' in sbatch
     assert '"${VLLM_BIN}" serve --help 2>&1' not in sbatch
     assert 'echo "==> checking native tool-call compatibility"' in sbatch
@@ -1826,9 +1815,6 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert 'exec {MODEL_LOCK_FD}<"${SOLVER_MODEL_PATH}"' in sbatch
     assert 'if ! flock -s -n "${MODEL_LOCK_FD}"' in sbatch
     assert 'HOTPOTQA_VLLM_VERSION=""' in sbatch
-    assert 'HOTPOTQA_SGLANG_VERSION=""' in sbatch
-    assert 'HOTPOTQA_SERVING_IMAGE_URI=""' in sbatch
-    assert 'HOTPOTQA_SERVING_IMAGE_SHA256=""' in sbatch
     assert 'HOTPOTQA_CUDA_MODULE=""' in sbatch
     assert 'WIKI17_INTEGRITY_SHA256="$(sha256sum "${WIKI17_DIR}/integrity.json"' in sbatch
     assert 'HOTPOTQA_CUDA_MODULE="cudatoolkit/${HOTPOTQA_CUDA_VERSION}"' in sbatch
@@ -1846,10 +1832,6 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert "uv_sha=${HOTPOTQA_UV_SHA256}" in sbatch
     assert "api_base=${SOLVER_API_BASE}" in sbatch
     assert "engine=${HOTPOTQA_SERVING_ENGINE}" in sbatch
-    assert "sglang=${HOTPOTQA_SGLANG_VERSION}" in sbatch
-    assert "image_uri=${HOTPOTQA_SERVING_IMAGE_URI}" in sbatch
-    assert "image_sha=${HOTPOTQA_SERVING_IMAGE_SHA256}" in sbatch
-    assert "HOTPOTQA_DEEPSEEK" not in sbatch
     assert "env_spec=${HOTPOTQA_ENV_SPEC_SHA256}" in sbatch
     assert "gepa_env=${HOTPOTQA_GEPA_ENV_SHA256}" in sbatch
     assert "budget_profile=${BUDGET_PROFILE}" in sbatch
@@ -1907,7 +1889,7 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert "examples.common.model_snapshot prepare" in build
     assert "examples.common.model_snapshot verify" in build
     assert '--model-profile qwen3.8-27b --root "${QWEN_MODEL_DIR}"' in build
-    assert '--model-profile glm-5.3-flash --root "${GLM_MODEL_DIR}"' in build
+    assert '--model-profile deepseek-v4-flash --root "${DEEPSEEK_MODEL_DIR}"' in build
     assert 'exec {MODEL_LOCK_FD}<"${QWEN_MODEL_DIR}"' in build
     assert 'if ! flock -n "\\${MODEL_LOCK_FD}"' in build
     assert 'examples.common.wiki17_bm25 verify --deep --root "${WIKI17_DIR}"' in build
@@ -1966,9 +1948,9 @@ def test_hover_della_submit_preserves_artifact_methodology() -> None:
     assert 'FINAL_RETRIEVAL_K="${FINAL_RETRIEVAL_K:-10}"' in submit
     assert 'MODEL="${MODEL:-Qwen3.8-27B}"' in submit
     assert 'SOLVER_MODEL="hosted_vllm/Qwen/Qwen3.8-27B"' in submit
-    assert 'SOLVER_MODEL="deepseek/deepseek-v4-flash"' in submit
+    assert 'SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"' in submit
     assert 'REFLECTION_MODEL="${SOLVER_MODEL}"' in submit
-    assert "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}" in submit
+    assert "DEEPSEEK_API_KEY" not in submit
     assert "examples.common.wiki17_bm25 verify" in submit
     assert "load_hover_dataset(seed=0" in submit
     assert "WIKI17_DIR=${WIKI17_DIR}" in submit

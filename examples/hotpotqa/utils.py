@@ -20,9 +20,9 @@ except ImportError:
     dspy = None  # type: ignore[assignment]
 
 from examples.common.experiment_models import (
+    DEEPSEEK_V4_FLASH_MODEL,
+    DEEPSEEK_V4_FLASH_OPENROUTER_MODEL,
     EXPERIMENT_NUM_RETRIES,
-    GLM_5_3_FLASH_MODEL,
-    GLM_5_3_FLASH_OPENROUTER_MODEL,
     QWEN3_8_27B_MODEL,
     QWEN3_8_27B_OPENROUTER_MODEL,
     experiment_decoding,
@@ -48,11 +48,12 @@ HOTPOTQA_SCIENTIFIC_SPLIT_SHA256 = {
 HOTPOTQA_RUNTIME_PROFILES = ("scientific", "technical-smoke")
 HOTPOTQA_SCIENTIFIC_REQUEST_SEED = 0
 HOTPOTQA_TECHNICAL_SMOKE_QWEN_MAX_TOKENS = 16_384
-HOTPOTQA_TECHNICAL_SMOKE_GLM_MAX_TOKENS = 16_384
+HOTPOTQA_TECHNICAL_SMOKE_DEEPSEEK_MAX_TOKENS = 16_384
 HOTPOTQA_TECHNICAL_SMOKE_REASONING_EFFORT = "low"
 
 
 if dspy is not None:
+
     class _HotPotQAChatAdapter(dspy.ChatAdapter):
         """Parse artifact fields after repairing one observed marker near-miss."""
 
@@ -77,9 +78,7 @@ if dspy is not None:
                     completion remains invalid after the narrow marker repair.
             """
             if completion is None:
-                raise ValueError(
-                    "Failed to parse response as per signature: provider returned no completion text."
-                )
+                raise ValueError("Failed to parse response as per signature: provider returned no completion text.")
             try:
                 return super().parse(signature, completion)
             except ValueError:
@@ -190,17 +189,17 @@ def resolve_hotpotqa_lm_kwargs(
         **experiment_decoding(model),
         **experiment_request_overrides(model),
     }
-    if runtime_profile == "scientific" and model in {QWEN3_8_27B_MODEL, GLM_5_3_FLASH_MODEL}:
+    if runtime_profile == "scientific" and model in {QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL}:
         kwargs["seed"] = HOTPOTQA_SCIENTIFIC_REQUEST_SEED
     technical_smoke_models = {
         QWEN3_8_27B_OPENROUTER_MODEL,
-        GLM_5_3_FLASH_OPENROUTER_MODEL,
+        DEEPSEEK_V4_FLASH_OPENROUTER_MODEL,
     }
     if runtime_profile == "technical-smoke" and model in technical_smoke_models:
         if model == QWEN3_8_27B_OPENROUTER_MODEL:
             kwargs["max_tokens"] = HOTPOTQA_TECHNICAL_SMOKE_QWEN_MAX_TOKENS
         else:
-            kwargs["max_tokens"] = HOTPOTQA_TECHNICAL_SMOKE_GLM_MAX_TOKENS
+            kwargs["max_tokens"] = HOTPOTQA_TECHNICAL_SMOKE_DEEPSEEK_MAX_TOKENS
         extra_body = deepcopy(kwargs["extra_body"])
         extra_body["reasoning"] = {"effort": HOTPOTQA_TECHNICAL_SMOKE_REASONING_EFFORT}
         kwargs["extra_body"] = extra_body
