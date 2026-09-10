@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-pytest.importorskip("harbor")
+# This test directory can satisfy a top-level namespace import without Harbor installed.
+pytest.importorskip("harbor.agents.terminus_2")
 
 from harbor.agents.terminus_2 import Terminus2
 from harbor.agents.terminus_2.terminus_2 import Command
