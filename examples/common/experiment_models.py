@@ -48,7 +48,7 @@ _EXPERIMENT_DECODING = {
     },
 }
 
-_EXPERIMENT_REQUEST_OVERRIDES = {
+_EXPERIMENT_REQUEST_OVERRIDES: dict[str, dict[str, object]] = {
     DEEPSEEK_V4_FLASH_MODEL: {
         "extra_body": {
             "chat_template_kwargs": {
