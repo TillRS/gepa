@@ -15,6 +15,7 @@ import subprocess
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -61,6 +62,19 @@ PROMPTED_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:PromptedT
 SPLIT_NAMES = ("train", "val", "test")
 SPLIT_WEIGHTS = {"train": 0.40, "val": 0.30, "test": 0.30}
 SUPPORTED_ATIF_SCHEMA_VERSIONS = {f"ATIF-v1.{minor}" for minor in range(8)}
+VERIFIER_LOG_FILENAMES = ("test-stdout.txt", "test-stderr.txt")
+MAX_VERIFIER_LOG_BYTES = 8192
+REFLECTION_FEEDBACK_CONTRACT = {
+    "version": 1,
+    "score": "official_verifier_reward",
+    "reflection_split": "train",
+    "verifier_log_filenames": list(VERIFIER_LOG_FILENAMES),
+    "verifier_log_directories": ["verifier", "steps/*/verifier"],
+    "max_bytes_per_verifier_log": MAX_VERIFIER_LOG_BYTES,
+    "log_truncation": "equal_head_and_tail_with_omitted_byte_marker",
+    "log_decoding": "utf-8-replace",
+    "missing_verifier_logs": "explicitly_unavailable",
+}
 
 
 class TerminalBenchOutput(TypedDict):
@@ -86,6 +100,7 @@ class TerminalBenchTrajectory(TypedDict):
     rewards: dict[str, float]
     errors: list[str]
     atif_trajectories: list[dict[str, Any]]
+    verifier_logs: dict[str, str]
     trial_result: dict[str, Any]
     evaluation_id: str
     harbor_returncode: int
@@ -178,6 +193,7 @@ class HarborTrialResult:
     atif_trajectories: list[dict[str, Any]]
     raw_result: dict[str, Any]
     trial_dir: Path
+    verifier_logs: dict[str, str] = dataclass_field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -200,6 +216,48 @@ class HarborRequirementError(RuntimeError):
 
 class HarborExecutionError(RuntimeError):
     """Raised when a Harbor job fails before producing complete task results."""
+
+
+def _read_verifier_logs(trial_dir: Path) -> dict[str, str]:
+    """Read bounded verifier console output while preserving full files on disk.
+
+    Args:
+        trial_dir: One completed Harbor trial's artifact directory.
+
+    Returns:
+        Relative log paths mapped to UTF-8 text. Oversized files retain their
+        beginning and end with an explicit omitted-byte count between them.
+
+    Raises:
+        HarborExecutionError: A present log is unreadable or resolves outside
+            this trial's directory.
+    """
+    logs = {}
+    directories = [trial_dir / "verifier", *sorted((trial_dir / "steps").glob("*/verifier"))]
+    for directory in directories:
+        for filename in VERIFIER_LOG_FILENAMES:
+            path = directory / filename
+            if not path.resolve().is_relative_to(trial_dir.resolve()):
+                raise HarborExecutionError(f"Verifier log {path} resolves outside its trial directory")
+            try:
+                with path.open("rb") as stream:
+                    prefix = stream.read(MAX_VERIFIER_LOG_BYTES + 1)
+                    if len(prefix) <= MAX_VERIFIER_LOG_BYTES:
+                        text = prefix.decode("utf-8", errors="replace")
+                    else:
+                        size = stream.seek(0, os.SEEK_END)
+                        half = MAX_VERIFIER_LOG_BYTES // 2
+                        stream.seek(-half, os.SEEK_END)
+                        head = prefix[:half].decode("utf-8", errors="replace")
+                        tail = stream.read(half).decode("utf-8", errors="replace")
+                        omitted = size - MAX_VERIFIER_LOG_BYTES
+                        text = f"{head}\n[... {omitted} bytes omitted; full log retained on disk ...]\n{tail}"
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise HarborExecutionError(f"Verifier log {path} is unreadable") from exc
+            logs[path.relative_to(trial_dir).as_posix()] = text
+    return logs
 
 
 def _validate_job_result(raw_result: Any, expected_trials: int, result_path: Path) -> None:
@@ -821,6 +879,7 @@ class HarborCLI:
                 atif_trajectories=atif_trajectories,
                 raw_result=raw_result,
                 trial_dir=result_path.parent,
+                verifier_logs=_read_verifier_logs(result_path.parent),
             )
 
         missing = [task_id for task_id in task_ids if task_id not in trials]
@@ -920,6 +979,7 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
                         "rewards": trial.rewards,
                         "errors": errors,
                         "atif_trajectories": trial.atif_trajectories,
+                        "verifier_logs": dict(trial.verifier_logs),
                         "trial_result": trial.raw_result,
                         "evaluation_id": evaluation.evaluation_id,
                         "harbor_returncode": evaluation.returncode,
@@ -941,7 +1001,7 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
         eval_batch: EvaluationBatch[TerminalBenchTrajectory, TerminalBenchOutput],
         components_to_update: list[str],
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
-        """Expose complete ATIF trajectories, rewards, and errors for reflection.
+        """Expose training trajectories, verifier diagnostics, and rewards for reflection.
 
         Args:
             candidate: Candidate used for the captured evaluation.
@@ -952,7 +1012,8 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
             Execution evidence for each selected document component.
 
         Raises:
-            ValueError: A component is unknown or the candidate is incomplete.
+            ValueError: A component is unknown, the candidate is incomplete,
+                or feedback contains a task outside the training split.
             RuntimeError: The evaluation omitted trajectories.
         """
         if not components_to_update or not set(components_to_update).issubset(self.manifest.component_kinds):
@@ -960,6 +1021,8 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
         self.manifest.validate_candidate(candidate)
         if eval_batch.trajectories is None:
             raise RuntimeError("Terminal-Bench reflection requires capture_traces=True")
+        if any(trajectory["task_id"] not in self.manifest.splits["train"] for trajectory in eval_batch.trajectories):
+            raise ValueError("Terminal-Bench reflection feedback is restricted to training tasks")
 
         rows: list[dict[str, Any]] = []
         for trajectory in eval_batch.trajectories:
@@ -984,8 +1047,11 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
                             "reward": trajectory["reward"],
                             "rewards": trajectory["rewards"],
                             "errors": trajectory["errors"],
+                            "verifier_log_status": "available" if trajectory["verifier_logs"] else "unavailable",
+                            "verifier_logs": trajectory["verifier_logs"],
                         },
                         sort_keys=True,
+                        ensure_ascii=False,
                     ),
                 }
             )

@@ -176,7 +176,9 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 11
+    assert contract["schema_version"] == 12
+    assert contract["reflection_feedback"]["reflection_split"] == "train"
+    assert contract["reflection_feedback"]["max_bytes_per_verifier_log"] == 8192
     assert contract["component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL

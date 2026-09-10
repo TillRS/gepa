@@ -75,6 +75,32 @@ benchmarks retain their official task resource limits and agent timeouts, withou
 local overrides. An optional `--harbor-process-timeout-sec` is a whole-job
 operational limit recorded in the run contract.
 
+#### Textual feedback for reflection
+
+Every method receives the same training-evidence format: task identity, complete
+ATIF agent trajectories, the trial result, official rewards, and textual verifier
+diagnostics. The task instructions and agent commands/outputs remain in the
+trajectory. The official verifier reward is the optimization score; diagnostic
+text supplies evidence for reflection without changing that score.
+
+`Feedback` includes the actual contents of Harbor's `verifier/test-stdout.txt`
+and `verifier/test-stderr.txt` when present, plus corresponding logs under
+`steps/*/verifier/` for multi-step trials. These are console outputs from the
+verifier run, not the verifier implementation or benchmark solution files.
+All 16 selected components receive the same feedback. Each optimizer retains
+its existing reflection procedure and role-specific context limits.
+
+Each log contributes up to 8,192 source bytes. Longer logs retain equal portions
+from the beginning and end, separated by an explicit omitted-byte count. Full
+logs stay unchanged in the Harbor artifacts. Text uses UTF-8 with replacement
+for invalid bytes. Missing logs are reported as unavailable and do not change a
+valid reward; a present but unreadable log raises an evidence error.
+
+Only training tasks may enter reflection. Validation still selects candidates,
+and held-out test feedback cannot enter optimization. The run contract pins the
+feedback version, log locations, byte limit, decoding, and missing-log policy.
+Earlier runs without this feedback contract require fresh directories.
+
 #### Reference protocol and pending confirmation
 
 The working decision is to optimize the full text surface on both benchmarks.

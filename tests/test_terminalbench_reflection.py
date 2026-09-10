@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import sys
 from pathlib import Path
@@ -75,13 +76,15 @@ def test_stateless_action_edits_all_sixteen_documents_with_the_correct_templates
     """Preserve sibling sections while combining sixteen single-turn edits into one proposal."""
     candidate = seed_documents(family)
     strategy, selector, rewriter = _strategy(family)
-    dataset = {name: [{"Feedback": "Check the generated files"}] for name in candidate}
+    feedback = json.dumps({"reward": 0, "verifier_logs": {"verifier/test-stdout.txt": "FAILED test_output"}})
+    dataset = {name: [{"Feedback": feedback}] for name in candidate}
     proposal, next_strategy = strategy.reflect(candidate, dataset, list(candidate))
 
     assert next_strategy is strategy
     assert candidate == seed_documents(family)
     assert set(proposal.new_texts) == set(proposal.metadata["component_actions"]) == set(COMPONENT_KINDS)
     assert len(selector.calls) == len(rewriter.calls) == 16
+    assert all("FAILED test_output" in request for request in selector.calls + rewriter.calls)
     assert all("verified-rewrite" not in request for request in selector.calls)
     for name, revised in proposal.new_texts.items():
         template = TEMPLATE_FAMILIES[family][COMPONENT_KINDS[name]]

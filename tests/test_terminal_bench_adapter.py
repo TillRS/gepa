@@ -27,6 +27,8 @@ from gepa.adapters.terminal_bench_adapter.documents import (
     TASK_FIELDS,
     seed_documents,
 )
+from gepa.proposer.reflective_mutation.reflection_lm import StatelessReflectionLM
+from gepa.strategies.intervention import summarize_feedback
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "examples" / "terminalbench" / "terminalbench-v4-manifest.json"
@@ -663,6 +665,113 @@ def test_runner_preserves_valid_verified_zero_reward(tmp_path: Path, monkeypatch
     assert evaluated.outputs[0]["errors"] == []
     assert evaluated.trajectories is not None
     assert evaluated.trajectories[0]["atif_trajectories"]
+
+
+@pytest.mark.parametrize("manifest_path", [TB2_MANIFEST_PATH, MANIFEST_PATH], ids=["tb2", "tb4"])
+@pytest.mark.parametrize("reward", [0.0, 1.0])
+def test_verifier_console_output_is_textual_feedback_for_every_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manifest_path: Path, reward: float
+) -> None:
+    """Carry actual verifier text through Harbor parsing and reflection without changing the score."""
+    manifest = load_terminalbench_manifest(manifest_path)
+    runner = HarborCLI(work_dir=tmp_path, **{**_RUNNER_OPTIONS, "manifest": manifest})
+    monkeypatch.setattr(runner, "check_requirements", Mock(return_value=("/mock/harbor", "/mock/docker")))
+    task = manifest.tasks("train", 1)[0]
+    diagnostics = {
+        "verifier/test-stdout.txt": "FAILED test_output: expected result.json to contain all records. שלום\n",
+        "verifier/test-stderr.txt": "Warning: optional diagnostic message\n",
+    }
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """Materialize the pinned Harbor layout with verifier log-file contents."""
+        config = json.loads(Path(command[command.index("--config") + 1]).read_text())
+        job_dir = Path(config["jobs_dir"]) / config["job_name"]
+        job_dir.mkdir(parents=True)
+        _write_job_result(job_dir, 1)
+        _write_trial_result(job_dir, task.task_id, reward=reward)
+        trial_dir = job_dir / "trial-0"
+        for relative_path, content in diagnostics.items():
+            log = trial_dir / relative_path
+            log.parent.mkdir(exist_ok=True)
+            log.write_text(content, encoding="utf-8")
+        (trial_dir / "verifier/test_source.py").write_text("private verifier implementation")
+        (trial_dir / "verifier/reward.txt").write_text("999")
+        return subprocess.CompletedProcess(command, 0, "complete", "")
+
+    monkeypatch.setattr(terminalbench_module.subprocess, "run", run)
+    adapter = TerminalBenchAdapter(manifest, runner)
+    candidate = _candidate()
+    evaluated = adapter.evaluate([task], candidate, capture_traces=True)
+    assert evaluated.scores == [reward]
+    assert evaluated.num_metric_calls == 1
+    assert evaluated.trajectories is not None
+    assert evaluated.trajectories[0]["verifier_logs"] == diagnostics
+    rows = adapter.make_reflective_dataset(candidate, evaluated, list(candidate))
+    feedback = {entries[0]["Feedback"] for entries in rows.values()}
+    assert len(feedback) == 1
+    actual = json.loads(feedback.pop())
+    assert actual["reward"] == reward
+    assert actual["verifier_log_status"] == "available"
+    assert actual["verifier_logs"] == diagnostics
+    assert "private verifier implementation" not in json.dumps(rows)
+    assert "שלום" in rows["instruction_prompt"][0]["Feedback"]
+    reflection_lm = Mock(return_value="```Revised instruction```")
+    StatelessReflectionLM(reflection_lm).reflect(candidate, rows, list(candidate))
+    assert reflection_lm.call_count == 16
+    assert all("FAILED test_output" in call.args[0] for call in reflection_lm.call_args_list)
+    assert "FAILED test_output" in summarize_feedback(rows["instruction_prompt"])
+
+    evaluated.trajectories[0]["verifier_logs"] = {}
+    missing = adapter.make_reflective_dataset(candidate, evaluated, ["instruction_prompt"])
+    assert json.loads(missing["instruction_prompt"][0]["Feedback"])["verifier_log_status"] == "unavailable"
+    assert evaluated.scores == [reward]
+
+    for split in ("val", "test"):
+        evaluated.trajectories[0]["task_id"] = manifest.splits[split][0]
+        with pytest.raises(ValueError, match="restricted to training tasks"):
+            adapter.make_reflective_dataset(candidate, evaluated, ["instruction_prompt"])
+
+
+def test_verifier_log_reader_preserves_ends_step_identity_and_original_files(tmp_path: Path) -> None:
+    """Bound large logs, include step output, and decode invalid bytes without losing the whole log."""
+    maximum = terminalbench_module.MAX_VERIFIER_LOG_BYTES
+    verifier = tmp_path / "verifier"
+    verifier.mkdir()
+    stdout = verifier / "test-stdout.txt"
+    content = b"TEST HEADER\n" + b"x" * maximum + b"\nFAILED final assertion"
+    stdout.write_bytes(content)
+    (verifier / "test-stderr.txt").write_bytes(b"diagnostic: \xff")
+    step_dir = tmp_path / "steps" / "verify-output" / "verifier"
+    step_dir.mkdir(parents=True)
+    (step_dir / "test-stdout.txt").write_text("Step-specific failure", encoding="utf-8")
+
+    logs = terminalbench_module._read_verifier_logs(tmp_path)
+    shortened = logs["verifier/test-stdout.txt"]
+    assert shortened.startswith("TEST HEADER\n")
+    assert shortened.endswith("FAILED final assertion")
+    assert f"{len(content) - maximum} bytes omitted" in shortened
+    assert len(shortened.encode()) < maximum + 100
+    assert logs["verifier/test-stderr.txt"] == "diagnostic: \ufffd"
+    assert logs["steps/verify-output/verifier/test-stdout.txt"] == "Step-specific failure"
+    assert stdout.read_bytes() == content
+    assert terminalbench_module._read_verifier_logs(tmp_path / "missing-trial") == {}
+
+
+@pytest.mark.parametrize("invalid_path", ["directory", "external_symlink"])
+def test_verifier_log_reader_rejects_unreadable_or_external_artifacts(tmp_path: Path, invalid_path: str) -> None:
+    """Do not silently drop present diagnostics or read outside the current trial."""
+    trial = tmp_path / "trial"
+    verifier = trial / "verifier"
+    verifier.mkdir(parents=True)
+    stdout = verifier / "test-stdout.txt"
+    if invalid_path == "directory":
+        stdout.mkdir()
+    else:
+        outside = tmp_path / "outside.txt"
+        outside.write_text("unrelated artifact")
+        stdout.symlink_to(outside)
+    with pytest.raises(HarborExecutionError, match=r"unreadable|outside"):
+        terminalbench_module._read_verifier_logs(trial)
 
 
 @pytest.mark.parametrize(
