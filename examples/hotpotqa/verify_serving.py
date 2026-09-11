@@ -19,7 +19,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
-from examples.common.experiment_models import DEEPSEEK_V4_FLASH_0731_MODEL
+from examples.common.experiment_models import DEEPSEEK_V4_1_FLASH_MODEL
 from examples.hotpotqa.utils import resolve_hotpotqa_lm_kwargs
 from gepa.lm import LM, ToolCompletion
 from gepa.proposer.reflective_mutation.react_v2_proposer import ReActV2Proposer
@@ -381,8 +381,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default=DEEPSEEK_V4_FLASH_0731_MODEL,
-        help="Exact local LiteLLM model identifier (default: the DeepSeek-V4-Flash-0731 arm)",
+        default=DEEPSEEK_V4_1_FLASH_MODEL,
+        help="Exact local LiteLLM model identifier (default: the DeepSeek-V4.1-Flash arm)",
     )
     parser.add_argument("--api-base", required=True, help="Local OpenAI-compatible /v1 endpoint")
     parser.add_argument(

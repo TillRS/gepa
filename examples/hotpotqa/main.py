@@ -35,9 +35,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from examples.common.experiment_models import (
-    DEEPSEEK_V4_FLASH_0731_MODEL,
+    DEEPSEEK_V4_1_FLASH_MODEL,
     EXPERIMENT_MODELS,
-    EXPERIMENT_NUM_RETRIES,
     QWEN3_8_27B_MODEL,
     experiment_decoding,
     experiment_model_version,
@@ -170,11 +169,12 @@ _MODEL_VLLM_CONTRACTS = {
             "tool_parser=qwen3_coder",
         ),
     },
-    # DeepSeek-V4-Flash-0731 through the same pinned vLLM 0.25.1: FP8 block-quantized
-    # attention/dense weights with MXFP4 experts as shipped in the checkpoint, one
-    # TP8/EP8 replica, the fp8_ds_mla KV cache and 256-token blocks that vLLM's
-    # DeepSeek V4 sparse-MLA path requires, and no MTP/DSpark speculative decoding.
-    DEEPSEEK_V4_FLASH_0731_MODEL: {
+    # DeepSeek-V4.1-Flash through its own frozen vLLM build (main at e77daef89): FP8
+    # block-quantized dense weights and FP4 experts as shipped in the checkpoint, one
+    # TP8/EP8 replica, the fp8_ds_mla KV cache its sparse-MLA path uses with vLLM's
+    # default KV block size, the checkpoint's native deepseek_v41 prompt encoding, and
+    # no MTP/DSpark speculative decoding.
+    DEEPSEEK_V4_1_FLASH_MODEL: {
         "weight_dtype": "fp8",
         "kv_cache_dtype": "fp8",
         "serve_settings": (
@@ -184,9 +184,10 @@ _MODEL_VLLM_CONTRACTS = {
             "speculative_decoding=false",
             "expert_dtype=fp4",
             "kv_cache_dtype=fp8",
-            "block_size=256",
-            "reasoning_parser=deepseek_v4",
-            "tool_parser=deepseek_v4",
+            "block_size=auto",
+            "tokenizer_mode=deepseek_v41",
+            "reasoning_parser=deepseek_v41",
+            "tool_parser=deepseek_v41",
         ),
     },
 }
@@ -340,7 +341,7 @@ def _validate_scientific_contract(args) -> None:
         serve_arguments = os.environ.get("HOTPOTQA_SERVE_ARGUMENTS", "")
         model_contract = _MODEL_VLLM_CONTRACTS.get(args.solver_model)
         if model_contract is not None:
-            model_label = "Qwen3.8-27B" if args.solver_model == QWEN3_8_27B_MODEL else "DeepSeek-V4-Flash-0731"
+            model_label = "Qwen3.8-27B" if args.solver_model == QWEN3_8_27B_MODEL else "DeepSeek-V4.1-Flash"
             if os.environ.get("HOTPOTQA_SERVING_ENGINE") != "vllm":
                 changed_axes.append(f"HOTPOTQA_SERVING_ENGINE must be 'vllm' for {model_label}")
             if os.environ.get("HOTPOTQA_WEIGHT_DTYPE") != model_contract["weight_dtype"]:
@@ -565,7 +566,8 @@ def build_run_contract(condition: str, args) -> dict:
             "solver_api_base": solver_api_identity,
             "solver_decoding": {field: deepcopy(solver_lm_kwargs[field]) for field in solver_decoding_fields},
             "solver_request_overrides": {field: deepcopy(solver_lm_kwargs[field]) for field in solver_request_fields},
-            "solver_num_retries": EXPERIMENT_NUM_RETRIES,
+            "solver_num_retries": solver_lm_kwargs["num_retries"],
+            "solver_request_timeout_seconds": solver_lm_kwargs["timeout"],
             "reflection": args.reflection_model,
             "reflection_version": experiment_model_version(args.reflection_model),
             "reflection_api_base": reflection_api_identity,
@@ -574,7 +576,8 @@ def build_run_contract(condition: str, args) -> dict:
             "reflection_request_overrides": {
                 field: deepcopy(reflection_lm_kwargs[field]) for field in reflection_request_fields
             },
-            "reflection_num_retries": EXPERIMENT_NUM_RETRIES,
+            "reflection_num_retries": reflection_lm_kwargs["num_retries"],
+            "reflection_request_timeout_seconds": reflection_lm_kwargs["timeout"],
         },
         "optimizer": {
             "max_metric_calls": args.max_metric_calls,

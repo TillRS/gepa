@@ -1,8 +1,8 @@
 <!-- Source: Gilad Morad, https://gist.github.com/gilad12-coder/b0142ad28de98c47487ea9847686206a (fetched 2026-09-02).
-     Adapted in this checkout: the second arm is DeepSeek-V4-Flash-0731 (GLM-5.3-Flash is dropped for now); neither
-     arm depends on an external POSIT checkout or an SGLang container; this repo builds one hash-locked vLLM serving
-     venv that serves both models (section 4); and there is no canary job, only a manual one-time serving check
-     (section 5). Everything else follows the gist. -->
+     Adapted in this checkout: the second arm is DeepSeek-V4.1-Flash (GLM-5.3-Flash is dropped); neither arm
+     depends on an external POSIT checkout or any container; this repo builds one hash-locked vLLM serving venv per
+     arm (section 4); and there is no canary job, only a one-time serving smoke test (section 5). Everything else
+     follows the gist. -->
 
 # Running the HotPotQA campaign on Della
 
@@ -14,7 +14,7 @@ The code is in [PR #59](https://github.com/zbambergerNLP/gepa/pull/59), and [Gra
 169ddda125b1abe305c7714bbb5b3fc38b21b587
 ```
 
-We are running six configurations with Qwen3.8-27B and six with DeepSeek-V4-Flash-0731 (`deepseek-ai/DeepSeek-V4-Flash-0731`, the official release with enhanced agentic capabilities). Each run uses one model for the student, proposer, and Controller.
+We are running six configurations with Qwen3.8-27B and six with DeepSeek-V4.1-Flash (`deepseek-ai/DeepSeek-V4.1-Flash`, released 2026-09-10). Each run uses one model for the student, proposer, and Controller.
 
 ## 1. Run the launcher locally
 
@@ -116,26 +116,42 @@ test "$(stat -f '%Lp' scripts/della/.env 2>/dev/null || stat -c '%a' scripts/del
 
 ## 4. Check the serving prerequisites
 
-Both arms are served by one vLLM environment that this repository builds itself from
-`examples/hotpotqa/serving/requirements.in` and its hash-locked resolution
-`examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt` (regenerate with
-`scripts/della/lock_serving_env.sh` after changing the `.in` file, and commit the lock).
-No other project's checkout, virtual environment, or container image is used.
+Each arm is served by its own vLLM environment that this repository builds itself, as a
+plain uv venv with every package hash-locked (no container, no other project's checkout):
 
-The pinned vLLM 0.25.1 already registers DeepSeek V4 (`DeepseekV4ForCausalLM`, its
-`deepseek_v4` reasoning and tool-call parsers, and its native prompt encoding), so the
-DeepSeek arm needs no pin change, FlashInfer change, or torch bump. Every job still fails
-closed at the architecture check in `run_hotpotqa.sbatch` if the frozen vLLM does not
-register the checkpoint's architecture.
+| Arm | Requirements | Lock | Venv |
+|---|---|---|---|
+| Qwen3.8-27B | `serving/requirements.in` | `serving/requirements-x86_64-linux-py312.txt` | `$REMOTE_DIR/.serving-venv` |
+| DeepSeek-V4.1-Flash | `serving/requirements-deepseek-v4.1-flash.in` | `serving/requirements-deepseek-v4.1-flash-x86_64-linux-py312.txt` | `$REMOTE_DIR/.serving-venv-deepseek-v4.1-flash` |
+
+(paths under `examples/hotpotqa/`). Regenerate a lock with
+`MODEL_PROFILE=<arm> scripts/della/lock_serving_env.sh` after changing its `.in` file, and
+commit the lock.
+
+Qwen keeps the proven vLLM 0.25.1 / torch 2.11 stack. DeepSeek-V4.1-Flash
+(`DeepseekV41ForCausalLM`) is newer than every vLLM release, so its environment pins the
+wheel vLLM publishes for main commit `e77daef89` (the commit that added the model, its
+`deepseek_v41` tokenizer mode, and its reasoning and tool-call parsers), with torch 2.13
+(CUDA 13.0) and flashinfer 0.6.18.post1. Della's GPU nodes are offline, and from vLLM 0.26
+flashinfer downloads missing GPU kernels at runtime, so the lock also installs flashinfer's
+prebuilt `flashinfer-cubin` and `flashinfer-jit-cache` wheels from flashinfer.ai and the job
+sets `FLASHINFER_NO_DOWNLOAD=1`. Every job still fails closed at the architecture check in
+`run_hotpotqa.sbatch` if the frozen vLLM does not register the checkpoint's architecture.
 
 The DeepSeek arm serves one TP8/EP8 replica per node with the same single-sequence
 determinism contract as Qwen (`--max-num-seqs 1`, `--seed 0`, no prefix caching, no
-batch-invariant mode, one API server, no speculative decoding: neither the MTP head nor
-the DSpark draft module is loaded). Two settings are forced by vLLM's DeepSeek V4
-sparse-MLA path rather than chosen: the KV cache is FP8 (`fp8_ds_mla`, the only layout it
-supports) and KV blocks are 256 tokens. The checkpoint ships FP8 attention/dense weights
-with MXFP4 experts; on the H200 (SM90) vLLM cannot use the DeepGEMM MegaMoE backend from
-the model card (SM100 only) and falls back to its Hopper MXFP4 MoE kernels.
+batch-invariant mode, one API server, no speculative decoding: neither the MTP layers nor
+the DSpark draft module is loaded). Prompts use the checkpoint's native encoding
+(`--tokenizer-mode deepseek_v41`; the repository ships no Jinja template), with thinking on
+and reasoning effort 100, the maximum. The KV cache is FP8 (`fp8_ds_mla`, the layout its
+sparse-MLA path uses) and the KV block size is left to vLLM (its SM90 sparse-MLA kernel
+needs 64-token blocks). The checkpoint ships FP8 dense weights, FP4 experts, and FP8 Engram
+tables; on the H200 (SM90) the FP4 experts run on vLLM's Marlin MoE backend.
+
+Concurrency: every replica decodes one sequence at a time, so each concurrent example
+beyond the replica count only queues. The launcher runs 12 concurrent examples on Qwen's
+eight replicas and 4 on DeepSeek's single replica, and each request has a 3,600-second
+timeout with two retries of the identical seeded request.
 
 Run the read-only preflight from your laptop; it covers steps 1-4:
 
@@ -146,9 +162,7 @@ scripts/della/preflight_hotpotqa.sh
 It checks the local tools, the exact commit and clean tree, `scripts/della/.env`,
 non-interactive SSH to both hosts, and on `della-vis1`: the `cudatoolkit/13.0` module, a
 writable `MODEL_STORAGE`, the home quota, and (once built) that the serving venv matches
-the committed lock. The pinned vLLM is 0.25.1 on torch 2.11 / CUDA 13.0, which satisfies
-the 0.17.0 floor with the data-parallel, multi-API-server, expert-parallel, and native
-tool-call options the sbatch requires.
+the committed lock, for each arm's serving venv.
 
 Della requires an SSH key **and** a password step; the launcher scripts use `BatchMode=yes`,
 so open the persistent master connections once per laptop session:
@@ -168,14 +182,14 @@ scripts/della/build_env.sh
 `build_env.sh` runs the downloads on `della-vis1`. It also:
 
 - builds the frozen Python 3.11.13 and uv 0.9.13 GEPA environment;
-- builds the hash-locked vLLM serving venv at `$REMOTE_DIR/.serving-venv` (shared by both arms) and freezes its manifest;
+- builds each arm's hash-locked vLLM serving venv (table above) and freezes its manifest;
 - builds and verifies the frozen Wiki-2017 BM25 index;
 - caches the exact HotPotQA 150/300/300 split; and
 - downloads and byte-verifies both pinned model checkpoints.
 
-Disk prerequisite: the DeepSeek-V4-Flash-0731 checkpoint is 48 safetensors shards
-totalling about 167 GB (155 GiB) at the pinned revision, on top of Qwen3.8-27B. Check
-that `MODEL_STORAGE` has roughly 200 GB free before the first build (`checkquota` or
+Disk prerequisite: the DeepSeek-V4.1-Flash checkpoint is 48 safetensors shards
+totalling 510.3 GB (475.3 GiB) at the pinned revision, on top of Qwen3.8-27B. Check
+that `MODEL_STORAGE` has roughly 600 GB free before the first build (`checkquota` or
 `df -h "$MODEL_STORAGE"` on `della-vis1`); the download also stages transfer metadata
 under `.cache` inside the checkpoint directory.
 
@@ -183,7 +197,7 @@ The shared files will be at:
 
 ```text
 $MODEL_STORAGE/Qwen3.8-27B
-$MODEL_STORAGE/DeepSeek-V4-Flash-0731
+$MODEL_STORAGE/DeepSeek-V4.1-Flash
 ```
 
 Model revisions:
@@ -192,8 +206,8 @@ Model revisions:
 Qwen/Qwen3.8-27B
 revision 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
 
-deepseek-ai/DeepSeek-V4-Flash-0731
-revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+deepseek-ai/DeepSeek-V4.1-Flash
+revision dba1be0a40aa45a94ad051997016db3960a90277
 ```
 
 Use `build_env.sh` rather than `huggingface-cli download`. The launcher requires the `.gepa-model-integrity.json` manifests generated during this build. Existing valid files are reused and verified.
@@ -205,31 +219,34 @@ source scripts/della/.env
 
 ssh "${REMOTE_USER}@${REMOTE_VIS_HOST}" \
   "test -s '${MODEL_STORAGE}/Qwen3.8-27B/.gepa-model-integrity.json' &&
-   test -s '${MODEL_STORAGE}/DeepSeek-V4-Flash-0731/.gepa-model-integrity.json' &&
+   test -s '${MODEL_STORAGE}/DeepSeek-V4.1-Flash/.gepa-model-integrity.json' &&
    echo 'All pinned model artifacts are present.'"
 ```
 
 The byte-level verification runs inside `build_env.sh`.
 
-### Verify the DeepSeek serving stack once (manual)
+### Smoke-test the DeepSeek serving stack once
 
-Before submitting the DeepSeek chain the first time, run the standalone serving check
-yourself, once, on an allocated eight-H200 node. It is not part of any campaign job, is
-not an `sbatch` dependency, and writes no marker or lock files; it serves the checkpoint
-with exactly the `vllm serve` invocation the sbatch uses, waits for health, then exercises
-an ordinary completion, a native tool call plus its tool-result continuation, and one ReAct
-V2 proposal per edit tool (DELETE_TEXT, INSERT_TEXT, MOVE_TEXT, REPLACE_TEXT), printing a
-PASS/FAIL report and exiting non-zero on failure. From a Della shell:
+Before submitting the DeepSeek chain the first time, run the serving smoke test. It is not
+part of any campaign job, is not a dependency of one, and writes no marker or lock files.
+It serves the checkpoint with exactly the `vllm serve` invocation the sbatch uses, waits
+for health, then sends one simple prompt with the campaign's request settings and records
+the request, the prompt text the server rendered from it (via vLLM's `/tokenize` and
+`/detokenize`), and the full response including the reasoning tokens. It then exercises an
+ordinary completion, a native tool call plus its tool-result continuation, and one ReAct V2
+proposal per edit tool (DELETE_TEXT, INSERT_TEXT, MOVE_TEXT, REPLACE_TEXT). From your laptop:
 
 ```bash
-salloc --partition=ailab --nodes=1 --gres=gpu:8 --cpus-per-task=64 --mem=768G --time=02:00:00
-cd "$REMOTE_DIR"
-scripts/della/verify_deepseek_serving.sh
+scripts/della/submit_deepseek_smoke.sh submit          # prints the job id
+scripts/della/submit_deepseek_smoke.sh fetch <job-id>  # after it finishes
 ```
 
-`VERIFY_ATTEMPTS` (default 4, one per tool) raises the number of edit attempts for a longer
-soak. Do not submit the DeepSeek chain until this prints `RESULT: PASS`; keep the vLLM log
-it names if it fails.
+The fetch copies `outputs/deepseek-smoke/<job-id>/`: `transcript.md` (human-readable),
+`transcript.json`, `verify_report.txt`, `serving-packages.txt`, `gpus.txt`, `vllm.log`, and
+the Slurm log. The same check runs interactively on an allocated node with
+`scripts/della/verify_deepseek_serving.sh`. `VERIFY_ATTEMPTS` (default 4, one per tool)
+raises the number of edit attempts for a longer soak. Do not submit the DeepSeek chain
+until it prints `PASS`.
 
 ## 6. Experiment matrix
 
@@ -263,7 +280,7 @@ scripts/della/submit_hotpotqa.sh
 Launch the DeepSeek chain (after the one-time manual serving check in section 5 has passed):
 
 ```bash
-MODEL_PROFILE=deepseek-v4-flash \
+MODEL_PROFILE=deepseek-v4.1-flash \
 BUDGET_PROFILE=campaign \
 CONDITION=all \
 HOTPOTQA_CAMPAIGN_ID=hotpotqa-final-v1 \
@@ -301,7 +318,7 @@ gepa-hp-qwen3.8-27b-expanded-vanilla
 gepa-hp-qwen3.8-27b-expanded-react_v2
 ```
 
-The six DeepSeek jobs use the same standard-first order with the `deepseek-v4-flash` profile.
+The six DeepSeek jobs use the same standard-first order with the `deepseek-v4.1-flash` profile.
 
 Inspect the dependency and state of one job:
 
@@ -350,7 +367,7 @@ scripts/della/submit_hotpotqa.sh
 Example: resume DeepSeek expanded ReAct V2:
 
 ```bash
-MODEL_PROFILE=deepseek-v4-flash \
+MODEL_PROFILE=deepseek-v4.1-flash \
 BUDGET_PROFILE=expanded \
 CONDITION=react_v2 \
 HOTPOTQA_CAMPAIGN_ID=hotpotqa-final-v1 \
@@ -403,7 +420,7 @@ runs = json.loads(analysis.read_text())["runs"]
 
 models = {
     "hosted_vllm/Qwen/Qwen3.8-27B",
-    "hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731",
+    "hosted_vllm/deepseek-ai/DeepSeek-V4.1-Flash",
 }
 cells = {
     (6871, "vanilla"),

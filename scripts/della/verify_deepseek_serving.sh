@@ -1,6 +1,6 @@
 #!/bin/bash
 # One-off, manual check that the frozen vLLM serving environment serves
-# DeepSeek-V4-Flash-0731 exactly the way examples/hotpotqa/run_hotpotqa.sbatch
+# DeepSeek-V4.1-Flash exactly the way examples/hotpotqa/run_hotpotqa.sbatch
 # does, and that the served model handles the HotPotQA ReAct V2 tool protocol.
 #
 # Run it yourself, once, on an allocated eight-H200 node from the synced checkout
@@ -12,13 +12,19 @@
 #   scripts/della/verify_deepseek_serving.sh
 #
 # It is deliberately not wired into scripts/della/submit_hotpotqa.sh, is not a
-# dependency of any campaign job, and writes no marker or lock files. Its only
-# outputs are the PASS/FAIL report on stdout, a non-zero exit status on failure,
-# and the vLLM log whose path it prints.
+# dependency of any campaign job, and writes no marker or lock files. Its outputs
+# are the PASS/FAIL report on stdout, a non-zero exit status on failure, and one
+# results directory ($SCRATCH_BASE/logs/hotpotqa/verify/<job id>) holding the vLLM
+# log, the installed serving packages, the GPU inventory, the tool-probe report,
+# and transcript.md/.json from examples/hotpotqa/smoke_serving.py: one simple prompt
+# with the campaign's request settings, the prompt text the server rendered from
+# it, and the full response including reasoning. scripts/della/submit_deepseek_smoke.sh
+# runs it as a batch job and fetches that directory.
 #
-# Checks, in order: the frozen vLLM registers DeepseekV4ForCausalLM; vLLM starts
+# Checks, in order: the frozen vLLM registers DeepseekV41ForCausalLM; vLLM starts
 # with the campaign's TP8/EP8 single-sequence invocation and reports the served
-# name; then examples/hotpotqa/verify_serving.py exercises an ordinary completion,
+# name; the smoke exchange returns reasoning and content; then
+# examples/hotpotqa/verify_serving.py exercises an ordinary completion,
 # a native tool call plus its tool-result continuation, and one ReAct V2 proposal
 # per broad edit tool (DELETE_TEXT, INSERT_TEXT, MOVE_TEXT, REPLACE_TEXT).
 #
@@ -32,15 +38,15 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 MODEL_STORAGE="${MODEL_STORAGE:-/projects/BSTEWART/model_storage}"
-MODEL="DeepSeek-V4-Flash-0731"
+MODEL="DeepSeek-V4.1-Flash"
 SOLVER_MODEL_PATH="${MODEL_STORAGE}/${MODEL}"
-SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4-Flash-0731"
-SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"
-SERVING_VENV_DIR="${SERVING_VENV_DIR:-${REPO_ROOT}/.serving-venv}"
+SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4.1-Flash"
+SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4.1-Flash"
+SERVING_VENV_DIR="${SERVING_VENV_DIR:-${REPO_ROOT}/.serving-venv-deepseek-v4.1-flash}"
 GEPA_VENV_DIR="${GEPA_VENV_DIR:-${REPO_ROOT}/.venv}"
 SCRATCH_BASE="${SCRATCH_BASE:-/scratch/gpfs/BSTEWART/${USER}/gepa}"
 VERIFY_PORT="${VERIFY_PORT:-}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-3600}"
 VERIFY_ATTEMPTS="${VERIFY_ATTEMPTS:-4}"
 VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-600}"
 # Same serving values as run_hotpotqa.sbatch.
@@ -80,10 +86,15 @@ export TRANSFORMERS_OFFLINE=1
 export JAX_PLATFORMS=cpu
 export VLLM_LOGGING_LEVEL=WARNING
 export VLLM_USE_FLASHINFER_SAMPLER=0
+export FLASHINFER_WORKSPACE_BASE="${SCRATCH_BASE}"
+export FLASHINFER_NO_DOWNLOAD=1
+export VLLM_ENGINE_READY_TIMEOUT_S=3600
 LOG_DIR="${SCRATCH_BASE}/logs/hotpotqa/verify"
+# Everything this run produces lands in one directory named after the Slurm job.
+RUN_DIR="${LOG_DIR}/${SLURM_JOB_ID:-$(date +%Y%m%dT%H%M%S)-$$}"
 mkdir -p "${XDG_CACHE_HOME}" "${HF_HOME}" "${VLLM_CACHE_ROOT}" \
-    "${TORCHINDUCTOR_CACHE_DIR}" "${TRITON_CACHE_DIR}" "${LOG_DIR}"
-GEN_LOG="${LOG_DIR}/verify-deepseek-$(date +%Y%m%dT%H%M%S)-$$.log"
+    "${TORCHINDUCTOR_CACHE_DIR}" "${TRITON_CACHE_DIR}" "${RUN_DIR}"
+GEN_LOG="${RUN_DIR}/vllm.log"
 
 export PATH="${SERVING_VENV_DIR}/bin:${PATH}"
 HOTPOTQA_VLLM_VERSION="$("${VLLM_PY}" -c 'from importlib.metadata import version; print(version("vllm"))')"
@@ -94,7 +105,17 @@ if ! module load "${HOTPOTQA_CUDA_MODULE}" || ! module is-loaded "${HOTPOTQA_CUD
     echo "ERROR: exact CUDA module ${HOTPOTQA_CUDA_MODULE} is unavailable" >&2
     exit 1
 fi
-echo "==> vLLM ${HOTPOTQA_VLLM_VERSION} from ${SERVING_VENV_DIR} (CUDA ${HOTPOTQA_CUDA_VERSION})"
+# Same header/library precedence as run_hotpotqa.sbatch: FlashInfer's first-load JIT
+# builds must find cuBLAS headers even on nodes whose local CUDA install lacks them.
+SERVING_CUDA_ROOT="$("${VLLM_PY}" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/nvidia/cu13"
+if [[ -d "${SERVING_CUDA_ROOT}/include" ]]; then
+    export CPATH="${SERVING_CUDA_ROOT}/include${CPATH:+:${CPATH}}"
+    export LIBRARY_PATH="${SERVING_CUDA_ROOT}/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+fi
+echo "==> vLLM ${HOTPOTQA_VLLM_VERSION} from ${SERVING_VENV_DIR} (CUDA ${HOTPOTQA_CUDA_VERSION}); results in ${RUN_DIR}"
+"${VLLM_PY}" -c 'import importlib.metadata as m; print("\n".join(sorted(f"{d.metadata[\"Name\"]}=={d.version}" for d in m.distributions())))' \
+    > "${RUN_DIR}/serving-packages.txt"
+nvidia-smi > "${RUN_DIR}/gpus.txt"
 
 echo "==> checking that the frozen vLLM registers the checkpoint architecture"
 "${VLLM_PY}" - "${SOLVER_MODEL_PATH}" "${HOTPOTQA_VLLM_VERSION}" <<'PY'
@@ -148,14 +169,14 @@ env \
     --seed 0 \
     --no-enable-prefix-caching \
     --language-model-only \
-    --reasoning-parser deepseek_v4 \
-    --tool-call-parser deepseek_v4 \
+    --tokenizer-mode deepseek_v41 \
+    --reasoning-parser deepseek_v41 \
+    --tool-call-parser deepseek_v41 \
     --tensor-parallel-size 8 \
     --enable-expert-parallel \
     --data-parallel-size 1 \
     --api-server-count 1 \
     --kv-cache-dtype fp8 \
-    --block-size 256 \
     > "${GEN_LOG}" 2>&1 &
 GEN_PID=$!
 
@@ -192,14 +213,26 @@ echo "==> vLLM endpoint ready on :${GEN_PORT} after $((SECONDS))s"
 export OPENAI_API_KEY="EMPTY"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}"
+echo "==> recording one full exchange (request, rendered prompt, reasoning, content)"
+SMOKE_STATUS=0
+"${PY}" -m examples.hotpotqa.smoke_serving \
+    --model "${SOLVER_MODEL}" \
+    --served-name "${SOLVER_SERVED_NAME}" \
+    --api-base "http://127.0.0.1:${GEN_PORT}/v1" \
+    --output-dir "${RUN_DIR}" || SMOKE_STATUS=$?
+
 echo "==> verifying ordinary completion, tool-result continuation, and the four ReAct V2 edit tools"
-if "${PY}" -m examples.hotpotqa.verify_serving \
+set +e
+"${PY}" -m examples.hotpotqa.verify_serving \
     --model "${SOLVER_MODEL}" \
     --api-base "http://127.0.0.1:${GEN_PORT}/v1" \
     --attempts "${VERIFY_ATTEMPTS}" \
-    --timeout "${VERIFY_TIMEOUT}"; then
-    echo "==> PASS: ${SOLVER_SERVED_NAME} served by vLLM ${HOTPOTQA_VLLM_VERSION} passed every check; vLLM log: ${GEN_LOG}"
+    --timeout "${VERIFY_TIMEOUT}" 2>&1 | tee "${RUN_DIR}/verify_report.txt"
+VERIFY_STATUS="${PIPESTATUS[0]}"
+set -e
+if [[ "${SMOKE_STATUS}" == "0" && "${VERIFY_STATUS}" == "0" ]]; then
+    echo "==> PASS: ${SOLVER_SERVED_NAME} served by vLLM ${HOTPOTQA_VLLM_VERSION} passed every check; results: ${RUN_DIR}"
 else
-    echo "==> FAIL: see the report above and ${GEN_LOG}" >&2
+    echo "==> FAIL: smoke exchange exit ${SMOKE_STATUS}, tool probes exit ${VERIFY_STATUS}; results: ${RUN_DIR}" >&2
     exit 1
 fi

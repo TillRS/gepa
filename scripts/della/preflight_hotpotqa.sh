@@ -14,7 +14,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
 EXPECTED_COMMIT="${HOTPOTQA_SOURCE_COMMIT:-169ddda125b1abe305c7714bbb5b3fc38b21b587}"
-MIN_VLLM="0.17.0"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -52,15 +51,23 @@ ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_VIS_HOST}" 'echo "vis node ok: $(h
     || fail "BatchMode ssh to ${REMOTE_VIS_HOST} failed; run scripts/della/della_session.sh open"
 
 echo "== 4. serving prerequisites on ${REMOTE_VIS_HOST}"
-SERVING_VENV_DIR="${SERVING_VENV_DIR:-${REMOTE_DIR%/}/.serving-venv}"
-SERVING_LOCK="${REPO_ROOT}/examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
-[[ -f "${SERVING_LOCK}" ]] || fail "missing ${SERVING_LOCK}; run scripts/della/lock_serving_env.sh"
-SERVING_LOCK_SHA256="$(sha256sum "${SERVING_LOCK}" | cut -d' ' -f1)"
-echo "serving lock ${SERVING_LOCK_SHA256}"
+# One hash-locked serving environment per model profile: "<venv dir> <lock file>".
+SERVING_ENVIRONMENTS=(
+    "${REMOTE_DIR%/}/.serving-venv examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
+    "${REMOTE_DIR%/}/.serving-venv-deepseek-v4.1-flash examples/hotpotqa/serving/requirements-deepseek-v4.1-flash-x86_64-linux-py312.txt"
+)
+SERVING_ARGS=()
+for environment in "${SERVING_ENVIRONMENTS[@]}"; do
+    read -r serving_venv serving_lock <<< "${environment}"
+    [[ -f "${REPO_ROOT}/${serving_lock}" ]] || fail "missing ${serving_lock}; run scripts/della/lock_serving_env.sh"
+    lock_sha="$(sha256sum "${REPO_ROOT}/${serving_lock}" | cut -d' ' -f1)"
+    echo "serving lock ${serving_lock}: ${lock_sha}"
+    SERVING_ARGS+=("${serving_venv}" "${lock_sha}")
+done
 ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_VIS_HOST}" bash -s -- \
-    "${SERVING_VENV_DIR}" "${SERVING_LOCK_SHA256}" "${MIN_VLLM}" "${MODEL_STORAGE}" <<'REMOTE'
+    "${MODEL_STORAGE}" "${SERVING_ARGS[@]}" <<'REMOTE'
 set -euo pipefail
-serving_venv="$1"; lock_sha="$2"; min_vllm="$3"; model_storage="$4"
+model_storage="$1"; shift
 source /usr/share/Modules/init/bash 2>/dev/null || true
 if module avail cudatoolkit/13.0 2>&1 | grep -q 'cudatoolkit/13.0'; then
     echo "cudatoolkit/13.0 module ok"
@@ -69,25 +76,20 @@ else
 fi
 test -w "${model_storage}" && echo "${model_storage} writable" || { echo "FAIL: ${model_storage} not writable"; exit 1; }
 echo "home quota:"; checkquota 2>/dev/null | awk '/Della home/ {print "  " $0}'
-if [[ -x "${serving_venv}/bin/python" ]]; then
-    marker="${serving_venv}/.gepa-serving-lock.sha256"
-    if [[ -f "${marker}" && "$(tr -d '\n' < "${marker}")" == "${lock_sha}" ]]; then
-        echo "serving venv present and matches the lock"
+while (( $# >= 2 )); do
+    serving_venv="$1"; lock_sha="$2"; shift 2
+    if [[ -x "${serving_venv}/bin/python" ]]; then
+        marker="${serving_venv}/.gepa-serving-lock.sha256"
+        if [[ -f "${marker}" && "$(tr -d '\n' < "${marker}")" == "${lock_sha}" ]]; then
+            echo "${serving_venv}: present and matches the lock"
+        else
+            echo "${serving_venv}: built from a different lock; build_env.sh will rebuild it"
+        fi
+        echo "  vLLM $("${serving_venv}/bin/python" -c 'from importlib.metadata import version; print(version("vllm"))')"
     else
-        echo "serving venv present but built from a different lock; build_env.sh will rebuild it"
+        echo "${serving_venv}: not built yet (build_env.sh creates it)"
     fi
-    vllm_version="$("${serving_venv}/bin/python" -c 'from importlib.metadata import version; print(version("vllm"))')"
-    echo "vLLM ${vllm_version}"
-    "${serving_venv}/bin/python" - "${vllm_version}" "${min_vllm}" <<'PY'
-import sys
-from packaging.version import Version
-have, need = sys.argv[1], sys.argv[2]
-if Version(have) < Version(need):
-    raise SystemExit(f"FAIL: vLLM {have} < required {need}")
-PY
-else
-    echo "serving venv not built yet (build_env.sh creates ${serving_venv})"
-fi
+done
 REMOTE
 
 echo "== preflight passed; next: scripts/della/build_env.sh"

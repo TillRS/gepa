@@ -32,15 +32,18 @@ source "${ENV_FILE}"
 WIKI17_DIR="${WIKI17_DIR:-${SCRATCH_BASE}/.cache/gepa/wiki17}"
 MODEL_STORAGE="${MODEL_STORAGE:-/projects/BSTEWART/model_storage}"
 QWEN_MODEL_DIR="${MODEL_STORAGE}/Qwen3.8-27B"
-# deepseek-ai/DeepSeek-V4-Flash-0731 at the pinned revision is 48 safetensors shards
-# totalling about 167 GB (155 GiB) of FP8 attention/dense weights plus MXFP4 experts,
-# so MODEL_STORAGE needs roughly 200 GB free before the first build (the download
-# also stages transfer metadata under .cache inside the checkpoint directory).
-DEEPSEEK_MODEL_DIR="${MODEL_STORAGE}/DeepSeek-V4-Flash-0731"
-# Self-contained vLLM serving environment for both model profiles, built from the
+# deepseek-ai/DeepSeek-V4.1-Flash at the pinned revision is 48 safetensors shards
+# totalling 510.3 GB (475.3 GiB): FP4 experts, FP8 dense weights, and FP8 Engram
+# lookup tables. MODEL_STORAGE needs roughly 600 GB free before the first build (the
+# download also stages transfer metadata under .cache inside the checkpoint directory).
+DEEPSEEK_MODEL_DIR="${MODEL_STORAGE}/DeepSeek-V4.1-Flash"
+# Self-contained vLLM serving environments, one per model profile, built from the
 # hash-locked requirements in this repo; nothing outside the checkout is consulted.
-SERVING_VENV_DIR="${SERVING_VENV_DIR:-${REMOTE_DIR%/}/.serving-venv}"
-SERVING_LOCK_RELATIVE="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
+# Qwen keeps the proven vLLM 0.25.1 stack; DeepSeek-V4.1-Flash needs a newer vLLM.
+QWEN_SERVING_VENV_DIR="${QWEN_SERVING_VENV_DIR:-${REMOTE_DIR%/}/.serving-venv}"
+QWEN_SERVING_LOCK_RELATIVE="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
+DEEPSEEK_SERVING_VENV_DIR="${DEEPSEEK_SERVING_VENV_DIR:-${REMOTE_DIR%/}/.serving-venv-deepseek-v4.1-flash}"
+DEEPSEEK_SERVING_LOCK_RELATIVE="examples/hotpotqa/serving/requirements-deepseek-v4.1-flash-x86_64-linux-py312.txt"
 HOTPOTQA_SERVING_PYTHON_VERSION="3.12.7"
 HOTPOTQA_PYTHON_VERSION="3.11.13"
 HOTPOTQA_UV_VERSION="0.9.13"
@@ -64,8 +67,6 @@ HOTPOTQA_UV_VERSION="${HOTPOTQA_UV_VERSION}"
 GEPA_UV_DIR="${GEPA_UV_DIR}"
 GEPA_UV_BIN="\${GEPA_UV_DIR}/uv"
 export UV_PROJECT_ENVIRONMENT="${REMOTE_DIR%/}/.venv"
-SERVING_VENV_DIR="${SERVING_VENV_DIR}"
-SERVING_LOCK="${SERVING_LOCK_RELATIVE}"
 HOTPOTQA_SERVING_PYTHON_VERSION="${HOTPOTQA_SERVING_PYTHON_VERSION}"
 mkdir -p "\${XDG_CACHE_HOME}" "\${HF_HOME}" "\${UV_CACHE_DIR}" "\${DSPY_CACHEDIR}" \
     "${WIKI17_DIR}" "${QWEN_MODEL_DIR}" "${DEEPSEEK_MODEL_DIR}"
@@ -133,52 +134,58 @@ version, commit = validate_hotpotqa_dspy_runtime()
 print(f"DSPy task-program runtime: {version} ({commit[:8]})")
 PY
 
-echo "==> building the pinned vLLM serving environment (both model profiles)"
-if [[ ! -f "\${SERVING_LOCK}" ]]; then
-    echo "ERROR: missing \${SERVING_LOCK}; run scripts/della/lock_serving_env.sh and commit the result" >&2
-    exit 1
-fi
-HOTPOTQA_SERVING_LOCK_SHA256="\$(sha256sum "\${SERVING_LOCK}" | cut -d' ' -f1)"
-SERVING_PY="\${SERVING_VENV_DIR}/bin/python"
-SERVING_LOCK_MARKER="\${SERVING_VENV_DIR}/.gepa-serving-lock.sha256"
-"\${GEPA_UV_BIN}" python install "\${HOTPOTQA_SERVING_PYTHON_VERSION}"
-if [[ ! -x "\${SERVING_PY}" \
-    || ! -f "\${SERVING_LOCK_MARKER}" \
-    || "\$(tr -d '\n' < "\${SERVING_LOCK_MARKER}")" != "\${HOTPOTQA_SERVING_LOCK_SHA256}" ]]; then
-    rm -rf -- "\${SERVING_VENV_DIR}"
-    "\${GEPA_UV_BIN}" venv --python "\${HOTPOTQA_SERVING_PYTHON_VERSION}" "\${SERVING_VENV_DIR}"
-    "\${GEPA_UV_BIN}" pip sync --python "\${SERVING_PY}" --require-hashes "\${SERVING_LOCK}"
-    # The nvidia-cutlass-dsl-libs-base and -libs-cu13 wheels overwrite each other's
-    # copies of the same Python files; only the order "cu13 first, base last" leaves
-    # a tree where \`vllm serve\` can import cutlass.cute. Reinstall them in that order
-    # at the locked version.
-    CUTLASS_VERSION="\$(grep -oE '^nvidia-cutlass-dsl==[0-9.]+' "\${SERVING_LOCK}" | cut -d= -f3)"
-    if [[ -n "\${CUTLASS_VERSION}" ]]; then
-        "\${GEPA_UV_BIN}" pip install --python "\${SERVING_PY}" --reinstall --no-deps \
-            "nvidia-cutlass-dsl-libs-cu13==\${CUTLASS_VERSION}"
-        "\${GEPA_UV_BIN}" pip install --python "\${SERVING_PY}" --reinstall --no-deps \
-            "nvidia-cutlass-dsl-libs-base==\${CUTLASS_VERSION}"
+build_serving_env() {
+    local SERVING_VENV_DIR="\$1"
+    local SERVING_LOCK="\$2"
+    echo "==> building the pinned vLLM serving environment for \$3"
+    if [[ ! -f "\${SERVING_LOCK}" ]]; then
+        echo "ERROR: missing \${SERVING_LOCK}; run scripts/della/lock_serving_env.sh and commit the result" >&2
+        exit 1
     fi
-    printf '%s\n' "\${HOTPOTQA_SERVING_LOCK_SHA256}" > "\${SERVING_LOCK_MARKER}"
-fi
-ACTUAL_SERVING_PYTHON="\$("\${SERVING_PY}" -c 'import platform; print(platform.python_version())')"
-if [[ "\${ACTUAL_SERVING_PYTHON}" != "\${HOTPOTQA_SERVING_PYTHON_VERSION}" ]]; then
-    echo "ERROR: serving environment expected Python \${HOTPOTQA_SERVING_PYTHON_VERSION}, found \${ACTUAL_SERVING_PYTHON}" >&2
-    exit 1
-fi
-if ! "\${GEPA_UV_BIN}" pip check --python "\${SERVING_PY}"; then
-    echo "ERROR: serving environment has inconsistent dependencies" >&2
-    exit 1
-fi
-SERVING_ENV_MANIFEST="${SCRATCH_BASE}/.cache/gepa/serving-environments/\${HOTPOTQA_SERVING_LOCK_SHA256}.json"
-HOTPOTQA_SERVING_ENV_SHA256="\$(
-    "\${SERVING_PY}" -m examples.common.python_environment prepare --path "\${SERVING_ENV_MANIFEST}"
-)"
-if [[ ! "\${HOTPOTQA_SERVING_ENV_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
-    echo "ERROR: serving environment freeze did not produce a valid digest" >&2
-    exit 1
-fi
-echo "==> serving environment: lock \${HOTPOTQA_SERVING_LOCK_SHA256} / realized \${HOTPOTQA_SERVING_ENV_SHA256}"
+    HOTPOTQA_SERVING_LOCK_SHA256="\$(sha256sum "\${SERVING_LOCK}" | cut -d' ' -f1)"
+    SERVING_PY="\${SERVING_VENV_DIR}/bin/python"
+    SERVING_LOCK_MARKER="\${SERVING_VENV_DIR}/.gepa-serving-lock.sha256"
+    if [[ ! -x "\${SERVING_PY}" \
+        || ! -f "\${SERVING_LOCK_MARKER}" \
+        || "\$(tr -d '\n' < "\${SERVING_LOCK_MARKER}")" != "\${HOTPOTQA_SERVING_LOCK_SHA256}" ]]; then
+        rm -rf -- "\${SERVING_VENV_DIR}"
+        "\${GEPA_UV_BIN}" venv --python "\${HOTPOTQA_SERVING_PYTHON_VERSION}" "\${SERVING_VENV_DIR}"
+        "\${GEPA_UV_BIN}" pip sync --python "\${SERVING_PY}" --require-hashes "\${SERVING_LOCK}"
+        # The nvidia-cutlass-dsl-libs-base and -libs-cu13 wheels overwrite each other's
+        # copies of the same Python files; only the order "cu13 first, base last" leaves
+        # a tree where \`vllm serve\` can import cutlass.cute. Reinstall them in that order
+        # at the locked version.
+        CUTLASS_VERSION="\$(grep -oE '^nvidia-cutlass-dsl==[0-9.]+' "\${SERVING_LOCK}" | cut -d= -f3)"
+        if [[ -n "\${CUTLASS_VERSION}" ]]; then
+            "\${GEPA_UV_BIN}" pip install --python "\${SERVING_PY}" --reinstall --no-deps \
+                "nvidia-cutlass-dsl-libs-cu13==\${CUTLASS_VERSION}"
+            "\${GEPA_UV_BIN}" pip install --python "\${SERVING_PY}" --reinstall --no-deps \
+                "nvidia-cutlass-dsl-libs-base==\${CUTLASS_VERSION}"
+        fi
+        printf '%s\n' "\${HOTPOTQA_SERVING_LOCK_SHA256}" > "\${SERVING_LOCK_MARKER}"
+    fi
+    ACTUAL_SERVING_PYTHON="\$("\${SERVING_PY}" -c 'import platform; print(platform.python_version())')"
+    if [[ "\${ACTUAL_SERVING_PYTHON}" != "\${HOTPOTQA_SERVING_PYTHON_VERSION}" ]]; then
+        echo "ERROR: serving environment expected Python \${HOTPOTQA_SERVING_PYTHON_VERSION}, found \${ACTUAL_SERVING_PYTHON}" >&2
+        exit 1
+    fi
+    if ! "\${GEPA_UV_BIN}" pip check --python "\${SERVING_PY}"; then
+        echo "ERROR: serving environment has inconsistent dependencies" >&2
+        exit 1
+    fi
+    SERVING_ENV_MANIFEST="${SCRATCH_BASE}/.cache/gepa/serving-environments/\${HOTPOTQA_SERVING_LOCK_SHA256}.json"
+    HOTPOTQA_SERVING_ENV_SHA256="\$(
+        "\${SERVING_PY}" -m examples.common.python_environment prepare --path "\${SERVING_ENV_MANIFEST}"
+    )"
+    if [[ ! "\${HOTPOTQA_SERVING_ENV_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "ERROR: serving environment freeze did not produce a valid digest" >&2
+        exit 1
+    fi
+    echo "==> serving environment: lock \${HOTPOTQA_SERVING_LOCK_SHA256} / realized \${HOTPOTQA_SERVING_ENV_SHA256}"
+}
+"\${GEPA_UV_BIN}" python install "\${HOTPOTQA_SERVING_PYTHON_VERSION}"
+build_serving_env "${QWEN_SERVING_VENV_DIR}" "${QWEN_SERVING_LOCK_RELATIVE}" qwen3.8-27b
+build_serving_env "${DEEPSEEK_SERVING_VENV_DIR}" "${DEEPSEEK_SERVING_LOCK_RELATIVE}" deepseek-v4.1-flash
 
 echo "==> preparing the frozen Wiki-2017 BM25 index"
 .venv/bin/python -m examples.common.wiki17_bm25 prepare --root "${WIKI17_DIR}"
@@ -197,17 +204,17 @@ echo "==> preparing the pinned Qwen3.8-27B checkpoint"
         --model-profile qwen3.8-27b --root "${QWEN_MODEL_DIR}"
 )
 
-echo "==> preparing the pinned DeepSeek-V4-Flash-0731 checkpoint (about 167 GB)"
+echo "==> preparing the pinned DeepSeek-V4.1-Flash checkpoint (about 510 GB)"
 (
     exec {MODEL_LOCK_FD}<"${DEEPSEEK_MODEL_DIR}"
     if ! flock -n "\${MODEL_LOCK_FD}"; then
-        echo "ERROR: another user is preparing or serving the shared DeepSeek-V4-Flash-0731 checkpoint" >&2
+        echo "ERROR: another user is preparing or serving the shared DeepSeek-V4.1-Flash checkpoint" >&2
         exit 1
     fi
     .venv/bin/python -m examples.common.model_snapshot prepare \
-        --model-profile deepseek-v4-flash --root "${DEEPSEEK_MODEL_DIR}"
+        --model-profile deepseek-v4.1-flash --root "${DEEPSEEK_MODEL_DIR}"
     .venv/bin/python -m examples.common.model_snapshot verify \
-        --model-profile deepseek-v4-flash --root "${DEEPSEEK_MODEL_DIR}"
+        --model-profile deepseek-v4.1-flash --root "${DEEPSEEK_MODEL_DIR}"
 )
 
 echo "==> caching the HotpotQA fullwiki split"

@@ -72,9 +72,8 @@ VLLM_API_SERVER_COUNT="${VLLM_API_SERVER_COUNT:-}"
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
-SERVING_VENV_DIR="${SERVING_VENV_DIR:-${REMOTE_DIR%/}/.serving-venv}"
-SERVING_LOCK_RELATIVE="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-}"
+SERVING_VENV_DIR="${SERVING_VENV_DIR:-}"
 DELLA_GPUS="${DELLA_GPUS:-}"
 DELLA_CPUS_PER_TASK="${DELLA_CPUS_PER_TASK:-}"
 DELLA_MEMORY="${DELLA_MEMORY:-}"
@@ -133,7 +132,12 @@ case "${MODEL_PROFILE}" in
         DELLA_CPUS_PER_TASK="${DELLA_CPUS_PER_TASK:-64}"
         DELLA_MEMORY="${DELLA_MEMORY:-768G}"
         JOB_PARTITION="${GPU_PARTITION}"
-        MAX_WORKERS="${MAX_WORKERS:-128}"
+        # Eight single-sequence replicas: 12 concurrent examples keep every replica
+        # busy while at most one request waits behind another on the same replica.
+        MAX_WORKERS="${MAX_WORKERS:-12}"
+        HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
+        SERVING_VENV_DIR="${SERVING_VENV_DIR:-${REMOTE_DIR%/}/.serving-venv}"
+        SERVING_LOCK_RELATIVE="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
         VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-1}"
         VLLM_DATA_PARALLEL_SIZE="${VLLM_DATA_PARALLEL_SIZE:-${DELLA_GPUS}}"
         VLLM_API_SERVER_COUNT="${VLLM_API_SERVER_COUNT:-${VLLM_DATA_PARALLEL_SIZE}}"
@@ -158,25 +162,31 @@ case "${MODEL_PROFILE}" in
         STANDARD_TIME="${STANDARD_TIME:-${TIME:-72:00:00}}"
         EXPANDED_TIME="${EXPANDED_TIME:-${TIME:-144:00:00}}"
         ;;
-    deepseek-v4-flash)
+    deepseek-v4.1-flash)
         if [[ "${GPU_PARTITION}" != "ailab" ]]; then
-            echo "ERROR: DeepSeek-V4-Flash-0731 production runs require GPU_PARTITION=ailab" >&2
+            echo "ERROR: DeepSeek-V4.1-Flash production runs require GPU_PARTITION=ailab" >&2
             exit 1
         fi
         DELLA_GPUS="${DELLA_GPUS:-8}"
         DELLA_CPUS_PER_TASK="${DELLA_CPUS_PER_TASK:-64}"
         DELLA_MEMORY="${DELLA_MEMORY:-768G}"
         JOB_PARTITION="${GPU_PARTITION}"
-        MAX_WORKERS="${MAX_WORKERS:-8}"
+        # One single-sequence replica serves every request, so each extra concurrent
+        # example only adds queueing; four keeps the wait under the request timeout.
+        MAX_WORKERS="${MAX_WORKERS:-4}"
+        # Loading 510 GB of weights and warming DeepGEMM takes longer than Qwen's startup.
+        HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-3600}"
+        SERVING_VENV_DIR="${SERVING_VENV_DIR:-${REMOTE_DIR%/}/.serving-venv-deepseek-v4.1-flash}"
+        SERVING_LOCK_RELATIVE="examples/hotpotqa/serving/requirements-deepseek-v4.1-flash-x86_64-linux-py312.txt"
         VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-8}"
         VLLM_DATA_PARALLEL_SIZE="${VLLM_DATA_PARALLEL_SIZE:-1}"
         VLLM_API_SERVER_COUNT="${VLLM_API_SERVER_COUNT:-1}"
         VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-1}"
-        MODEL="DeepSeek-V4-Flash-0731"
+        MODEL="DeepSeek-V4.1-Flash"
         SOLVER_MODEL_PATH="${MODEL_STORAGE}/${MODEL}"
-        MODEL_SNAPSHOT_PROFILE="deepseek-v4-flash"
-        SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4-Flash-0731"
-        SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"
+        MODEL_SNAPSHOT_PROFILE="deepseek-v4.1-flash"
+        SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4.1-Flash"
+        SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4.1-Flash"
         SOLVER_API_BASE=""
         REFLECTION_API_BASE=""
         if [[ "${DELLA_GPUS}" != "8" \
@@ -194,7 +204,7 @@ case "${MODEL_PROFILE}" in
         EXPANDED_TIME="${EXPANDED_TIME:-${TIME:-144:00:00}}"
         ;;
     *)
-        echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or deepseek-v4-flash" >&2
+        echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or deepseek-v4.1-flash" >&2
         exit 1
         ;;
 esac
@@ -308,7 +318,7 @@ echo "==> Della resources: partition=${JOB_PARTITION:-cluster-default} gpus=${DE
 if [[ "${MODEL_PROFILE}" == "qwen3.8-27b" ]]; then
     echo "==> Qwen vLLM: tp=1 dp=8 api_servers=8 max_num_seqs=1/replica max_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS}"
 else
-    echo "==> DeepSeek vLLM: tp=8 ep=8 api_servers=1 max_num_seqs=1 FP8-KV block_size=256 no-speculation no-DP-attention max_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS}"
+    echo "==> DeepSeek vLLM: tp=8 ep=8 api_servers=1 max_num_seqs=1 FP8-KV tokenizer=deepseek_v41 no-speculation no-DP-attention max_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS}"
 fi
 
 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
@@ -399,7 +409,7 @@ if [[ ! "\${HOTPOTQA_GEPA_ENV_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
     exit 1
 fi
 
-# Both profiles serve through the one hash-locked vLLM environment.
+# Each profile serves through its own hash-locked vLLM environment.
 HOTPOTQA_SERVING_ENV_SHA256=""
 VLLM_PY="${SERVING_VENV_DIR}/bin/python"
 if [[ ! -x "\${VLLM_PY}" || ! -x "${SERVING_VENV_DIR}/bin/vllm" ]]; then

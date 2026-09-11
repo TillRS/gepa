@@ -51,11 +51,9 @@ VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-1}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-1}"
 VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
-# Self-contained vLLM serving environment built by scripts/della/build_env.sh from
-# examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt. Both model profiles
-# serve through this one environment.
+# Self-contained vLLM serving environment built by scripts/della/build_env.sh. Each
+# model profile has its own hash-locked environment (SERVING_LOCK, set per profile below).
 SERVING_VENV_DIR="${SERVING_VENV_DIR:-}"
-SERVING_LOCK="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
 GEPA_VENV_DIR="${GEPA_VENV_DIR:-}"
 SCRATCH_BASE="${SCRATCH_BASE:-/scratch/gpfs/BSTEWART/${USER}/gepa}"
 EXPECTED_HOTPOTQA_PYTHON_VERSION="3.11.13"
@@ -65,9 +63,8 @@ HOTPOTQA_UV_VERSION="${HOTPOTQA_UV_VERSION:-}"
 HOTPOTQA_UV_SHA256="${HOTPOTQA_UV_SHA256:-}"
 GEPA_UV_BIN="${GEPA_UV_BIN:-}"
 QWEN_REVISION="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
-# deepseek-ai/DeepSeek-V4-Flash-0731 main as of 2026-08-01: a model-card-only commit
-# (#20) on top of the 2026-07-31 weight release 9e165c30.
-DEEPSEEK_REVISION="7872f01b1d1fe23eabc4c98b48bffcef5a386062"
+# deepseek-ai/DeepSeek-V4.1-Flash main as of 2026-09-10, the release commit.
+DEEPSEEK_REVISION="dba1be0a40aa45a94ad051997016db3960a90277"
 HOTPOTQA_DATA_REVISION="1908d6afbbead072334abe2965f91bd2709910ab"
 WIKI17_REVISION="ef6a5e72a98b47cef31574a400fea8fe149559a3"
 HOTPOTQA_DSPY_COMMIT="62dc3b634d7dc0c4889abcf905cb4c391ea6b396"
@@ -188,19 +185,21 @@ case "${MODEL_PROFILE}" in
         SOLVER_API_BASE=""
         MODEL_SNAPSHOT_PROFILE="qwen3.8-27b"
         SERVING_ENGINE="vllm"
+        SERVING_LOCK="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"
         ;;
-    deepseek-v4-flash)
-        MODEL="DeepSeek-V4-Flash-0731"
+    deepseek-v4.1-flash)
+        MODEL="DeepSeek-V4.1-Flash"
         SOLVER_MODEL_PATH="${MODEL_STORAGE}/${MODEL}"
-        SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4-Flash-0731"
-        SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731"
+        SOLVER_SERVED_NAME="deepseek-ai/DeepSeek-V4.1-Flash"
+        SOLVER_MODEL="hosted_vllm/deepseek-ai/DeepSeek-V4.1-Flash"
         HOTPOTQA_MODEL_REVISION="${DEEPSEEK_REVISION}"
         SOLVER_API_BASE=""
-        MODEL_SNAPSHOT_PROFILE="deepseek-v4-flash"
+        MODEL_SNAPSHOT_PROFILE="deepseek-v4.1-flash"
         SERVING_ENGINE="vllm"
+        SERVING_LOCK="examples/hotpotqa/serving/requirements-deepseek-v4.1-flash-x86_64-linux-py312.txt"
         ;;
     *)
-        echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or deepseek-v4-flash" >&2
+        echo "ERROR: MODEL_PROFILE must be qwen3.8-27b or deepseek-v4.1-flash" >&2
         exit 1
         ;;
 esac
@@ -219,6 +218,7 @@ export TRANSFORMERS_OFFLINE=1
 export JAX_PLATFORMS=cpu
 export VLLM_LOGGING_LEVEL=WARNING
 export VLLM_USE_FLASHINFER_SAMPLER=0
+export FLASHINFER_WORKSPACE_BASE="${SCRATCH_BASE}"
 
 LOG_DIR="${SCRATCH_BASE}/logs/hotpotqa/${HOTPOTQA_CAMPAIGN_ID}/${HOTPOTQA_SOURCE_COMMIT}"
 mkdir -p "${XDG_CACHE_HOME}" "${HF_HOME}" "${VLLM_CACHE_ROOT}" \
@@ -283,7 +283,7 @@ HOTPOTQA_CUDA_MODULE=""
 HOTPOTQA_VLLM_BATCH_INVARIANT=""
 HOTPOTQA_VLLM_SINGLE_SEQUENCE_REPLICAS=""
 
-# --- Frozen vLLM serving environment (shared by both profiles) -------------
+# --- Frozen vLLM serving environment (one per profile) ---------------------
 VLLM_PY="${SERVING_VENV_DIR}/bin/python"
 VLLM_BIN="${SERVING_VENV_DIR}/bin/vllm"
 if [[ -z "${SERVING_VENV_DIR}" || ! -x "${VLLM_PY}" || ! -x "${VLLM_BIN}" ]]; then
@@ -322,18 +322,18 @@ case "${MODEL_PROFILE}" in
         HOTPOTQA_SERVE_ARGUMENTS="tp=1;dp=8;api_servers=8;gpu_memory_utilization=${GEN_GMU};max_model_len=${GEN_MAX_LEN};rope_scaling=none;max_num_seqs=1;max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS};dtype=bfloat16;kv_cache_dtype=auto;prefix_caching=false;language_model_only=true;reasoning_parser=qwen3;auto_tool_choice=true;tool_parser=qwen3_coder;seed=0;batch_invariant=false;single_sequence_replicas=true"
         SERVE_TOPOLOGY="TP1/DP8"
         ;;
-    deepseek-v4-flash)
-        # DeepSeek-V4-Flash-0731: a 304B-parameter MoE (13B activated) whose checkpoint
-        # ships FP8 block-quantized attention/dense weights (e4m3, ue8m0 scales) and
-        # MXFP4 experts (config.json expert_dtype=fp4), with hybrid Compressed Sparse
-        # Attention and Heavily Compressed Attention layers. One TP8 replica across the
-        # node with expert parallelism (EP8), a single API server, no speculative
-        # decoding (neither the MTP head nor the DSpark draft module is loaded), and no
-        # data-parallel attention. Weights stay in the checkpoint's quantized formats;
-        # the dtype flag sets the activation dtype. vLLM 0.25.1's DeepSeek V4 sparse-MLA
-        # path only supports the fp8_ds_mla KV cache and 256-token KV blocks, so both are
-        # fixed here. The MoE backend is left at vLLM's default: DeepGEMM MegaMoE from the
-        # model card needs SM100, and the H200 is SM90.
+    deepseek-v4.1-flash)
+        # DeepSeek-V4.1-Flash: a MoE (384 routed experts, 6 active per token) whose
+        # checkpoint ships FP8 block-quantized dense weights (32x32 blocks, ue8m0 scales),
+        # FP4 experts, and FP8 Engram lookup tables. One TP8 replica across the node with
+        # expert parallelism (EP8), a single API server, no speculative decoding (neither
+        # the MTP layers nor the DSpark draft module is loaded), and no data-parallel
+        # attention. Weights stay in the checkpoint's quantized formats; the dtype flag
+        # sets the activation dtype. Prompts use the checkpoint's native encoding
+        # (tokenizer mode deepseek_v41; the repository ships no Jinja template). The KV
+        # cache is fp8_ds_mla, the layout its sparse-MLA path uses; the KV block size is
+        # left to vLLM, whose SM90 sparse-MLA kernel needs 64-token blocks. On the H200
+        # (SM90) the FP4 experts run on vLLM's Marlin MoE backend.
         if [[ "${VLLM_TENSOR_PARALLEL_SIZE}" != "8" \
             || "${VLLM_DATA_PARALLEL_SIZE}" != "1" \
             || "${VLLM_API_SERVER_COUNT}" != "1" ]]; then
@@ -343,16 +343,22 @@ case "${MODEL_PROFILE}" in
         export HOTPOTQA_WEIGHT_DTYPE="fp8"
         export HOTPOTQA_KV_CACHE_DTYPE="fp8"
         VLLM_PROFILE_ARGS=(
-            --reasoning-parser deepseek_v4
-            --tool-call-parser deepseek_v4
+            --tokenizer-mode deepseek_v41
+            --reasoning-parser deepseek_v41
+            --tool-call-parser deepseek_v41
             --tensor-parallel-size 8
             --enable-expert-parallel
             --data-parallel-size 1
             --api-server-count 1
             --kv-cache-dtype fp8
-            --block-size 256
         )
-        HOTPOTQA_SERVE_ARGUMENTS="tp=8;ep=8;dp=1;api_servers=1;dp_attention=false;speculative_decoding=false;gpu_memory_utilization=${GEN_GMU};max_model_len=${GEN_MAX_LEN};rope_scaling=none;max_num_seqs=1;max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS};dtype=bfloat16;weight_quant=fp8;expert_dtype=fp4;kv_cache_dtype=fp8;block_size=256;prefix_caching=false;language_model_only=true;reasoning_parser=deepseek_v4;auto_tool_choice=true;tool_parser=deepseek_v4;seed=0;batch_invariant=false;single_sequence_replicas=true"
+        # The prebuilt flashinfer kernel wheels are in the serving lock, so a missing
+        # kernel must fail instead of reaching for the network from the offline node.
+        # Loading 510 GB of weights and warming DeepGEMM can outlast vLLM's default
+        # engine-ready timeout.
+        export FLASHINFER_NO_DOWNLOAD=1
+        export VLLM_ENGINE_READY_TIMEOUT_S=3600
+        HOTPOTQA_SERVE_ARGUMENTS="tp=8;ep=8;dp=1;api_servers=1;dp_attention=false;speculative_decoding=false;gpu_memory_utilization=${GEN_GMU};max_model_len=${GEN_MAX_LEN};rope_scaling=none;max_num_seqs=1;max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS};dtype=bfloat16;weight_quant=fp8;expert_dtype=fp4;kv_cache_dtype=fp8;block_size=auto;prefix_caching=false;language_model_only=true;tokenizer_mode=deepseek_v41;reasoning_parser=deepseek_v41;auto_tool_choice=true;tool_parser=deepseek_v41;seed=0;batch_invariant=false;single_sequence_replicas=true"
         SERVE_TOPOLOGY="TP8/EP8"
         ;;
 esac
@@ -366,6 +372,15 @@ source /usr/share/Modules/init/bash
 if ! module load "${HOTPOTQA_CUDA_MODULE}" || ! module is-loaded "${HOTPOTQA_CUDA_MODULE}"; then
     echo "ERROR: exact CUDA module ${HOTPOTQA_CUDA_MODULE} is unavailable" >&2
     exit 1
+fi
+# The module's /usr/local/cuda-* tree is a per-node local install, and at least one
+# ailab node lacks the cuBLAS headers that FlashInfer's first-load JIT builds include.
+# Put the locked CUDA wheels' headers and libraries first so those builds depend only
+# on the hash-locked serving environment, not on what the node happens to have.
+SERVING_CUDA_ROOT="$("${VLLM_PY}" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/nvidia/cu13"
+if [[ -d "${SERVING_CUDA_ROOT}/include" ]]; then
+    export CPATH="${SERVING_CUDA_ROOT}/include${CPATH:+:${CPATH}}"
+    export LIBRARY_PATH="${SERVING_CUDA_ROOT}/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
 fi
 if [[ ! -f "${SERVING_LOCK}" ]]; then
     echo "ERROR: Slurm job source lacks ${SERVING_LOCK}" >&2
@@ -390,17 +405,10 @@ if [[ ! "${HOTPOTQA_SERVING_ENV_SHA256}" =~ ^[0-9a-f]{64}$ \
     echo "ERROR: serving environment differs from the submitted frozen environment" >&2
     exit 1
 fi
-"${VLLM_PY}" - "${HOTPOTQA_VLLM_VERSION}" <<'PY'
-import sys
-
-from packaging.version import Version
-
-if Version(sys.argv[1]) < Version("0.17.0"):
-    raise SystemExit(f"vLLM>=0.17.0 is required for the HotPotQA campaign; found {sys.argv[1]}")
-PY
 # Fail closed if the frozen vLLM does not register this checkpoint's architecture
-# (for the DeepSeek arm, DeepseekV4ForCausalLM), so model support is checked against
-# the actual build rather than a version number.
+# (for the DeepSeek arm, DeepseekV41ForCausalLM), so model support is checked against
+# the actual build rather than a version number. The DeepSeek arm's vLLM is a main-branch
+# wheel whose version string (0.1.1.dev5+ge77daef89) sorts below every release.
 "${VLLM_PY}" - "${SOLVER_MODEL_PATH}" "${HOTPOTQA_VLLM_VERSION}" <<'PY'
 import json
 import sys
@@ -421,7 +429,6 @@ PY
 VLLM_HELP="$("${VLLM_BIN}" serve --help=all 2>&1)"
 for required_option in \
     --api-server-count \
-    --block-size \
     --data-parallel-size \
     --enable-auto-tool-choice \
     --enable-expert-parallel \
@@ -429,6 +436,7 @@ for required_option in \
     --language-model-only \
     --no-enable-prefix-caching \
     --reasoning-parser \
+    --tokenizer-mode \
     --tool-call-parser
 do
     if [[ "${VLLM_HELP}" != *"${required_option}"* ]]; then

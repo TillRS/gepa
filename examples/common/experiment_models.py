@@ -11,33 +11,33 @@ QWEN3_8_27B_MODEL_INFO = {
     "input_cost_per_token": 0.0,
     "output_cost_per_token": 0.0,
 }
-# Locally served DeepSeek-V4-Flash-0731 (the official release with enhanced agentic
-# capabilities, not the preview, -Base, or -DSpark variants). This is the HotPotQA
+# Locally served DeepSeek-V4.1-Flash (deepseek-ai's only V4.1 release: the chat model,
+# DeepseekV41ForCausalLM with FP4 experts and FP8 dense weights). This is the HotPotQA
 # campaign's second arm and is distinct from DEEPSEEK_V4_FLASH_MODEL below, the
 # hosted DeepSeek API model used by the HoVer and Terminal-Bench harnesses.
-DEEPSEEK_V4_FLASH_0731_REPO = "deepseek-ai/DeepSeek-V4-Flash-0731"
-DEEPSEEK_V4_FLASH_0731_MODEL = f"hosted_vllm/{DEEPSEEK_V4_FLASH_0731_REPO}"
-DEEPSEEK_V4_FLASH_0731_REVISION = "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
-DEEPSEEK_V4_FLASH_0731_MODEL_INFO = {
+DEEPSEEK_V4_1_FLASH_REPO = "deepseek-ai/DeepSeek-V4.1-Flash"
+DEEPSEEK_V4_1_FLASH_MODEL = f"hosted_vllm/{DEEPSEEK_V4_1_FLASH_REPO}"
+DEEPSEEK_V4_1_FLASH_REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
+DEEPSEEK_V4_1_FLASH_MODEL_INFO = {
     "max_input_tokens": 262_144,
     "max_output_tokens": 16_384,
     "input_cost_per_token": 0.0,
     "output_cost_per_token": 0.0,
 }
-EXPERIMENT_MODELS = (QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_0731_MODEL)
+EXPERIMENT_MODELS = (QWEN3_8_27B_MODEL, DEEPSEEK_V4_1_FLASH_MODEL)
 DEEPSEEK_V4_FLASH_MODEL = "deepseek/deepseek-v4-flash"
 EXPERIMENT_NUM_RETRIES = 0
 
 _EXPERIMENT_MODEL_VERSIONS = {
     QWEN3_8_27B_MODEL: QWEN3_8_27B_REVISION,
-    DEEPSEEK_V4_FLASH_0731_MODEL: DEEPSEEK_V4_FLASH_0731_REVISION,
+    DEEPSEEK_V4_1_FLASH_MODEL: DEEPSEEK_V4_1_FLASH_REVISION,
 }
 
 # These settings follow each checkpoint's published generation configuration;
 # the lower output limit is the fixed experiment contract for both model arms.
 # DeepSeek recommends temperature 1.0 with top_p 0.95 for agentic scenarios.
 # Sources: https://huggingface.co/Qwen/Qwen3.8-27B
-#          https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731
+#          https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash
 _EXPERIMENT_DECODING = {
     QWEN3_8_27B_MODEL: {
         "temperature": 1.0,
@@ -45,7 +45,7 @@ _EXPERIMENT_DECODING = {
         "top_k": 20,
         "max_tokens": 16_384,
     },
-    DEEPSEEK_V4_FLASH_0731_MODEL: {
+    DEEPSEEK_V4_1_FLASH_MODEL: {
         "temperature": 1.0,
         "top_p": 0.95,
         "max_tokens": 16_384,
@@ -58,16 +58,18 @@ _EXPERIMENT_DECODING = {
     },
 }
 
-# vLLM renders DeepSeek V4 prompts with the checkpoint's own encoding rather than a
-# Jinja template. Its apply_chat_template reads ``thinking`` (default False, which
-# would select the no-reasoning "chat" mode) and ``reasoning_effort`` ("max" or
-# "xhigh" select the maximum level; anything else but "none" maps to "high").
+# vLLM renders DeepSeek V4.1 prompts with the checkpoint's own encoding (tokenizer mode
+# deepseek_v41; the repository ships no Jinja template). Its apply_chat_template reads
+# ``thinking`` (on when omitted) and ``reasoning_effort``: an integer from 1 to 100, or
+# a named alias. The aliases disagree between the model card (high=75, max=100) and
+# vLLM (high=50, max=100), so the arm sends the integer 100, the maximum effort, which is
+# the setting behind DeepSeek's reported benchmark results.
 _EXPERIMENT_REQUEST_OVERRIDES = {
-    DEEPSEEK_V4_FLASH_0731_MODEL: {
+    DEEPSEEK_V4_1_FLASH_MODEL: {
         "extra_body": {
             "chat_template_kwargs": {
                 "thinking": True,
-                "reasoning_effort": "max",
+                "reasoning_effort": 100,
             },
         }
     },
@@ -77,7 +79,7 @@ _EXPERIMENT_REQUEST_OVERRIDES = {
 def experiment_decoding(model: str) -> dict[str, int | float | str]:
     """Return the fixed decoding settings for one experiment model.
 
-    Qwen3.8-27B and DeepSeek-V4-Flash-0731 use their published thinking-mode
+    Qwen3.8-27B and DeepSeek-V4.1-Flash use their published thinking-mode
     sampling parameters. DeepSeek's thinking mode and maximum reasoning effort
     are carried separately in its request override so the local serving runtime
     applies them through the checkpoint's prompt encoding.

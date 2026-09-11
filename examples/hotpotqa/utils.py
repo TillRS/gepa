@@ -20,8 +20,7 @@ except ImportError:
     dspy = None  # type: ignore[assignment]
 
 from examples.common.experiment_models import (
-    DEEPSEEK_V4_FLASH_0731_MODEL,
-    EXPERIMENT_NUM_RETRIES,
+    DEEPSEEK_V4_1_FLASH_MODEL,
     QWEN3_8_27B_MODEL,
     experiment_decoding,
     experiment_request_overrides,
@@ -44,6 +43,13 @@ HOTPOTQA_SCIENTIFIC_SPLIT_SHA256 = {
     "test": "55cd1c7a999476ea4c7ec67f964ad4fa0ae662a2b9f7ade59c64108e659add31",
 }
 HOTPOTQA_SCIENTIFIC_REQUEST_SEED = 0
+# Every local replica decodes one sequence at a time, so a request can wait behind
+# every other in-flight request on its replica before it starts, and one thinking
+# response may run to the 16,384-token output cap. The timeout covers that queue
+# plus one full generation; the retries resend the identical seeded request, so a
+# transient stall no longer aborts a multi-day run.
+HOTPOTQA_REQUEST_TIMEOUT_SECONDS = 3600
+HOTPOTQA_NUM_RETRIES = 2
 
 
 if dspy is not None:
@@ -165,11 +171,12 @@ def resolve_hotpotqa_lm_kwargs(
         Independent LM keyword arguments for the requested local runtime.
     """
     kwargs: dict[str, object] = {
-        "num_retries": EXPERIMENT_NUM_RETRIES,
+        "num_retries": HOTPOTQA_NUM_RETRIES,
+        "timeout": HOTPOTQA_REQUEST_TIMEOUT_SECONDS,
         **experiment_decoding(model),
         **experiment_request_overrides(model),
     }
-    if model in {QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_0731_MODEL}:
+    if model in {QWEN3_8_27B_MODEL, DEEPSEEK_V4_1_FLASH_MODEL}:
         kwargs["seed"] = HOTPOTQA_SCIENTIFIC_REQUEST_SEED
     if api_base is not None:
         kwargs["api_base"] = api_base

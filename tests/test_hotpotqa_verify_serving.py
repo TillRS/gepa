@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from examples.common.experiment_models import DEEPSEEK_V4_FLASH_0731_MODEL
+from examples.common.experiment_models import DEEPSEEK_V4_1_FLASH_MODEL
 from examples.hotpotqa import verify_serving
 from gepa.strategies.edit_tools import EDIT_TOOL_SETS
 
@@ -86,7 +86,7 @@ def test_run_serving_verification_requires_one_attempt_per_tool_before_model_set
     monkeypatch.setattr(verify_serving, "LM", lm_factory)
 
     with pytest.raises(verify_serving.ServingVerificationError, match="At least 4 edit attempts"):
-        verify_serving.run_serving_verification(DEEPSEEK_V4_FLASH_0731_MODEL, LOCAL_API_BASE, 3)
+        verify_serving.run_serving_verification(DEEPSEEK_V4_1_FLASH_MODEL, LOCAL_API_BASE, 3)
 
     resolve_kwargs.assert_not_called()
     lm_factory.assert_not_called()
@@ -110,10 +110,10 @@ def test_run_serving_verification_cycles_every_tool_and_reports_pass(monkeypatch
     monkeypatch.setattr(verify_serving, "_tool_continuation_probe", continuation_probe)
     monkeypatch.setattr(verify_serving, "_edit_probe", edit_probe)
 
-    report = verify_serving.run_serving_verification(DEEPSEEK_V4_FLASH_0731_MODEL, LOCAL_API_BASE, 8)
+    report = verify_serving.run_serving_verification(DEEPSEEK_V4_1_FLASH_MODEL, LOCAL_API_BASE, 8)
 
-    resolve_kwargs.assert_called_once_with(DEEPSEEK_V4_FLASH_0731_MODEL, LOCAL_API_BASE)
-    lm_factory.assert_called_once_with(DEEPSEEK_V4_FLASH_0731_MODEL, temperature=1.0, timeout=600)
+    resolve_kwargs.assert_called_once_with(DEEPSEEK_V4_1_FLASH_MODEL, LOCAL_API_BASE)
+    lm_factory.assert_called_once_with(DEEPSEEK_V4_1_FLASH_MODEL, temperature=1.0, timeout=600)
     ordinary_probe.assert_called_once_with(lm)
     continuation_probe.assert_called_once_with(lm)
     tools = EDIT_TOOL_SETS["broad"]
@@ -148,7 +148,7 @@ def test_run_serving_verification_records_failures_and_keeps_checking(monkeypatc
     monkeypatch.setattr(verify_serving, "_tool_continuation_probe", continuation_probe)
     monkeypatch.setattr(verify_serving, "_edit_probe", edit_probe)
 
-    report = verify_serving.run_serving_verification(DEEPSEEK_V4_FLASH_0731_MODEL, LOCAL_API_BASE, 4)
+    report = verify_serving.run_serving_verification(DEEPSEEK_V4_1_FLASH_MODEL, LOCAL_API_BASE, 4)
 
     tools = EDIT_TOOL_SETS["broad"]
     assert edit_probe.call_count == 4
@@ -173,7 +173,7 @@ def test_main_exits_nonzero_only_when_a_check_failed(monkeypatch, capsys, status
     """
     report = {
         "status": status,
-        "model": DEEPSEEK_V4_FLASH_0731_MODEL,
+        "model": DEEPSEEK_V4_1_FLASH_MODEL,
         "api_base": LOCAL_API_BASE,
         "attempts": 4,
         "tool_attempts": {},
@@ -188,7 +188,7 @@ def test_main_exits_nonzero_only_when_a_check_failed(monkeypatch, capsys, status
         verify_serving.main()
 
     assert exc_info.value.code == exit_code
-    run.assert_called_once_with(DEEPSEEK_V4_FLASH_0731_MODEL, LOCAL_API_BASE, 4, 600)
+    run.assert_called_once_with(DEEPSEEK_V4_1_FLASH_MODEL, LOCAL_API_BASE, 4, 600)
     output = capsys.readouterr().out
     assert f"RESULT: {status}" in output
     assert ("PASS  ordinary_completion" if status == "PASS" else "FAIL  ordinary_completion") in output
