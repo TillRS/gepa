@@ -30,7 +30,7 @@ prefers applicable task-specific provider guidance and otherwise uses the
 model/mode default. The [source review](../../examples/common/temperature_policy.md)
 records the factual-QA, terminal-agent, and optimizer-role decisions, with links
 to the exact checkpoint model cards. The prior Manifestor temperature of 0.0
-is superseded for HotPotQA, TB2, and TB4. Changed role settings require fresh
+is superseded for HotPotQA and TB2.1. Changed role settings require fresh
 run contracts and campaign checkpoints.
 
 Thinking mode and effort are explicit in every HotPotQA request: Qwen uses
@@ -39,11 +39,11 @@ Thinking mode and effort are explicit in every HotPotQA request: Qwen uses
 `extra_body.chat_template_kwargs` and are recorded for resume validation.
 Qwen follows its provider default; DeepSeek's code-agent setting is also our
 chosen setting for QA and optimizer roles, as explained in the source review.
-The same policy applies to TB2 and TB4. The per-call output ceiling remains
-16,384 tokens, independently of the effort setting.
+The same reasoning policy applies to TB2.1. The per-call output ceiling is
+16,384 tokens for HotPotQA and 32,768 for TB2.1, independently of the effort setting.
 
-The FOREST ReAct editor has no assistant-turn or tool-call limit in HotPotQA,
-TB2, or TB4. It may make multiple edits within the Controller-selected section,
+The FOREST ReAct editor has no assistant-turn or tool-call limit in HotPotQA
+or TB2.1. It may make multiple edits within the Controller-selected section,
 all serving the same semantic action and Manifestor steering, then explicitly
 emit `<finish>`. Each successful edit returns the latest section text. With the
 minimal tool basis, each replacement or move must complete its delete/insert

@@ -31,14 +31,13 @@ from gepa.adapters.terminal_bench_adapter.context import reflection_trajectories
 from gepa.adapters.terminal_bench_adapter.documents import seed_documents, write_document_bundle
 
 
-@pytest.fixture(params=(2, 4), ids=("tb2", "tb4"))
-def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> tuple:
+@pytest.fixture
+def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     """Create a real Terminus instance with a deterministic model boundary.
 
     Args:
         tmp_path: Evaluation and trial artifact directory.
         monkeypatch: Fixture replacing model initialization.
-        request: Benchmark whose real job configuration supplies the agent settings.
 
     Returns:
         Agent, complete candidate, fake model, and source directory.
@@ -50,9 +49,7 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
     )
     monkeypatch.setattr(Terminus2, "_init_llm", Mock(return_value=model))
     root = Path(__file__).parents[2]
-    manifest = load_terminalbench_manifest(
-        root / f"examples/terminalbench/terminalbench-v{request.param}-manifest.json"
-    )
+    manifest = load_terminalbench_manifest(root / "examples/terminalbench/terminalbench-v2.1-manifest.json")
     runner = HarborCLI(manifest=manifest, student_model="openai/gpt-4o-mini", work_dir=tmp_path, agent_python_path=root)
     config = runner.build_job_config(
         [manifest.tasks("train", 1)[0].task_id],

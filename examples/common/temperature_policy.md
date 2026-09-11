@@ -1,6 +1,6 @@
 # Provider sampling policy
 
-Reviewed on 2026-09-10 for HotPotQA, Terminal-Bench 2, and Terminal-Bench 4.
+Reviewed on 2026-09-10 for HotPotQA and Terminal-Bench 2.1.
 Use an applicable task-specific recommendation from the model author for the
 exact checkpoint and reasoning mode. Otherwise use that model/mode's general
 recommended temperature. A role's name alone does not justify another value.
@@ -17,7 +17,7 @@ role or these exact benchmark versions.
 | Work performed | Qwen3.8-27B | DeepSeek-V4-Flash-0731 | Basis |
 | --- | ---: | ---: | --- |
 | HotPotQA: summaries, retrieval queries, factual answers | 1.0 | 1.0 | General thinking-mode/local-deployment recommendation |
-| TB2 and TB4: terminal-agent execution | 1.0 | 1.0 | General recommendation; DeepSeek code-agent evaluation also uses 1.0 |
+| TB2.1: terminal-agent execution | 1.0 | 1.0 | General recommendation; DeepSeek code-agent evaluation also uses 1.0 |
 | GEPA/stateless action proposer: prompt and skill rewriting | 1.0 | 1.0 | General recommendation |
 | FOREST Controller: action selection | 1.0 | 1.0 | General recommendation; random Controller makes no model call |
 | FOREST Manifestor: action-specific edit guidance | 1.0 | 1.0 | General recommendation; replaces the previous 0.0 override |
@@ -55,7 +55,7 @@ application of the guidance; neither provider names the FOREST roles.
 | Work performed | Qwen3.8-27B | DeepSeek-V4-Flash-0731 |
 | --- | ---: | ---: |
 | HotPotQA: summaries, retrieval queries, factual answers | 0.95 | 1.0 |
-| TB2 and TB4: terminal-agent execution | 0.95 | 0.95 |
+| TB2.1: terminal-agent execution | 0.95 | 0.95 |
 | GEPA/stateless action proposer: prompt and skill rewriting | 0.95 | 1.0 |
 | Stateless action selector and FOREST Controller | 0.95 | 1.0 |
 | FOREST Manifestor: action-specific edit guidance | 0.95 | 1.0 |
@@ -70,13 +70,13 @@ these three benchmarks choose their role profiles explicitly.
 
 ## Reasoning effort
 
-Thinking is explicitly enabled for every model role in HotPotQA, TB2, and TB4,
+Thinking is explicitly enabled for every model role in HotPotQA and TB2.1,
 at both optimization budgets and during final task evaluation:
 
 | Work performed | Qwen3.8-27B | DeepSeek-V4-Flash-0731 |
 | --- | --- | --- |
 | HotPotQA: summaries, retrieval queries, factual answers | `xhigh` | `max` |
-| TB2 and TB4: terminal-agent execution | `xhigh` | `max` |
+| TB2.1: terminal-agent execution | `xhigh` | `max` |
 | GEPA/stateless action proposer and selector | `xhigh` | `max` |
 | FOREST Controller, Manifestor, and ReAct editor | `xhigh` | `max` |
 
@@ -107,7 +107,7 @@ of those paper settings.
 
 ## Output budgets and context
 
-HotPotQA keeps a **16,384-token output ceiling**. TB2 and TB4 use **32,768
+HotPotQA keeps a **16,384-token output ceiling**. TB2.1 uses **32,768
 output tokens per model call**, including reasoning and final output, for both
 model arms, every optimizer role, both budgets, and final task evaluation.
 These are ceilings: natural end-of-sequence stopping stays enabled, with no
@@ -119,7 +119,7 @@ It is not a claim to use each provider's maximum-performance output budget.
 Qwen's pinned card recommends much larger separate reasoning/final allowances
 for agentic work within a 1M context, but reports `max_tokens=32,768` and a 256K
 context for its QwenSWEBench coding evaluation. That different benchmark informs
-this starting point; it does not establish the right cap for TB2 or TB4.
+this starting point; it does not establish the right cap for TB2.1.
 DeepSeek's pinned card recommends 384K output for `high`/`max`; our smaller cap
 deliberately departs from that recommendation.
 

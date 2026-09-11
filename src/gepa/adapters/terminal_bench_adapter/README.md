@@ -1,18 +1,16 @@
-### Terminal-Bench experiments
+### Terminal-Bench 2.1
 
-Select `--experiment tb2` or `--experiment tb4`. Both benchmarks optimize the
-same full agent text and skills. All methods receive identical initial documents,
-editable components, task splits, and student/proposer models within an experiment.
-Neither benchmark is the default or designated primary.
+Terminal-Bench 2.1 is the sole Terminal-Bench target. The optimization and training
+pilot commands default to `--experiment tb2.1`. All methods receive identical
+initial documents, editable components, task splits, and task/proposer models
+within each model arm.
 
-| Experiment | Dataset | Editable target | Train / validation / test |
-| --- | --- | --- | --- |
-| `tb2` | Terminal-Bench 2.0, 89 tasks | 14 prompts and two skills | 30 / 19 / 40 |
-| `tb4` | Terminal-Bench 4.0.0, 66 tasks | 14 prompts and two skills | 23 / 23 / 20 |
+The pinned dataset has **89 tasks**, split into **30 training, 19 validation,
+and 40 test tasks**. Optimizers can revise all 14 prompts and two skill files.
 
 #### Methods and campaign matrix
 
-Each benchmark/model arm follows HotPotQA's six-configuration comparison:
+Each model arm follows HotPotQA's six-configuration comparison:
 
 | Condition | Method | Standard budget | Double budget |
 | --- | --- | --- | --- |
@@ -21,15 +19,15 @@ Each benchmark/model arm follows HotPotQA's six-configuration comparison:
 | `react_v2_random` | FOREST with a uniformly random Controller | 4 epochs | — |
 | `action` | Action-conditioned stateless GEPA | 4 epochs | — |
 
-This gives **24 optimization runs**: six configurations, two models, and two
-benchmarks. There is one optimization run per configuration. The shared initial
+This gives **12 optimization runs**: six configurations for each of two models.
+There is one optimization run per configuration. The shared initial
 harness is an additional evaluation reference, not an optimization run.
 
 Full FOREST retains the same Verbalized Sampling-based Controller as HotPotQA.
 The model scores every section/action pair; the sampler combines 90% of the
 normalized model distribution with 10% uniform exploration among pairs assigned
 positive probability. Pairs assigned zero stay excluded. This policy applies to
-both Terminal-Bench experiments and both full-FOREST budgets.
+TB2.1 at both full-FOREST budgets.
 
 This is our adaptation of [Verbalized Sampling](https://arxiv.org/html/2510.01171v3#S4):
 we elicit probabilities over a fixed action catalog, then add uniform exploration.
@@ -71,7 +69,7 @@ matrix and 2× budget multiplier match HotPotQA; the budget unit differs.
 
 #### Editable agent text and skills
 
-`PromptedTerminus` runs the same 16-component document bundle for both benchmarks:
+`PromptedTerminus` runs the same 16-component document bundle for TB2.1:
 
 | Surface | Components |
 | --- | --- |
@@ -81,13 +79,13 @@ matrix and 2× budget multiplier match HotPotQA; the budget unit differs.
 | Reusable skills | `skill_debugging`, `skill_verification` |
 
 The approved component set stays fixed at 14 prompts and two skill files for
-both benchmarks, all methods, and both budgets. Optimizers cannot add or remove
+all methods and both budgets. Optimizers cannot add or remove
 components or change their stable file identities. All component text remains
 editable, including each skill's name, description, instructions, and examples.
 
 Prompts use the selected provider's `user_prompt` template. Skills use the `skill`
 template: Name, Description, Instructions, and Examples. The approved loading
-policy for TB2 and TB4 is on demand: the task agent initially sees each skill's
+policy for TB2.1 is on demand: the task agent initially sees each skill's
 name, description, and file path, then reads its full `SKILL.md` through the
 terminal when relevant. This policy applies to all methods and both budgets.
 All methods can rewrite both skills' metadata and bodies, regardless of whether
@@ -98,7 +96,7 @@ All methods explicitly use `module_selector="all"`: each proposal selects all
 16 documents, revises them separately using the same minibatch evidence, and
 evaluates the combined harness as one child candidate. This applies the
 [GEPA FAQ's multi-module efficiency guidance](https://gepa-ai.github.io/gepa/guides/faq/#how-do-i-optimize-multi-module-dspy-programs-efficiently)
-to both benchmarks. Optimizer-side editing work is measured separately; selecting
+to TB2.1. Optimizer-side editing work is measured separately; selecting
 all documents does not require a separate task evaluation for each document.
 The selected epoch budget stays fixed, and perfectly scored minibatches still skip
 mutation. Run contracts pin the full component set, document bundle version,
@@ -108,9 +106,9 @@ The optimization target is **model-facing text and skills**. Python agent logic,
 tool implementations, the actual JSON parser/command interface, task inputs,
 runtime observations, and the official verifier stay fixed. Rewriting the text
 that describes a tool does not change its implementation. Task and terminal-state
-fields are appended separately, and candidate braces remain literal. Both
-benchmarks retain their official task resource limits and agent timeouts, without
-local overrides. For each benchmark, all six configurations use the same task
+fields are appended separately, and candidate braces remain literal. TB2.1
+retains their official task resource limits and agent timeouts, without
+local overrides. All six configurations use the same task
 limits, including the standard and double optimization budgets. The double
 budget increases optimization opportunities while keeping per-task limits fixed.
 An optional `--harbor-process-timeout-sec` is a whole-job operational limit
@@ -118,7 +116,7 @@ recorded in the run contract.
 
 #### Task-agent context summarization
 
-Automatic summarization stays enabled for TB2 and TB4 across all methods and
+Automatic summarization stays enabled for TB2.1 across all methods and
 both budgets. The campaign explicitly supplies `enable_summarize=true` and
 retains Harbor 0.22.0's existing proactive trigger: fewer than 8,000 estimated
 tokens remaining in the context window. This is a token-space trigger, separate
@@ -154,7 +152,7 @@ verifier run, not the verifier implementation or benchmark solution files.
 All 16 selected components receive the same feedback. Each optimizer retains
 its existing reflection procedure.
 
-Both Terminal-Bench experiments and HotPotQA default to unlimited Manifestor
+TB2.1 and HotPotQA default to unlimited Manifestor
 traces within the configured model's context window; `manifestor_trace_chars`
 can set an explicit allowance. Exact repeated long strings and paragraphs are
 shown once per request with references for later occurrences. Long identical-line
@@ -186,7 +184,7 @@ directories.
 
 #### Task failures, timeouts, and recovery
 
-All six configurations on both benchmarks use the same policy. A completed
+All six configurations use the same policy. A completed
 task keeps its official verifier reward, including zero for unsuccessful work.
 An `AgentTimeoutError` also keeps the official reward when valid verification
 and a trajectory exist; the timeout remains visible in reflection feedback.
@@ -215,91 +213,78 @@ and when freezing final comparisons.
 
 #### Reference protocol and pending confirmation
 
-The working decision is to optimize the full text surface on both benchmarks.
-It supersedes the earlier TB2 restriction to one unified prompt. The
-[AutoSaddler GEPA baseline](https://arxiv.org/html/2608.23041v1#A2) optimized only
-that prompt, while AutoSaddler itself could also change executable harness code.
-Our GEPA and FOREST comparison now shares the broader text-and-skill scope,
-with execution code fixed for both methods.
+The working decision is to optimize the full text surface on TB2.1. The
+[AutoSaddler GEPA baseline](https://arxiv.org/html/2608.23041v1#A2) optimized one
+unified prompt on Terminal-Bench 2.0, while AutoSaddler itself could also change
+executable harness code. Our GEPA and FOREST comparison shares the broader
+text-and-skill scope, with execution code fixed for both methods.
 
-TB2 retains the paper-inspired 30/19/40 split sizes, four-epoch standard budget, and
-three repeated final evaluations. Its checked-in task assignments remain our
-deterministic split; the authors' exact identities and harness revision were
-not established from released artifacts. The broader editable surface, common
-seed bundle, homogeneous Qwen/DeepSeek arms, and provider section wrappers are
-our experiment configuration. This does not reproduce the paper's GEPA setup
-or claim direct comparability to its reported scores. TB4 retains its approved
-23/23/20 split and the same normalized training-budget rule.
+TB2.1 retains the approved 30/19/40 split sizes and task-name assignments,
+four-epoch standard budget, and three repeated final evaluations. The dataset
+contains revised task contents from the official TB2.1 release. The assignments
+are our deterministic split; the authors' exact assignments and harness revision
+were not established from released artifacts. Dataset version, editable surface,
+seed documents, and model arms differ from the paper. This is our controlled
+comparison, not a reproduction of its GEPA setup or reported scores.
 
-- [ ] Ask Lakshya to confirm the full model-facing text and skill scope for both
-  TB2 and TB4, with identical editable components for GEPA and FOREST and fixed
+- [ ] Ask Lakshya to confirm the full model-facing text and skill scope for
+  TB2.1, with identical editable components for GEPA and FOREST and fixed
   execution code. This is a research follow-up; the current implementation uses
   the user's approved working decision.
-- [ ] Ask Lakshya to confirm the train/validation/test splits for TB2 (30/19/40)
-  and TB4 (23/23/20), including how tasks are assigned to each split.
+- [ ] Ask Lakshya to confirm the TB2.1 train/validation/test split (30/19/40),
+  including the preserved task-name assignments.
 - [ ] Gilad: review all implemented deduplication and redundant-context removal
-  for HotPotQA, TB2, and TB4: exact-text and paragraph references, repeated log
+  for HotPotQA and TB2.1: exact-text and paragraph references, repeated log
   lines, Harbor copied history, excluded metadata, duplicate feedback/document
   text, and remaining limits. Check useful-evidence preservation and the final
   model prompts, including JSON-encoded verifier logs.
 
 #### Dataset pins and run identity
 
-Both experiments use Harbor **0.22.0** in a separate Python 3.12 environment.
+The experiment uses Harbor **0.22.0** in a separate Python 3.12 environment and
+the official [Terminal-Bench 2.1](https://github.com/harbor-framework/terminal-bench-2-1)
+Hub dataset `terminal-bench/terminal-bench-2-1`.
 
-- TB2 uses the official legacy registry's `terminal-bench@2.0` task list from
-  [terminal-bench-2 at `69671fba`](https://github.com/laude-institute/terminal-bench-2/tree/69671fbaac6d67a7ef0dfec016cc38a64ef7a77c).
-  Every Harbor job contains explicit Git paths and commits; it does not resolve
-  a mutable registry version during evaluation.
-- TB4 uses `terminal-bench/terminal-bench@4.0.0`, registry content hash
-  `sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732`,
-  and [source tag `v4.0.0`](https://github.com/harbor-framework/terminal-bench/tree/v4.0.0).
-  Its checked-in manifest includes all 66 task content hashes.
+The checked-in `examples/terminalbench/terminalbench-v2.1-manifest.json` pins
+all 89 task content hashes and the dataset content hash
+`sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a`
+(registry version ID `f92eea12-ff70-4d30-ace0-003abf294998`). Every Harbor job uses
+that immutable dataset ref, never a moving `latest` label. Git source metadata
+is informational; the official Hub content hashes identify the executed tasks.
 
-Manifest validation checks the exact source metadata, task-reference digest,
-split sizes, deterministic ordering, and disjoint coverage. Each evaluation
-retains its candidate, experiment identity, Harbor job configuration, verifier
-results, and ATIF trajectories. Reflection identifies the selected dataset and
-only exposes components belonging to that experiment.
+All 89 task names match the previous approved task set. The manifest preserves
+every training, validation, and held-out assignment while using the revised
+TB2.1 contents. Hash ordering uses the original task name without Hub's
+`terminal-bench/` namespace, with the existing split seed. Assignments stay
+identical across models and optimizers.
 
-TB4 retains its 20 held-out test tasks and splits the remaining 46 tasks equally:
-23 for reflection and 23 for validation-based selection. This follows the
-[GEPA FAQ's small-dataset guidance](https://gepa-ai.github.io/gepa/guides/faq/#whats-the-recommended-trainvalidation-split)
-to use a 50/50 train/validation split below 200 examples. The 20-task test holdout
-is our choice, not a test fraction prescribed by GEPA. Task assignments use the
-existing deterministic hash order and are identical across models and optimizers.
-This replaces the earlier 26/20/20 allocation without moving any test tasks.
+Manifest validation checks exact source metadata, task-reference digest, split
+sizes, deterministic ordering, and disjoint coverage. Each evaluation retains
+its candidate, experiment identity, Harbor job configuration, verifier results,
+and ATIF trajectories. Reflection identifies the pinned dataset.
 
 The resume contract records the experiment, dataset, complete task refs and
-splits, target, seed digest, models, decoding, and budget. A different experiment,
-manifest, or configuration requires a fresh run directory. Old prompt-only or
-earlier document-bundle checkpoints cannot resume under the new scope. The
-current schema also pins the condition, Controller policy, and standard/double
-budget; earlier contracts must use fresh run directories.
-Experiment IDs are now `tb2` and `tb4`; the former
-`tb2-system-prompt` and `tb4-agent-text` IDs are rejected rather than silently
-changing the optimization target. The held-out test split is never evaluated
-automatically.
+splits, target, seed digest, models, decoding, and budget. Only `tb2.1` is
+accepted. Earlier benchmark contracts and checkpoints require fresh run
+directories; they cannot silently resume or enter final comparisons as TB2.1.
+The held-out test split is never evaluated automatically.
 
 #### Optimization budget
 
-Both experiments use **four training epochs at the standard budget**, following the TB2 GEPA budget in
-[AutoSaddler, Appendix B](https://arxiv.org/html/2608.23041v1#A2). TB4 receives the
-same number of passes through its own training split. `--budget double` gives
-vanilla GEPA and full FOREST **eight epochs**, with all other settings fixed.
-With the default minibatch size of three, the stopping rule is
-`epochs * ceil(train_tasks / 3)` iterations:
+The standard budget is **four training epochs**, retaining the approved budget
+inspired by the TB2 GEPA run in
+[AutoSaddler, Appendix B](https://arxiv.org/html/2608.23041v1#A2).
+`--budget double` gives vanilla GEPA and full FOREST **eight epochs**, with all
+other settings fixed. With the default minibatch size of three, the stopping
+rule is `epochs * ceil(train_tasks / 3)` iterations:
 
-| Experiment | Training tasks | Iterations per epoch | Standard / double iterations | Standard / double training draws |
-| --- | --- | --- | --- | --- |
-| TB2 | 30 | 10 | 40 / 80 | 120 / 240 |
-| TB4 | 23 | 8 | 32 / 64 | 96 / 192 |
+| Training tasks | Iterations per epoch | Standard / double iterations | Standard / double training draws |
+| --- | --- | --- | --- |
+| 30 | 10 | 40 / 80 | 120 / 240 |
 
-GEPA's epoch sampler pads each final minibatch to the configured size. For TB4,
-each epoch covers all 23 training tasks and repeats one, giving 92 unpadded draws
-plus four padding draws in the standard run, or 184 unpadded plus eight padding
-draws in the double run. A training limit or different minibatch
-size changes the iteration count using the same rule. These counts describe
+No padding is needed for the full 30-task training split at minibatch size three.
+A training limit or different minibatch size changes the iteration count using
+the same rule; GEPA pads an incomplete minibatch if needed. These counts describe
 sampled training tasks, not total task executions or model calls.
 
 Each iteration samples one minibatch for one mutation attempt; merging is off.
@@ -323,11 +308,11 @@ Final held-out test evaluation remains separate.
 
 #### Repetitions and final testing
 
-Each benchmark/model arm uses one optimization run per method/budget configuration, followed by
+Each model arm uses one optimization run per method/budget configuration, followed by
 three test repetitions of each frozen harness. This follows
 [AutoSaddler, section 5.1 and Table 3](https://arxiv.org/html/2608.23041v1): one
 evolution run and three test executions, reporting mean and standard deviation
-of Pass@1. Both TB2 and TB4 use this repetition protocol.
+of Pass@1.
 
 The final evaluation command requires all six completed runs with matching
 benchmark, model, decoding, optimization seed, and splits. Each must have the
@@ -352,23 +337,22 @@ validation-selected winners:
 
 | Experiment | Test tasks | Repetitions per harness | Attempts per harness | Attempts across all seven harnesses |
 | --- | --- | --- | --- | --- |
-| TB2 | 40 | 3 | 120 | 840 |
-| TB4 | 20 | 3 | 60 | 420 |
+| TB2.1 | 40 | 3 | 120 | 840 |
 
 Run final testing only after all six matching optimization runs have completed:
 
 ```bash
 uv run python -m examples.terminalbench.evaluate \
-  --run-dir vanilla=runs/tb2/vanilla \
-  --run-dir react_v2=runs/tb2/react_v2 \
-  --run-dir react_v2_random=runs/tb2/react_v2_random \
-  --run-dir action=runs/tb2/action \
-  --run-dir vanilla_2x=runs/tb2/vanilla_2x \
-  --run-dir react_v2_2x=runs/tb2/react_v2_2x \
-  --output-dir runs/tb2/test
+  --run-dir vanilla=runs/tb2.1/vanilla \
+  --run-dir react_v2=runs/tb2.1/react_v2 \
+  --run-dir react_v2_random=runs/tb2.1/react_v2_random \
+  --run-dir action=runs/tb2.1/action \
+  --run-dir vanilla_2x=runs/tb2.1/vanilla_2x \
+  --run-dir react_v2_2x=runs/tb2.1/react_v2_2x \
+  --output-dir runs/tb2.1/test
 ```
 
-Use the corresponding directories for TB4 and for the separate DeepSeek arm.
+Use separate corresponding directories for the DeepSeek arm.
 The command reads student model, endpoint, decoding, and concurrency from the
 optimization contracts. `--harbor-executable` and `--docker-executable` optionally
 select installed binaries. Checkpoints must be trusted local optimization
@@ -387,7 +371,7 @@ and percentages in console output. Failed or incomplete Harbor jobs stop the
 evaluation instead of becoming fabricated zero scores.
 
 This aligns the repetition protocol with the paper; the previously documented
-TB2 task-identity, harness-revision, and model differences still apply.
+TB2.1 dataset, task-assignment, harness, and model differences still apply.
 
 #### Run
 
@@ -398,37 +382,31 @@ uv sync --extra dev
 uv tool install --python 3.12 harbor==0.22.0
 
 uv run python -m examples.terminalbench.main \
-  --experiment tb2 \
+  --experiment tb2.1 \
   --condition vanilla \
-  --run-dir runs/tb2/vanilla \
-  --harbor-work-dir runs/tb2/vanilla/harbor
-
-uv run python -m examples.terminalbench.main \
-  --experiment tb4 \
-  --condition vanilla \
-  --run-dir runs/tb4/vanilla \
-  --harbor-work-dir runs/tb4/vanilla/harbor
+  --run-dir runs/tb2.1/vanilla \
+  --harbor-work-dir runs/tb2.1/vanilla/harbor
 ```
 
 Use `--condition react_v2`, `--condition react_v2_random`, and `--condition action`
 with separate output directories for the other standard-budget methods.
-Both commands above default to `--budget standard` (four epochs).
+The command above defaults to `--budget standard` (four epochs).
 Launch each larger-budget run in its own fresh directory, for example:
 
 ```bash
 uv run python -m examples.terminalbench.main \
-  --experiment tb2 \
+  --experiment tb2.1 \
   --condition vanilla --budget double \
-  --run-dir runs/tb2/vanilla_2x \
-  --harbor-work-dir runs/tb2/vanilla_2x/harbor
+  --run-dir runs/tb2.1/vanilla_2x \
+  --harbor-work-dir runs/tb2.1/vanilla_2x/harbor
 ```
 
-Use `--condition react_v2 --budget double` and `runs/tb2/react_v2_2x` for the
-larger-budget FOREST run. Repeat the same six configurations for TB4 and both
-model arms. The CLI rejects double-budget ablations outside the approved pair.
-An optional `--manifest` must match the explicitly selected experiment.
+Use `--condition react_v2 --budget double` and `runs/tb2.1/react_v2_2x` for the
+larger-budget FOREST run. Use the same six configurations in both model arms.
+The CLI rejects double-budget ablations outside the approved pair.
+An optional `--manifest` must match the pinned TB2.1 experiment.
 
-Both experiments support two separate model arms: Qwen3.8-27B with Qwen3.8-27B
+The campaign supports two separate model arms: Qwen3.8-27B with Qwen3.8-27B
 (the model default), and DeepSeek V4 Flash with DeepSeek V4 Flash. Student,
 proposer, and Controller use the same model within an arm. Both are served through
 local vLLM. DeepSeek uses the pinned July 31 checkpoint, maximum thinking, and the
@@ -440,25 +418,24 @@ output directories:
 
 ```bash
 uv run python -m examples.terminalbench.main \
-  --experiment tb2 \
+  --experiment tb2.1 \
   --condition vanilla \
   --student-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
   --proposer-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
-  --run-dir runs/tb2/deepseek/vanilla \
-  --harbor-work-dir runs/tb2/deepseek/vanilla/harbor
+  --run-dir runs/tb2.1/deepseek/vanilla \
+  --harbor-work-dir runs/tb2.1/deepseek/vanilla/harbor
 ```
 
-Use the same model and endpoint flags for `tb4`, with matching separate
-output paths. Model identity, checkpoint revision, and thinking settings are
+Model identity, checkpoint revision, and thinking settings are
 recorded in the resume contract; changing any of them requires a fresh run.
 
 Temperatures follow the model author's applicable task/mode guidance, with the
 general recommendation as the fallback. For both pinned thinking-mode models,
 the current recommendation is 1.0 for task execution and every optimizer role,
 including the Manifestor. The [provider source review](../../../../examples/common/temperature_policy.md)
-records the HotPotQA, TB2, TB4, Controller, Manifestor, and proposer mappings.
+records the HotPotQA, TB2.1, Controller, Manifestor, and proposer mappings.
 The previous Manifestor-0.0 policy cannot resume or enter a final comparison
 under the new contract. Qwen uses top-p 0.95 for every role. DeepSeek uses 0.95
 for the terminal agent and ReAct editor, and 1.0 for single-call rewriting,
@@ -474,7 +451,7 @@ code-agent evaluations. Both pass the controls through
 DeepSeek uses `thinking=true`. Applying DeepSeek `max` to optimizer roles and
 HotPotQA is our approved experimental choice, documented in the provider source
 review. Contracts and final evaluation preserve these fields and reject
-missing or changed reasoning settings. Every TB2/TB4 role uses a **32,768-token
+missing or changed reasoning settings. Every TB2.1 role uses a **32,768-token
 output ceiling per call**, including reasoning and final output. HotPotQA keeps
 16,384. This is the approved practical budget, not the providers' larger
 maximum-performance recommendation. Context capacities and the serving scripts
@@ -505,19 +482,19 @@ The default remains one until the training measurements justify another value.
 #### Output budget review
 
 Before freezing experiment settings, run the initial harness on **training
-tasks only**, separately for both model arms and both benchmarks:
+tasks only**, separately for both model arms:
 
 ```bash
 uv run python -m examples.terminalbench.canary \
-  --experiment tb2 \
+  --experiment tb2.1 \
   --model hosted_vllm/Qwen/Qwen3.8-27B \
   --api-base http://localhost:8000/v1 \
   --train-limit 3 \
   --n-concurrent 1 \
-  --output-dir runs/canaries/tb2/qwen
+  --output-dir runs/canaries/tb2.1/qwen
 ```
 
-Repeat with `--experiment tb4` and with
+Repeat with
 `--model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731`, each in a fresh output
 directory. The default three tasks are a smoke pilot, not proof that the cap
 suits the entire benchmark; increase `--train-limit` to cover more training
@@ -534,8 +511,8 @@ summarization calls. To aggregate optimizer and task usage, including failed job
 
 ```bash
 uv run python -m examples.terminalbench.token_usage \
-  runs/tb2/vanilla runs/tb2/vanilla/harbor \
-  --output runs/tb2/vanilla/token-usage-summary.json
+  runs/tb2.1/vanilla runs/tb2.1/vanilla/harbor \
+  --output runs/tb2.1/vanilla/token-usage-summary.json
 ```
 
 Pass the actual Harbor work directory if it is outside the optimization run.
@@ -558,7 +535,7 @@ response text, and raw execution evidence remains in the original artifacts.
 Caps and observation policy are part of run identity, so older 16,384-token
 Terminal-Bench runs cannot resume or enter the new final comparison unchanged.
 
-Offline tests in `tests/harbor/` exercise the shared actual agent loop for both benchmarks and Harbor job
+Offline tests in `tests/harbor/` exercise the actual TB2.1 agent loop and Harbor job
 schemas with simulated model and terminal boundaries. They make no paid model
 calls and do not require Docker. The upstream prompt and adapted methods are
 Apache-2.0; see `examples/terminalbench/HARBOR_LICENSE`.

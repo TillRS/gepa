@@ -26,7 +26,7 @@ from gepa.strategies.text_limits import parse_text_limits, resolve_text_limits
 def main() -> None:
     """Run a separate training-only pilot and retain usage even if its job fails."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--experiment", choices=EXPERIMENT_MANIFESTS, required=True)
+    parser.add_argument("--experiment", choices=EXPERIMENT_MANIFESTS, default="tb2.1")
     parser.add_argument("--model", choices=EXPERIMENT_MODELS, default=QWEN3_8_27B_MODEL)
     parser.add_argument("--api-base", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

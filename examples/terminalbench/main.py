@@ -1,4 +1,4 @@
-"""Configure full agent-text experiments on Terminal-Bench 2 and 4.
+"""Configure full agent-text experiments on Terminal-Bench 2.1.
 
 The held-out test split is not evaluated automatically.
 
@@ -10,7 +10,7 @@ The held-out test split is not evaluated automatically.
 Within each model arm, all conditions use the same official Harbor rewards,
 manifest, student/proposer model, task splits, and editable documents. All four
 methods run for four epochs; vanilla and full FOREST also run for eight epochs.
-The experiment must be selected explicitly; neither is primary.
+Terminal-Bench 2.1 is the sole supported benchmark for this campaign.
 """
 
 from __future__ import annotations
@@ -69,8 +69,7 @@ from gepa.utils.stop_condition import MaxCandidateProposalsStopper
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENT_MANIFESTS = {
-    "tb2": Path(__file__).with_name("terminalbench-v2-manifest.json"),
-    "tb4": Path(__file__).with_name("terminalbench-v4-manifest.json"),
+    "tb2.1": Path(__file__).with_name("terminalbench-v2.1-manifest.json"),
 }
 RUN_CONTRACT_FILENAME = "terminalbench-run-contract.json"
 CONDITIONS_BY_BUDGET = {
@@ -148,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     Returns:
         Configured argument parser.
     """
-    parser = argparse.ArgumentParser(description="GEPA on pinned Terminal-Bench 2 or 4 through Harbor")
+    parser = argparse.ArgumentParser(description="GEPA on pinned Terminal-Bench 2.1 through Harbor")
     parser.add_argument(
         "--text-limits",
         type=parse_text_limits,
@@ -158,8 +157,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--experiment",
         choices=tuple(EXPERIMENT_MANIFESTS),
-        required=True,
-        help="Both benchmarks optimize the full prompt, tool-description, and skill text",
+        default="tb2.1",
+        help="Terminal-Bench 2.1 optimizes the full prompt, tool-description, and skill text",
     )
     parser.add_argument(
         "--condition",
@@ -293,7 +292,7 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 21,
+        "schema_version": 22,
         "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
         "token_limits": terminalbench_limits(args.student_model),
         "token_usage_policy": deepcopy(TOKEN_USAGE_POLICY),

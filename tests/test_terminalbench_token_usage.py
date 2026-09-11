@@ -115,14 +115,14 @@ def test_optimizer_usage_records_live_responses_once_and_excludes_journal_replay
     assert records[0]["length_finish"] and records[0]["reasoning_tokens"] == 30_000
 
 
-@pytest.mark.parametrize("experiment", ["tb2", "tb4"])
+@pytest.mark.parametrize("experiment", [None, "tb2.1"])
 @pytest.mark.parametrize("model", EXPERIMENT_MODELS)
 @pytest.mark.parametrize("fails", [False, True])
 @pytest.mark.parametrize("n_concurrent", [None, 2])
 def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    experiment: str,
+    experiment: str | None,
     model: str,
     fails: bool,
     n_concurrent: int | None,
@@ -155,8 +155,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
         "argv",
         [
             "canary",
-            "--experiment",
-            experiment,
+            *(["--experiment", experiment] if experiment is not None else []),
             "--model",
             model,
             "--api-base",
@@ -173,6 +172,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
     assert config["schema_version"] == 4
+    assert config["experiment"] == "tb2.1"
     assert config["task_context_settings"] == {
         "enable_summarize": True,
         "proactive_summarization_threshold": 8_000,
@@ -204,7 +204,7 @@ def test_canary_rejects_invalid_concurrency_before_starting_harbor(
         [
             "canary",
             "--experiment",
-            "tb2",
+            "tb2.1",
             "--api-base",
             "http://localhost:8000/v1",
             "--output-dir",

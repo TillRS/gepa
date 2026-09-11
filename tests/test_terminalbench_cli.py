@@ -34,7 +34,7 @@ from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
 from gepa.strategies.text_limits import TextLimits
 
-MANIFEST_PATH = Path(__file__).parents[1] / "examples" / "terminalbench" / "terminalbench-v4-manifest.json"
+MANIFEST_PATH = Path(__file__).parents[1] / "examples" / "terminalbench" / "terminalbench-v2.1-manifest.json"
 
 
 def _model_args(tmp_path: Path, student_model: str, proposer_model: str) -> argparse.Namespace:
@@ -51,7 +51,7 @@ def _model_args(tmp_path: Path, student_model: str, proposer_model: str) -> argp
     return build_parser().parse_args(
         [
             "--experiment",
-            "tb4",
+            "tb2.1",
             "--condition",
             "react_v2",
             "--student-model",
@@ -72,7 +72,7 @@ def _model_args(tmp_path: Path, student_model: str, proposer_model: str) -> argp
 
 def test_qwen_student_uses_alibaba_user_prompt_template() -> None:
     """Render the Qwen seed as a sparse Alibaba user prompt."""
-    candidate, family = seed_candidate(QWEN3_8_27B_MODEL, "auto", "tb4")
+    candidate, family = seed_candidate(QWEN3_8_27B_MODEL, "auto", "tb2.1")
     prompt = candidate["instruction_prompt"]
     bodies = TEMPLATE_FAMILIES[family]["user_prompt"].parse(prompt)
 
@@ -84,7 +84,7 @@ def test_qwen_student_uses_alibaba_user_prompt_template() -> None:
 
 def test_deepseek_student_uses_generic_user_prompt_template() -> None:
     """Render the DeepSeek seed as a sparse generic user prompt."""
-    candidate, family = seed_candidate(DEEPSEEK_V4_FLASH_MODEL, "auto", "tb4")
+    candidate, family = seed_candidate(DEEPSEEK_V4_FLASH_MODEL, "auto", "tb2.1")
     prompt = candidate["instruction_prompt"]
     bodies = TEMPLATE_FAMILIES[family]["user_prompt"].parse(prompt)
 
@@ -113,7 +113,7 @@ def test_parser_defaults_both_roles_to_qwen3_8_27b(tmp_path: Path) -> None:
     args = build_parser().parse_args(
         [
             "--experiment",
-            "tb4",
+            "tb2.1",
             "--condition",
             "react_v2",
             "--max-metric-calls",
@@ -152,7 +152,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     args = build_parser().parse_args(
         [
             "--experiment",
-            "tb4",
+            "tb2.1",
             "--condition",
             "react_v2",
             "--max-metric-calls",
@@ -177,7 +177,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 21
+    assert contract["schema_version"] == 22
     assert contract["task_context_settings"] == {
         "enable_summarize": True,
         "proactive_summarization_threshold": 8_000,
@@ -413,7 +413,7 @@ def test_provider_settings_reach_all_runtime_roles(
         assert contract["reflection_role_decoding"] is None
 
 
-@pytest.mark.parametrize("experiment,iterations,padding", [("tb2", 40, 0), ("tb4", 32, 1)])
+@pytest.mark.parametrize("experiment,iterations,padding", [("tb2.1", 40, 0)])
 @pytest.mark.parametrize("outcome", ["accepted", "rejected", "perfect"])
 @pytest.mark.parametrize("budget_name,epochs", [("standard", 4), ("double", 8)])
 def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
@@ -559,7 +559,7 @@ def test_six_cell_matrix_pins_methods_budgets_and_resume_identity(tmp_path: Path
         )
         contracts.append(contract)
         assert contract["condition"] == condition
-        assert contract["optimization_budget"]["max_iterations"] == (64 if budget == "double" else 32)
+        assert contract["optimization_budget"]["max_iterations"] == (80 if budget == "double" else 40)
         assert contract["module_selector"] == "all"
         assert contract["max_proposer_model_calls"] is None
         assert contract["document_length"] == {
@@ -594,7 +594,7 @@ def test_double_budget_rejects_extra_ablation_cells_before_harbor(
         [
             "terminalbench",
             "--experiment",
-            "tb2",
+            "tb2.1",
             "--condition",
             condition,
             "--budget",
@@ -663,15 +663,32 @@ def test_legacy_state_without_contract_is_not_resumed(tmp_path: Path) -> None:
         ensure_run_contract(tmp_path, {"condition": "react_v2"})
 
 
-def test_experiment_has_no_implicit_default(tmp_path: Path) -> None:
-    """Require an explicit experiment so neither configuration becomes primary."""
+def test_experiment_defaults_to_tb21(tmp_path: Path) -> None:
+    """Select the only supported benchmark without requiring an experiment flag."""
+    args = build_parser().parse_args(
+        [
+            "--condition",
+            "vanilla",
+            "--run-dir",
+            str(tmp_path),
+            "--harbor-work-dir",
+            str(tmp_path / "harbor"),
+        ]
+    )
+    assert args.experiment == "tb2.1"
+    assert set(EXPERIMENT_MANIFESTS) == {"tb2.1"}
+
+
+@pytest.mark.parametrize("experiment", ["tb2", "tb2.0", "tb4"])
+def test_removed_experiments_are_rejected(tmp_path: Path, experiment: str) -> None:
+    """Reject old experiment flags instead of relabeling their dataset contents."""
     with pytest.raises(SystemExit):
         build_parser().parse_args(
             [
+                "--experiment",
+                experiment,
                 "--condition",
                 "vanilla",
-                "--max-metric-calls",
-                "1",
                 "--run-dir",
                 str(tmp_path),
                 "--harbor-work-dir",
@@ -681,33 +698,26 @@ def test_experiment_has_no_implicit_default(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("family", TEMPLATE_FAMILIES)
-def test_both_benchmarks_start_from_identical_full_text_and_skills(family: str) -> None:
-    """Give both benchmarks the same editable components and initial instructions."""
-    tb2, tb2_family = seed_candidate(QWEN3_8_27B_MODEL, family, "tb2")
-    tb4, tb4_family = seed_candidate(QWEN3_8_27B_MODEL, family, "tb4")
-    assert tb2 == tb4
-    assert tb2_family == tb4_family == family
-    assert set(tb2) == set(COMPONENT_KINDS)
-    assert len(tb2) == 16
-    assert {"command_format", "skill_debugging", "skill_verification"}.issubset(tb2)
-    assert "{instruction}" not in "".join(tb2.values())
-    assert "{terminal_state}" not in "".join(tb2.values())
+def test_tb21_starts_from_the_approved_full_text_and_skills(family: str) -> None:
+    """Preserve all 16 editable components when migrating the task dataset."""
+    candidate, resolved_family = seed_candidate(QWEN3_8_27B_MODEL, family, "tb2.1")
+    assert resolved_family == family
+    assert set(candidate) == set(COMPONENT_KINDS)
+    assert len(candidate) == 16
+    assert {"command_format", "skill_debugging", "skill_verification"}.issubset(candidate)
+    assert "{instruction}" not in "".join(candidate.values())
+    assert "{terminal_state}" not in "".join(candidate.values())
 
 
-def test_experiment_manifest_mismatch_and_cross_experiment_resume_are_rejected(tmp_path: Path) -> None:
-    """Prevent the selected target, manifest, or resumable state from drifting apart."""
+@pytest.mark.parametrize("experiment", ["tb2", "tb4"])
+def test_old_experiment_contracts_cannot_resume_as_tb21(tmp_path: Path, experiment: str) -> None:
+    """Require a fresh run directory when migrating from a removed benchmark."""
     args = _model_args(tmp_path, QWEN3_8_27B_MODEL, QWEN3_8_27B_MODEL)
-    contracts = []
-    for experiment, path in EXPERIMENT_MANIFESTS.items():
-        manifest = load_terminalbench_manifest(path)
-        args.experiment = experiment
-        contracts.append(
-            build_run_contract(args, manifest, manifest.tasks("train"), manifest.tasks("val"), "vanilla", "generic")
-        )
-    assert contracts[0]["seed_document_digest"] != contracts[1]["seed_document_digest"]
-    ensure_run_contract(tmp_path / "resume", contracts[0])
+    manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS["tb2.1"])
+    contract = build_run_contract(args, manifest, manifest.tasks("train"), manifest.tasks("val"), "vanilla", "generic")
+    ensure_run_contract(tmp_path / "resume", {**contract, "experiment": experiment})
     with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
-        ensure_run_contract(tmp_path / "resume", contracts[1])
-    manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS["tb2"])
+        ensure_run_contract(tmp_path / "resume", contract)
+    args.experiment = experiment
     with pytest.raises(ValueError, match="must match"):
         build_run_contract(args, manifest, manifest.tasks("train"), manifest.tasks("val"), "vanilla", "generic")

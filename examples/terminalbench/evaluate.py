@@ -70,6 +70,8 @@ def load_completed_run(run_dir: Path, condition: str, budget: str) -> tuple[Term
         raise ValueError(f"{run_dir}: expected the {budget} budget for {condition}")
     if contract.get("reflection_level") != (2 if condition in FOREST_CONDITIONS else 0):
         raise ValueError(f"{run_dir}: reflection level does not match the campaign method {condition}")
+    if contract.get("experiment") not in EXPERIMENT_MANIFESTS:
+        raise ValueError(f"{run_dir}: only Terminal-Bench 2.1 runs may enter final comparison")
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[contract["experiment"]])
     expected = build_run_contract(
         argparse.Namespace(**contract),

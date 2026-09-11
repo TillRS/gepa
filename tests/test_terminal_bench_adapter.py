@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -32,8 +33,7 @@ from gepa.strategies.intervention import summarize_feedback
 from gepa.strategies.text_limits import TextLimits, clip_text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = REPO_ROOT / "examples" / "terminalbench" / "terminalbench-v4-manifest.json"
-TB2_MANIFEST_PATH = MANIFEST_PATH.with_name("terminalbench-v2-manifest.json")
+MANIFEST_PATH = REPO_ROOT / "examples" / "terminalbench" / "terminalbench-v2.1-manifest.json"
 _QWEN3_8_27B_MODEL = "hosted_vllm/Qwen/Qwen3.8-27B"
 _QWEN3_8_27B_LM_KWARGS = {
     "temperature": 1.0,
@@ -184,17 +184,18 @@ def test_manifest_is_exactly_pinned_complete_and_disjoint() -> None:
     """Require all registry refs exactly once in deterministic splits."""
     manifest = load_terminalbench_manifest(MANIFEST_PATH)
 
-    assert manifest.dataset["reference"] == "terminal-bench/terminal-bench@4.0.0"
+    assert manifest.dataset["reference"] == "terminal-bench/terminal-bench-2-1"
     assert manifest.dataset["harbor_version"] == "0.22.0"
     assert manifest.dataset["registry_content_hash"] == (
-        "sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732"
+        "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
     )
-    assert manifest.dataset["source_commit"] == "452bf305c6daa62fc59061d22133a7cbc7c1572e"
-    assert len(manifest.task_refs) == 66
+    assert manifest.dataset["version"] == "2.1"
+    assert manifest.dataset["registry_version_id"] == "f92eea12-ff70-4d30-ace0-003abf294998"
+    assert len(manifest.task_refs) == 89
     assert {split: len(ids) for split, ids in manifest.splits.items()} == {
-        "train": 23,
-        "val": 23,
-        "test": 20,
+        "train": 30,
+        "val": 19,
+        "test": 40,
     }
     split_sets = {name: set(task_ids) for name, task_ids in manifest.splits.items()}
     assert split_sets["train"].isdisjoint(split_sets["val"])
@@ -209,20 +210,15 @@ def test_manifest_is_exactly_pinned_complete_and_disjoint() -> None:
     )
 
 
-def test_tb4_balances_development_data_without_changing_the_test_tasks(tmp_path: Path) -> None:
-    """Preserve held-out tasks and reject the superseded 26/20 development split."""
-    payload = json.loads(MANIFEST_PATH.read_text())
-    previous_splits = derive_terminalbench_splits(
-        list(payload["task_refs"]), payload["split_policy"]["seed"], {"train": 26, "val": 20, "test": 20}
+def test_tb21_preserves_every_approved_task_name_split_assignment() -> None:
+    """Keep the approved 30/19/40 memberships when switching to revised Hub tasks."""
+    manifest = load_terminalbench_manifest(MANIFEST_PATH)
+    task_names = {
+        split: [task.removeprefix("terminal-bench/") for task in tasks] for split, tasks in manifest.splits.items()
+    }
+    assert hashlib.sha256(json.dumps(task_names, sort_keys=True).encode()).hexdigest() == (
+        "0b83d1fba1b18f53b1dd7ce2a5c715980d43274aa619a414ae57be380a9b6d45"
     )
-    assert payload["splits"]["test"] == previous_splits["test"]
-    assert len(payload["splits"]["train"]) == len(payload["splits"]["val"])
-    payload["splits"] = previous_splits
-    payload["split_policy"]["counts"] = {"train": 26, "val": 20, "test": 20}
-    previous_manifest = tmp_path / "previous-manifest.json"
-    previous_manifest.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="recorded deterministic split policy"):
-        load_terminalbench_manifest(previous_manifest)
 
 
 def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: Path) -> None:
@@ -232,7 +228,7 @@ def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: P
         tmp_path: Pytest directory used for isolated Harbor artifacts.
     """
     runner = HarborCLI(work_dir=tmp_path / "harbor", **_RUNNER_OPTIONS)
-    task_ids = ["terminal-bench/cad-model", "terminal-bench/photonic-waveguide-routing"]
+    task_ids = ["terminal-bench/bn-fit-modify", "terminal-bench/cancel-async-tasks"]
     config = runner.build_job_config(
         task_ids,
         prompt_path=tmp_path / "prompt.txt",
@@ -243,8 +239,8 @@ def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: P
 
     assert config["datasets"] == [
         {
-            "name": "terminal-bench/terminal-bench",
-            "ref": "sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732",
+            "name": "terminal-bench/terminal-bench-2-1",
+            "ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
             "task_names": task_ids,
         }
     ]
@@ -273,13 +269,10 @@ def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: P
         )
 
 
-@pytest.mark.parametrize("version", [2, 4])
 @pytest.mark.parametrize("settings", [{"enable_summarize": False}, {"proactive_summarization_threshold": 0}])
-def test_task_context_settings_cannot_be_overridden(tmp_path: Path, version: int, settings: dict) -> None:
+def test_task_context_settings_cannot_be_overridden(tmp_path: Path, settings: dict) -> None:
     """Reject agent overrides that would change the campaign's context management."""
-    manifest = load_terminalbench_manifest(
-        REPO_ROOT / f"examples/terminalbench/terminalbench-v{version}-manifest.json"
-    )
+    manifest = load_terminalbench_manifest(MANIFEST_PATH)
     with pytest.raises(ValueError, match="cannot override fixed harness keys"):
         HarborCLI(
             manifest=manifest,
@@ -317,9 +310,9 @@ def test_command_instructions_are_editable_without_reintroducing_the_seed() -> N
     assert COMMAND_FORMAT_SEED.strip() not in formatted
 
 
-@pytest.mark.parametrize("path", [TB2_MANIFEST_PATH, MANIFEST_PATH])
+@pytest.mark.parametrize("path", [MANIFEST_PATH])
 def test_manifest_pins_reject_task_ref_changes_and_split_overlap(path: Path, tmp_path: Path) -> None:
-    """Reject altered task content and accidental training/test leakage for both datasets."""
+    """Reject altered task content and accidental training/test leakage for the pinned dataset."""
     payload = json.loads(path.read_text())
     changed = json.loads(path.read_text())
     task_id = next(iter(changed["task_refs"]))
@@ -334,49 +327,66 @@ def test_manifest_pins_reject_task_ref_changes_and_split_overlap(path: Path, tmp
         load_terminalbench_manifest(invalid)
 
 
-def test_tb2_jobs_pin_git_tasks_and_load_the_complete_document_bundle(tmp_path: Path) -> None:
-    """Run legacy TB2 task sources through modern Harbor without registry re-resolution."""
-    manifest = load_terminalbench_manifest(TB2_MANIFEST_PATH)
-    assert manifest.dataset["reference"] == "terminal-bench@2.0"
-    assert len(manifest.task_refs) == 89
-    assert {name: len(tasks) for name, tasks in manifest.splits.items()} == {"train": 30, "val": 19, "test": 40}
-    runner = HarborCLI(work_dir=tmp_path, **{**_RUNNER_OPTIONS, "manifest": manifest})
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("identifier", "terminal-bench"),
+        ("version", "2.0"),
+        ("registry_content_hash", "latest"),
+        ("task_refs_digest", "ad453479e7854db2737c4ff246fbfdcd26b7dbd02df285f03c19f51aefec7efc"),
+    ],
+)
+def test_tb21_manifest_rejects_legacy_or_mutable_dataset_pins(tmp_path: Path, field: str, value: str) -> None:
+    """Prevent a version label from hiding old task contents or a moving registry ref."""
+    payload = json.loads(MANIFEST_PATH.read_text())
+    payload["dataset"][field] = value
+    path = tmp_path / "old-dataset.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match=f"manifest dataset.{field} must be"):
+        load_terminalbench_manifest(path)
+
+
+def test_tb21_jobs_pin_registry_contents_and_require_matching_tasks_and_manifest(tmp_path: Path) -> None:
+    """Use the immutable Hub dataset while rejecting foreign task and manifest inputs."""
+    manifest = load_terminalbench_manifest(MANIFEST_PATH)
+    runner = HarborCLI(work_dir=tmp_path, **_RUNNER_OPTIONS)
     config = runner.build_job_config(
-        ["bn-fit-modify"],
+        ["terminal-bench/bn-fit-modify"],
         prompt_path=tmp_path / "prompt.txt",
         bundle_path=tmp_path / "document-bundle.json",
         jobs_dir=tmp_path / "jobs",
-        job_name="tb2",
+        job_name="tb21",
     )
-    assert "datasets" not in config
-    assert config["tasks"] == [
+    assert "tasks" not in config
+    assert config["datasets"] == [
         {
-            "path": "bn-fit-modify",
-            "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
-            "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+            "name": "terminal-bench/terminal-bench-2-1",
+            "ref": manifest.dataset["registry_content_hash"],
+            "task_names": ["terminal-bench/bn-fit-modify"],
         }
     ]
     agent = config["agents"][0]
     assert agent["import_path"].endswith(":PromptedTerminus")
     assert agent["kwargs"]["document_bundle_path"] == str(tmp_path / "document-bundle.json")
-    assert agent["skills"] == []
+    other_path = tmp_path / "other-manifest.json"
+    other_path.write_text(MANIFEST_PATH.read_text())
     with pytest.raises(ValueError, match="same Terminal-Bench manifest"):
-        TerminalBenchAdapter(load_terminalbench_manifest(MANIFEST_PATH), runner)
+        TerminalBenchAdapter(load_terminalbench_manifest(other_path), runner)
     with pytest.raises(ValueError, match="not in pinned"):
         runner.build_job_config(
-            ["terminal-bench/cad-model"],
+            ["terminal-bench/not-a-task"],
             prompt_path=tmp_path / "prompt.txt",
             bundle_path=tmp_path / "document-bundle.json",
             jobs_dir=tmp_path,
-            job_name="wrong-version",
+            job_name="wrong-task",
         )
 
 
-def test_tb2_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
+def test_tb21_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Follow TB2's full text bundle through materialization, scoring, and reflection."""
-    manifest = load_terminalbench_manifest(TB2_MANIFEST_PATH)
+    """Follow TB2.1's full text bundle through materialization, scoring, and reflection."""
+    manifest = load_terminalbench_manifest(MANIFEST_PATH)
     runner = HarborCLI(work_dir=tmp_path, **{**_RUNNER_OPTIONS, "manifest": manifest})
     monkeypatch.setattr(runner, "check_requirements", Mock(return_value=("/mock/harbor", "/mock/docker")))
     candidate = _candidate(instruction_prompt="Inspect {literal} and {instruction}; שלום.")
@@ -400,11 +410,11 @@ def test_tb2_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
         assert bundle["documents"] == candidate
         saved = json.loads((config_path.parent / "candidate.json").read_text())
         assert saved["documents"] == candidate
-        assert saved["experiment"] == "tb2"
+        assert saved["experiment"] == "tb2.1"
         job_dir = Path(config["jobs_dir"]) / config["job_name"]
         job_dir.mkdir(parents=True)
         _write_job_result(job_dir, 1)
-        _write_trial_result(job_dir, config["tasks"][0]["path"], reward=1.0)
+        _write_trial_result(job_dir, config["datasets"][0]["task_names"][0], reward=1.0)
         return subprocess.CompletedProcess(command, 0, "complete", "")
 
     monkeypatch.setattr(terminalbench_module.subprocess, "run", run)
@@ -415,7 +425,7 @@ def test_tb2_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
     assert result.scores == [1.0] and result.num_metric_calls == 1
     rows = adapter.make_reflective_dataset(candidate, result, list(candidate))
     assert set(rows) == set(COMPONENT_KINDS)
-    assert all(entries[0]["Inputs"]["dataset"] == "terminal-bench@2.0" for entries in rows.values())
+    assert all(entries[0]["Inputs"]["dataset"] == "terminal-bench/terminal-bench-2-1" for entries in rows.values())
     assert all(entries[0]["Document"]["kind"] == COMPONENT_KINDS[name] for name, entries in rows.items())
     with pytest.raises(ValueError, match="Unknown Terminal Bench document selection"):
         adapter.make_reflective_dataset(candidate, result, ["system_prompt"])
@@ -691,7 +701,7 @@ def test_runner_preserves_valid_verified_zero_reward(tmp_path: Path, monkeypatch
     assert evaluated.trajectories[0]["atif_trajectories"]
 
 
-@pytest.mark.parametrize("manifest_path", [TB2_MANIFEST_PATH, MANIFEST_PATH], ids=["tb2", "tb4"])
+@pytest.mark.parametrize("manifest_path", [MANIFEST_PATH], ids=["tb2.1"])
 @pytest.mark.parametrize("reward", [0.0, 1.0])
 @pytest.mark.parametrize("scope", ["trial", "step"])
 def test_verified_agent_timeout_counts_once_and_reaches_reflection(
@@ -791,7 +801,7 @@ def test_timeout_policy_rejects_unverified_infrastructure_and_extra_attempts(
     assert len(list(tmp_path.glob("evaluations/*/jobs/*/trial-0/result.json"))) == 1
 
 
-@pytest.mark.parametrize("manifest_path", [TB2_MANIFEST_PATH, MANIFEST_PATH], ids=["tb2", "tb4"])
+@pytest.mark.parametrize("manifest_path", [MANIFEST_PATH], ids=["tb2.1"])
 @pytest.mark.parametrize("reward", [0.0, 1.0])
 @pytest.mark.parametrize("maximum", [None, 128])
 def test_verifier_console_output_is_textual_feedback_for_every_component(

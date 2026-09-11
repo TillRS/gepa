@@ -193,7 +193,7 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
     for scores in summary["harnesses"].values():
         assert scores["repetition_pass_at_1"] == [0.0, 0.5, 1.0]
         assert scores["mean_pass_at_1"] == scores["std_pass_at_1"] == 0.5
-        assert scores["task_attempts"] == (120 if experiment == "tb2" else 60)
+        assert scores["task_attempts"] == 120
     kwargs = factory.call_args.kwargs
     contract = comparison["shared_configuration"]
     assert contract["text_limits"] == text_limits.to_dict()
@@ -253,7 +253,7 @@ def test_evaluation_cli_rejects_invalid_or_duplicate_cell_arguments(
 
 def test_interrupted_evaluation_resumes_only_missing_repetitions(tmp_path: Path) -> None:
     """Keep completed attempts unchanged and withhold a summary until all 21 jobs finish."""
-    run_dirs = _write_comparison(tmp_path, "tb2")
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
     manifest, comparison = evaluate.freeze_comparison(run_dirs)
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir, fail_on_call=5)
@@ -272,7 +272,7 @@ def test_interrupted_evaluation_resumes_only_missing_repetitions(tmp_path: Path)
 
 def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Path) -> None:
     """Preserve fresh attempts when validation selects the initial harness in all six runs."""
-    run_dirs = _write_comparison(tmp_path, "tb4")
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
     for run_dir in run_dirs.values():
         state = GEPAState.load(str(run_dir))
         state.prog_candidate_val_subscores[1] = dict.fromkeys(state.prog_candidate_val_subscores[1], 0.0)
@@ -285,7 +285,7 @@ def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Pat
     summary = evaluate.evaluate_comparison(manifest, comparison, output_dir, runner)
     assert runner.run.call_count == 21
     assert len(list(output_dir.glob("*-repetition-*.json"))) == 21
-    assert all(row["task_attempts"] == 60 for row in summary["harnesses"].values())
+    assert all(row["task_attempts"] == 120 for row in summary["harnesses"].values())
 
 
 @pytest.mark.parametrize(
@@ -315,10 +315,10 @@ def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Pat
 )
 def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, damage: str) -> None:
     """Reject unfinished optimization, pilot splits, and unmatched experimental settings."""
-    run_dirs = _write_comparison(tmp_path, "tb4")
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
     forest = run_dirs["react_v2"]
     if damage == "different_model":
-        forest = _write_run(tmp_path / "other-model", "tb4", "react_v2", DEEPSEEK_V4_FLASH_MODEL)
+        forest = _write_run(tmp_path / "other-model", "tb2.1", "react_v2", DEEPSEEK_V4_FLASH_MODEL)
         run_dirs["react_v2"] = forest
     if damage == "missing_cell":
         run_dirs.pop("action")
@@ -406,11 +406,23 @@ def test_task_context_drift_cannot_resume_or_enter_final_test(
         evaluate.freeze_comparison(run_dirs)
 
 
+@pytest.mark.parametrize("experiment", ["tb2", "tb4"])
+def test_removed_benchmark_cannot_enter_final_comparison(tmp_path: Path, experiment: str) -> None:
+    """Reject obsolete dataset identities before loading any selected harness."""
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
+    path = run_dirs["react_v2"] / RUN_CONTRACT_FILENAME
+    contract = json.loads(path.read_text())
+    contract["experiment"] = experiment
+    path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match=r"only Terminal-Bench 2\.1 runs"):
+        evaluate.freeze_comparison(run_dirs)
+
+
 @pytest.mark.parametrize("role", ["student", "proposer"])
 @pytest.mark.parametrize("damage", ["implicit", "lower_effort", "thinking_disabled"])
 def test_reasoning_changes_are_rejected_before_final_test(tmp_path: Path, role: str, damage: str) -> None:
     """Reject implicit or changed Qwen reasoning settings before freezing test candidates."""
-    run_dirs = _write_comparison(tmp_path, "tb4")
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
     path = run_dirs["react_v2"] / RUN_CONTRACT_FILENAME
     contract = json.loads(path.read_text())
     if damage == "implicit":
@@ -431,7 +443,7 @@ def test_reasoning_changes_are_rejected_before_final_test(tmp_path: Path, role: 
 )
 def test_changed_output_budget_or_usage_policy_cannot_resume_or_enter_final_test(tmp_path: Path, field: str) -> None:
     """Reject old caps or missing telemetry policy before any held-out evaluation."""
-    run_dirs = _write_comparison(tmp_path, "tb4")
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
     forest = run_dirs["react_v2"]
     path = forest / RUN_CONTRACT_FILENAME
     original = json.loads(path.read_text())
@@ -510,7 +522,7 @@ def test_changed_concurrency_cannot_resume_or_enter_final_comparison(tmp_path: P
 
 def test_frozen_output_rejects_a_changed_validation_winner(tmp_path: Path) -> None:
     """Prevent replacing an optimized harness after test feedback has been observed."""
-    run_dirs = _write_comparison(tmp_path, "tb4")
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
     forest = run_dirs["react_v2_2x"]
     manifest, comparison = evaluate.freeze_comparison(run_dirs)
     output_dir = tmp_path / "test"
@@ -531,7 +543,7 @@ def test_frozen_output_rejects_a_changed_validation_winner(tmp_path: Path) -> No
 )
 def test_corrupt_saved_repetition_is_not_silently_reused(tmp_path: Path, damage: str) -> None:
     """Reject incomplete, mismatched, or duplicate test evidence during resume."""
-    run_dirs = _write_comparison(tmp_path, "tb4")
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
     manifest, comparison = evaluate.freeze_comparison(run_dirs)
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir)

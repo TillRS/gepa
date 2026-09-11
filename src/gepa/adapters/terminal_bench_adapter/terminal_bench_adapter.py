@@ -1,4 +1,4 @@
-"""Terminal-Bench 2 and 4 experiments backed by the pinned Harbor CLI.
+"""Terminal-Bench 2.1 experiments backed by the pinned Harbor CLI.
 
 Harbor runs in a separate Python environment through a subprocess, so GEPA
 retains Python 3.10+ support. Harbor supplies the official Docker verifier and
@@ -36,34 +36,22 @@ TASK_CONTEXT_SETTINGS = {
     "proactive_summarization_threshold": 8_000,
 }
 EXPERIMENT_DATASETS = {
-    "tb2": {
-        "identifier": "terminal-bench",
-        "version": "2.0",
-        "reference": "terminal-bench@2.0",
-        "registry_content_hash": None,
-        "source_repository": "https://github.com/laude-institute/terminal-bench-2.git",
+    "tb2.1": {
+        "identifier": "terminal-bench/terminal-bench-2-1",
+        "version": "2.1",
+        "reference": "terminal-bench/terminal-bench-2-1",
+        "registry_content_hash": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+        "source_repository": "https://github.com/harbor-framework/terminal-bench-2-1",
         "source_tag": None,
-        "source_commit": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "source_commit": None,
         "task_count": 89,
-        "task_refs_digest": "ad453479e7854db2737c4ff246fbfdcd26b7dbd02df285f03c19f51aefec7efc",
-        "harbor_version": PINNED_HARBOR_VERSION,
-    },
-    "tb4": {
-        "identifier": "terminal-bench/terminal-bench",
-        "version": "4.0.0",
-        "reference": "terminal-bench/terminal-bench@4.0.0",
-        "registry_content_hash": "sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732",
-        "source_repository": "https://github.com/harbor-framework/terminal-bench",
-        "source_tag": "v4.0.0",
-        "source_commit": "452bf305c6daa62fc59061d22133a7cbc7c1572e",
-        "task_count": 66,
-        "task_refs_digest": "9d42a27a42495d96844f4a9beac1c856f0ba8ec658d358ec4463e963f5882b57",
+        "task_refs_digest": "c3ff7071ba153cac0c12523235ddee0e6ce942777748c260aebc9cbaf6c0c1ed",
+        "registry_version_id": "f92eea12-ff70-4d30-ace0-003abf294998",
         "harbor_version": PINNED_HARBOR_VERSION,
     },
 }
 EXPERIMENT_SPLIT_COUNTS = {
-    "tb2": {"train": 30, "val": 19, "test": 40},
-    "tb4": {"train": 23, "val": 23, "test": 20},
+    "tb2.1": {"train": 30, "val": 19, "test": 40},
 }
 PROMPTED_TERMINUS_IMPORT_PATH = "examples.terminalbench.terminus_agent:PromptedTerminus"
 SPLIT_NAMES = ("train", "val", "test")
@@ -133,8 +121,7 @@ class TerminalBenchTask:
     """One pinned Terminal-Bench task selected from the checked-in manifest.
 
     Args:
-        task_id: Harbor task ID: a bare Git task name for TB2, or a qualified
-            package name such as ``terminal-bench/cad-model`` for TB4.
+        task_id: Qualified Hub task name such as ``terminal-bench/bn-fit-modify``.
     """
 
     task_id: str
@@ -153,7 +140,7 @@ class TerminalBenchManifest:
 
     @property
     def component_kinds(self) -> dict[str, str]:
-        """Return the same full text and skill surface for both benchmarks."""
+        """Return the full text and skill surface shared by all methods."""
         return dict(COMPONENT_KINDS)
 
     def validate_candidate(self, candidate: Mapping[str, str]) -> None:
@@ -412,7 +399,8 @@ def derive_terminalbench_splits(
     """Derive stable splits with hash ordering and explicit or 40/30/30 counts.
 
     Args:
-        task_ids: Unique fully qualified task IDs.
+        task_ids: Unique task IDs; hash names without the terminal-bench namespace
+            to preserve the approved assignments when moving to Hub packages.
         seed: Versioned text seed recorded in the manifest.
         counts: Explicit split sizes; omitted uses Hamilton 40/30/30 allocation.
 
@@ -430,7 +418,8 @@ def derive_terminalbench_splits(
     ordered = [
         task_id
         for _, task_id in sorted(
-            (hashlib.sha256(f"{seed}\0{task_id}".encode()).hexdigest(), task_id) for task_id in task_ids
+            (hashlib.sha256(f"{seed}\0{task_id.removeprefix('terminal-bench/')}".encode()).hexdigest(), task_id)
+            for task_id in task_ids
         )
     ]
     if counts is None:
@@ -457,7 +446,7 @@ def derive_terminalbench_splits(
 
 
 def load_terminalbench_manifest(path: str | Path) -> TerminalBenchManifest:
-    """Load and verify either pinned experiment before benchmark work begins.
+    """Load and verify the pinned TB2.1 experiment before benchmark work begins.
 
     Args:
         path: JSON manifest generated from the official Harbor registry.
@@ -762,24 +751,13 @@ class HarborCLI:
                 }
             ],
         }
-        if self.manifest.experiment == "tb4":
-            config["datasets"] = [
-                {
-                    "name": self.manifest.dataset["identifier"],
-                    "ref": self.manifest.dataset["registry_content_hash"],
-                    "task_names": list(task_ids),
-                }
-            ]
-        else:
-            # Explicit Git sources avoid resolving a mutable legacy registry at run time.
-            config["tasks"] = [
-                {
-                    "path": task_id,
-                    "git_url": self.manifest.dataset["source_repository"],
-                    "git_commit_id": self.manifest.task_refs[task_id],
-                }
-                for task_id in task_ids
-            ]
+        config["datasets"] = [
+            {
+                "name": self.manifest.dataset["identifier"],
+                "ref": self.manifest.dataset["registry_content_hash"],
+                "task_names": list(task_ids),
+            }
+        ]
         return config
 
     def run(self, task_ids: Sequence[str], candidate: Mapping[str, str]) -> HarborEvaluation:
