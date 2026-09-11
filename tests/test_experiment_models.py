@@ -64,6 +64,25 @@ def test_provider_sampling_depends_on_the_work_without_mutating_other_profiles(m
     assert experiment_decoding(model, agentic=agentic)["top_p"] != 0.5
 
 
+@pytest.mark.parametrize(
+    ("model", "template_kwargs"),
+    [
+        (QWEN3_8_27B_MODEL, {"enable_thinking": True, "reasoning_effort": "xhigh"}),
+        (DEEPSEEK_V4_FLASH_MODEL, {"thinking": True, "reasoning_effort": "max"}),
+    ],
+)
+def test_explicit_reasoning_uses_provider_template_fields_without_shared_mutation(
+    model: str, template_kwargs: dict[str, object]
+) -> None:
+    """Pin thinking and effort while isolating every client and preserving legacy defaults."""
+    expected = {"extra_body": {"chat_template_kwargs": template_kwargs}}
+    request = experiment_request_overrides(model, explicit_reasoning=True)
+    assert request == expected
+    request["extra_body"]["chat_template_kwargs"]["reasoning_effort"] = "low"
+    assert experiment_request_overrides(model, explicit_reasoning=True) == expected
+    assert experiment_request_overrides(model) == ({} if model == QWEN3_8_27B_MODEL else expected)
+
+
 @pytest.mark.parametrize("version", ["0.25.0", "0.28.0", "0.29.1.dev1"])
 def test_deepseek_accepts_supported_vllm_versions(version: str) -> None:
     """Allow vLLM releases that support the July 31 checkpoint."""

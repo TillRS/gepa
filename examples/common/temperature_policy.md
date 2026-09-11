@@ -66,5 +66,44 @@ DeepSeek Controller and ReAct clients preserve each role's sampling, cost
 accounting, and response-journal replay. Contracts record the actual role
 settings and reject old or mismatched profiles on resume and final comparison.
 The shared decoding helper preserves its existing default for other callers;
-these three benchmarks choose their role profiles explicitly. Output-token
-limits and reasoning budgets remain separate settings.
+these three benchmarks choose their role profiles explicitly.
+
+## Reasoning effort
+
+Thinking is explicitly enabled for every model role in HotPotQA, TB2, and TB4,
+at both optimization budgets and during final task evaluation:
+
+| Work performed | Qwen3.8-27B | DeepSeek-V4-Flash-0731 |
+| --- | --- | --- |
+| HotPotQA: summaries, retrieval queries, factual answers | `xhigh` | `max` |
+| TB2 and TB4: terminal-agent execution | `xhigh` | `max` |
+| GEPA/stateless action proposer and selector | `xhigh` | `max` |
+| FOREST Controller, Manifestor, and ReAct editor | `xhigh` | `max` |
+
+Qwen's pinned model card names `xhigh` as its default. DeepSeek's pinned card
+reports `max` for code-agent evaluations. Extending DeepSeek `max` to factual QA
+and optimizer roles is the approved performance-focused experiment choice;
+the provider does not publish a separate recommendation for those roles. The
+setting is fixed within each model arm across all six configurations. Provider
+effort labels do not imply equal token use or compute across models.
+
+Qwen now sends `enable_thinking=true` and `reasoning_effort=xhigh` through
+`extra_body.chat_template_kwargs`. The
+[pinned Qwen chat template](https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/chat_template.jinja)
+consumes these fields, and the [vLLM recipe](https://recipes.vllm.ai/Qwen/Qwen3.8-27B)
+documents that transport. DeepSeek retains `thinking=true` and
+`reasoning_effort=max` through its existing local-vLLM template arguments.
+These request fields are persisted in run contracts and response-journal
+identity. Missing or changed settings cannot silently resume a Qwen run or
+enter the final comparison. Other callers retain their existing defaults.
+
+The [AutoSaddler paper](https://arxiv.org/html/2608.23041v1#S5.SS1) names Opus 4.6
+with default endpoint settings; its public
+[legacy optimizer code](https://github.com/microsoft/AutoSaddler/blob/9df6d2e3e1d3946057243690bca28e136fa81179/src/autosaddler/v1/sdk_session.py#L45)
+defaults to `max`. Exact effort for the paper's TB2 task
+agent and GEPA baseline was not verified. This policy follows our model arms'
+provider guidance and approved choices, without claiming an exact reproduction
+of those paper settings.
+
+Reasoning effort does not increase the current 16,384-token output ceiling.
+Output limits and total context capacity remain separate decisions.

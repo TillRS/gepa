@@ -49,6 +49,14 @@ _EXPERIMENT_DECODING = {
 }
 
 _EXPERIMENT_REQUEST_OVERRIDES: dict[str, dict[str, object]] = {
+    QWEN3_8_27B_MODEL: {
+        "extra_body": {
+            "chat_template_kwargs": {
+                "enable_thinking": True,
+                "reasoning_effort": "xhigh",
+            },
+        }
+    },
     DEEPSEEK_V4_FLASH_MODEL: {
         "extra_body": {
             "chat_template_kwargs": {
@@ -109,15 +117,18 @@ def experiment_model_version(model: str) -> str:
     return version
 
 
-def experiment_request_overrides(model: str) -> dict[str, object]:
+def experiment_request_overrides(model: str, *, explicit_reasoning: bool = False) -> dict[str, object]:
     """Return provider-specific request fields for one runtime model.
 
-    Self-hosted DeepSeek requests set maximum reasoning through the checkpoint's
-    chat-template arguments. A deep copy keeps one client from mutating the
-    policy used by later calls.
+    The reviewed HotPotQA and Terminal-Bench profiles explicitly enable thinking
+    with Qwen xhigh or DeepSeek max through the checkpoint's chat-template
+    arguments. A deep copy isolates settings across clients.
 
     Args:
         model: Exact LiteLLM model identifier used by a benchmark run.
+        explicit_reasoning: Pin Qwen's thinking mode and effort instead of
+            relying on its defaults. The default preserves unreviewed callers;
+            DeepSeek already requests thinking and max effort explicitly.
 
     Returns:
         Independent provider-request mapping, or an empty mapping when the
@@ -129,6 +140,8 @@ def experiment_request_overrides(model: str) -> dict[str, object]:
     if model not in _EXPERIMENT_DECODING:
         supported = ", ".join(_EXPERIMENT_DECODING)
         raise ValueError(f"Unsupported experiment model {model!r}; expected one of: {supported}")
+    if model == QWEN3_8_27B_MODEL and not explicit_reasoning:
+        return {}
     return deepcopy(_EXPERIMENT_REQUEST_OVERRIDES.get(model, {}))
 
 

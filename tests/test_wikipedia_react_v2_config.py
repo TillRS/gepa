@@ -51,7 +51,7 @@ from examples.hotpotqa.main import (
 from examples.hotpotqa.main import (
     seed_candidate as hotpotqa_seed_candidate,
 )
-from examples.hotpotqa.utils import HOTPOTQA_HF_REVISION, HOTPOTQA_SCIENTIFIC_SPLIT_SHA256
+from examples.hotpotqa.utils import HOTPOTQA_HF_REVISION, HOTPOTQA_SCIENTIFIC_SPLIT_SHA256, resolve_hotpotqa_lm_kwargs
 from examples.hover.main import _run_key as hover_run_key
 from examples.hover.main import build_config as build_hover_config
 from examples.hover.main import build_run_contract as build_hover_run_contract
@@ -267,7 +267,8 @@ def test_hotpot_provider_sampling_reaches_every_model_role(model: str, budget: i
     args = _hotpot_args(solver_model=model, reflection_model=model, max_metric_calls=budget)
     general = experiment_decoding(model, agentic=False)
     agentic = experiment_decoding(model, agentic=True)
-    reflection_kwargs = {**general, **experiment_request_overrides(model)}
+    reflection_kwargs = resolve_hotpotqa_lm_kwargs(model, None)
+    request_overrides = experiment_request_overrides(model, explicit_reasoning=True)
     config, selector = build_hotpotqa_config(condition, args, reflection_kwargs)
     contract = build_hotpotqa_run_contract(condition, args)
     expected = general["temperature"]
@@ -277,20 +278,27 @@ def test_hotpot_provider_sampling_reaches_every_model_role(model: str, budget: i
     assert config.reflection.reflection_lm_kwargs["temperature"] == expected
     assert contract["models"]["solver_decoding"]["top_p"] == general["top_p"]
     assert config.reflection.reflection_lm_kwargs["top_p"] == general["top_p"]
+    assert config.reflection.reflection_lm_kwargs["extra_body"] == request_overrides["extra_body"]
+    assert contract["models"]["solver_request_overrides"] == request_overrides
+    assert contract["models"]["reflection_request_overrides"] == request_overrides
     if selector is not None:
         assert selector.lm.completion_kwargs["temperature"] == expected
         assert selector.lm.completion_kwargs["top_p"] == general["top_p"]
+        assert selector.lm.completion_kwargs["extra_body"] == request_overrides["extra_body"]
     strategy = config.reflection.reflection_strategy
     if strategy is not None:
         assert strategy.base_lm.completion_kwargs["temperature"] == expected
         assert strategy.manifestor_lm.completion_kwargs["temperature"] == expected
         assert strategy.base_lm.completion_kwargs["top_p"] == agentic["top_p"]
         assert strategy.manifestor_lm.completion_kwargs["top_p"] == general["top_p"]
+        assert strategy.base_lm.completion_kwargs["extra_body"] == request_overrides["extra_body"]
+        assert strategy.manifestor_lm.completion_kwargs["extra_body"] == request_overrides["extra_body"]
         roles = contract["models"]["reflection_role_decoding"]
         assert roles["manifestor"]["requested"] == {**general, "seed": 0}
         assert roles["react_v2_proposer"]["requested"] == {**agentic, "seed": 0}
         if condition == "react_v2":
             assert strategy.controller_lm.completion_kwargs["top_p"] == general["top_p"]
+            assert strategy.controller_lm.completion_kwargs["extra_body"] == request_overrides["extra_body"]
             assert roles["controller"]["requested"] == {**general, "seed": 0}
         else:
             assert roles["controller"] is None
@@ -314,6 +322,25 @@ def test_hotpot_rejects_resume_with_changed_role_top_p(tmp_path: Path, role: str
     contract = build_hotpotqa_run_contract("react_v2", args)
     old = deepcopy(contract)
     old["models"]["reflection_role_decoding"][role]["requested"]["top_p"] = 0.5
+    ensure_wikipedia_run_contract(tmp_path, old)
+    with pytest.raises(ValueError, match="different Wikipedia benchmark configuration"):
+        ensure_wikipedia_run_contract(tmp_path, contract)
+
+
+@pytest.mark.parametrize("role", ["solver", "reflection"])
+@pytest.mark.parametrize("damage", ["implicit", "lower_effort", "thinking_disabled"])
+def test_hotpot_rejects_missing_or_changed_reasoning_settings(tmp_path: Path, role: str, damage: str) -> None:
+    """Reject earlier implicit Qwen settings and changed reasoning behavior on resume."""
+    contract = build_hotpotqa_run_contract("react_v2", _hotpot_args())
+    old = deepcopy(contract)
+    if damage == "implicit":
+        old["models"][f"{role}_request_overrides"] = {}
+    else:
+        template_kwargs = old["models"][f"{role}_request_overrides"]["extra_body"]["chat_template_kwargs"]
+        if damage == "lower_effort":
+            template_kwargs["reasoning_effort"] = "low"
+        else:
+            template_kwargs["enable_thinking"] = False
     ensure_wikipedia_run_contract(tmp_path, old)
     with pytest.raises(ValueError, match="different Wikipedia benchmark configuration"):
         ensure_wikipedia_run_contract(tmp_path, contract)

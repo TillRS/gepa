@@ -478,11 +478,11 @@ def build_run_contract(condition: str, args) -> dict:
     solver_decoding_fields = list(experiment_decoding(args.solver_model, agentic=False))
     if "seed" in solver_lm_kwargs:
         solver_decoding_fields.append("seed")
-    solver_request_fields = experiment_request_overrides(args.solver_model)
+    solver_request_fields = experiment_request_overrides(args.solver_model, explicit_reasoning=True)
     reflection_decoding_fields = list(experiment_decoding(args.reflection_model, agentic=False))
     if "seed" in reflection_lm_kwargs:
         reflection_decoding_fields.append("seed")
-    reflection_request_fields = experiment_request_overrides(args.reflection_model)
+    reflection_request_fields = experiment_request_overrides(args.reflection_model, explicit_reasoning=True)
     reflection_decoding = {field: deepcopy(reflection_lm_kwargs[field]) for field in reflection_decoding_fields}
     reflection_level = args.reflection_level if condition in _REACT_V2_CONDITIONS else 0
     reflection_role_decoding = None

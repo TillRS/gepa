@@ -33,6 +33,15 @@ to the exact checkpoint model cards. The prior Manifestor temperature of 0.0
 is superseded for HotPotQA, TB2, and TB4. Changed role settings require fresh
 run contracts and campaign checkpoints.
 
+Thinking mode and effort are explicit in every HotPotQA request: Qwen uses
+`enable_thinking=true` with `reasoning_effort=xhigh`; DeepSeek uses
+`thinking=true` with `reasoning_effort=max`. They reach vLLM through
+`extra_body.chat_template_kwargs` and are recorded for resume validation.
+Qwen follows its provider default; DeepSeek's code-agent setting is also our
+chosen setting for QA and optimizer roles, as explained in the source review.
+The same policy applies to TB2 and TB4. The per-call output ceiling remains
+16,384 tokens, independently of the effort setting.
+
 After configuring `scripts/della/.env` from `.env.example`, prepare and submit:
 
 ```bash
