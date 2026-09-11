@@ -424,7 +424,7 @@ class ThreeRoleReflectionLM:
         max_menu: Optional level-1 region bound. Level 2 requires it to retain
             every cataloged region/action pair; semantic choices are never subsampled.
         max_chars: Maximum completed component size.
-        manifestor_lm: Deterministic LM used to manifest level-2 actions.
+        manifestor_lm: LM used to manifest level-2 actions.
         base_lm_run_identity: Optional stable, non-secret configuration identity
             for a custom Controller/ReAct callable.
         manifestor_lm_run_identity: Optional stable, non-secret configuration
