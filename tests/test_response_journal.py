@@ -232,20 +232,16 @@ def test_native_tools_replay_reasoning_ids_and_arguments_exactly(tmp_path: Path)
         with response_journal_scope("optimizer-iteration-4"):
             replayed = journal_lm(journal_path, "controller-proposer").complete_with_tools(messages, tools)
 
-    assert (
-        recorded
-        == replayed
-        == ToolCompletion(
-            content="",
-            tool_calls=(
-                NativeToolCall(
-                    id="call-exact-7",
-                    name="REPLACE_TEXT",
-                    arguments='{"target":"old","text":"new"}',
-                ),
+    assert recorded == replayed == ToolCompletion(
+        content="",
+        tool_calls=(
+            NativeToolCall(
+                id="call-exact-7",
+                name="REPLACE_TEXT",
+                arguments='{"target":"old","text":"new"}',
             ),
-            reasoning_content="private chain state",
-        )
+        ),
+        reasoning_content="private chain state",
     )
     provider.assert_not_called()
 
@@ -417,9 +413,9 @@ def test_usage_totals_survive_replay_cursor_rewind_and_process_restart(tmp_path:
         with response_journal_scope("plain-scope"):
             assert resumed("plain request") == "plain"
         with response_journal_scope("tool-scope"):
-            assert (
-                resumed.complete_with_tools([{"role": "user", "content": "native request"}], tools).content == "native"
-            )
+            assert resumed.complete_with_tools(
+                [{"role": "user", "content": "native request"}], tools
+            ).content == "native"
         with response_journal_scope("batch-scope"):
             assert resumed.batch_complete(messages, max_workers=2) == ["first", "second"]
 
