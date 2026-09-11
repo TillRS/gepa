@@ -307,6 +307,10 @@ def test_hotpot_provider_sampling_reaches_every_model_role(model: str, budget: i
     request_overrides = experiment_request_overrides(model, explicit_reasoning=True)
     config, selector = build_hotpotqa_config(condition, args, reflection_kwargs)
     contract = build_hotpotqa_run_contract(condition, args)
+    assert config.engine.cache_evaluation is False
+    assert contract["program"]["cache_evaluation"] is False
+    assert contract["program"]["dspy_disk_cache"] is False
+    assert contract["program"]["dspy_memory_cache"] is False
     assert contract["optimizer"]["document_length"] == {
         "version": 2,
         "max_component_chars": None,
@@ -1070,7 +1074,7 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
     assert hover["models"]["solver_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
     assert hover["models"]["reflection_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
 
-    assert hotpot["schema_version"] == 22
+    assert hotpot["schema_version"] == 23
     assert hotpot["optimizer"]["react_execution"]["completion"] == "explicit_finish"
     assert hotpot["optimizer"]["react_execution"]["max_iterations"] is None
     assert hotpot["optimizer"]["react_execution"]["max_tool_calls"] is None
@@ -1101,7 +1105,8 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
     assert hotpot["program"]["predictor_adapter"] == "dspy_chat_adapter"
     assert hotpot["program"]["dspy_runtime_version"] == "2.6.23"
     assert hotpot["program"]["dspy_runtime_commit"] == "62dc3b634d7dc0c4889abcf905cb4c391ea6b396"
-    assert hotpot["program"]["dspy_disk_cache"] is True
+    assert hotpot["program"]["cache_evaluation"] is False
+    assert hotpot["program"]["dspy_disk_cache"] is False
     assert hotpot["program"]["dspy_memory_cache"] is False
     assert hotpot["program"]["dspy_history"] is False
     assert hotpot["execution_runtime"] == {
@@ -1383,6 +1388,21 @@ def test_hover_react_v2_uses_an_experiment_seeded_controller_rng() -> None:
     assert vanilla_config.reflection.reflection_prompt_template == config.reflection.reflection_prompt_template
 
 
+@pytest.mark.parametrize("field", ["cache_evaluation", "dspy_disk_cache", "dspy_memory_cache"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_hotpot_rejects_changed_or_unrecorded_caching(tmp_path: Path, field: str, missing: bool) -> None:
+    """Reject checkpoints that could reuse earlier evaluations or model responses."""
+    contract = build_hotpotqa_run_contract("react_v2", _hotpot_args())
+    changed = deepcopy(contract)
+    if missing:
+        del changed["program"][field]
+    else:
+        changed["program"][field] = True
+    ensure_wikipedia_run_contract(tmp_path, changed)
+    with pytest.raises(ValueError, match="different Wikipedia benchmark configuration"):
+        ensure_wikipedia_run_contract(tmp_path, contract)
+
+
 def test_run_contract_rejects_drift_and_legacy_state(tmp_path: Path) -> None:
     """Accept exact resume state while rejecting drift and unversioned legacy state.
 
@@ -1489,7 +1509,7 @@ def test_stateless_action_menu_contract_matches_between_wikipedia_benchmarks() -
     expected = build_hotpotqa_run_contract("random", args)["optimizer"]["stateless_action_menu"]
 
     for build_contract, schema_version in (
-        (build_hotpotqa_run_contract, 22),
+        (build_hotpotqa_run_contract, 23),
         (build_hover_run_contract, 4),
     ):
         contract = build_contract("random", args)

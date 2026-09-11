@@ -7,6 +7,14 @@ at most three attempts for temporary provider failures, with per-attempt logs
 and nested SDK retries disabled. Completed answers and benchmark tasks are not
 retried by this policy.
 
+Evaluation-result caching is disabled for HotPotQA and TB2.1 across all methods
+and budgets. HotPotQA also disables DSPy's disk and memory response caches, so
+each newly requested evaluation runs the task model again. Completed checkpoint
+records and optimizer response journals remain available for recovery; they do
+not serve unrelated new evaluations. Cache settings are part of run identity,
+so HotPotQA's earlier cache-enabled checkpoints require a fresh campaign. The
+6,871/13,742-call budgets remain unchanged and now fund uncached evaluations.
+
 | Arm | Student and proposer | Serving |
 | --- | --- | --- |
 | Qwen | `Qwen/Qwen3.8-27B` | Local POSIT/vLLM |
