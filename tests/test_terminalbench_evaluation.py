@@ -150,7 +150,7 @@ def _fake_runner(manifest, comparison, output_dir: Path, *, fail_on_call: int | 
             trials=trials,
         )
 
-    return Mock(run=Mock(side_effect=run))
+    return Mock(manifest=manifest, run=Mock(side_effect=run))
 
 
 @pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
@@ -171,6 +171,10 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
         assert any(f"{condition}-winner" in text for text in comparison["harnesses"][condition]["documents"].values())
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir)
+    adapter = evaluate.TerminusAdapter(manifest, runner)
+    adapter_evaluate = Mock(wraps=adapter.evaluate)
+    monkeypatch.setattr(adapter, "evaluate", adapter_evaluate)
+    monkeypatch.setattr(evaluate, "TerminusAdapter", Mock(return_value=adapter))
     factory = Mock(return_value=runner)
     monkeypatch.setattr(evaluate, "HarborCLI", factory)
     monkeypatch.setattr(
@@ -186,6 +190,8 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
 
     evaluate.main()
     assert runner.run.call_count == 21
+    assert adapter_evaluate.call_count == 21
+    assert all(call.args[0] == manifest.tasks("test") for call in adapter_evaluate.call_args_list)
     summary = json.loads((output_dir / "summary.json").read_text())
     assert summary["complete"] is True
     assert summary["protocol"]["optimization_runs_per_configuration"] == 1
@@ -216,6 +222,7 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
     )
     evaluate.main()
     assert runner.run.call_count == 21
+    assert adapter_evaluate.call_count == 21
 
 
 @pytest.mark.parametrize(
@@ -419,6 +426,25 @@ def test_provider_retry_drift_cannot_resume_or_enter_final_test(tmp_path: Path, 
         del changed["provider_retry_policy"]
     else:
         changed["provider_retry_policy"]["max_attempts"] = 9
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+        ensure_run_contract(forest, original)
+    with pytest.raises(ValueError, match="expected a matching react_v2 run"):
+        evaluate.freeze_comparison(run_dirs)
+
+
+@pytest.mark.parametrize("damage", ["missing", "entry_point", "implementation", "upstream_commit"])
+def test_adapter_drift_cannot_resume_or_enter_final_test(tmp_path: Path, damage: str) -> None:
+    """Reject runs that omit or change the adapter implementation or upstream provenance."""
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
+    forest = run_dirs["react_v2"]
+    path = forest / RUN_CONTRACT_FILENAME
+    original = json.loads(path.read_text())
+    changed = json.loads(path.read_text())
+    if damage == "missing":
+        del changed["adapter"]
+    else:
+        changed["adapter"][damage] = "different-adapter"
     path.write_text(json.dumps(changed))
     with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
         ensure_run_contract(forest, original)

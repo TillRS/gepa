@@ -8,6 +8,37 @@ within each model arm.
 The pinned dataset has **89 tasks**, split into **30 training, 19 validation,
 and 40 test tasks**. Optimizers can revise all 14 prompts and two skill files.
 
+#### GEPA adapter provenance and TB2.1 compatibility
+
+The [GEPA blog](https://gepa-ai.github.io/gepa/blog/) links to the official
+[`TerminusAdapter` API reference](https://gepa-ai.github.io/gepa/api/adapters/TerminalBenchAdapter/).
+Its [upstream source](https://github.com/gepa-ai/gepa/blob/4f1613773d0c13c8f1551543a801b299bd8acf73/src/gepa/adapters/terminal_bench_adapter/terminal_bench_adapter.py)
+was verified on September 11, 2026: commit
+`4f1613773d0c13c8f1551543a801b299bd8acf73`, file blob
+`1786e06b8e4bdee4129d85521bca4a26fcab7c7e`.
+
+This fork maintains a **Harbor port of that adapter**, in the same GEPA module.
+It is not the unmodified upstream implementation or constructor API. The
+upstream runner targets legacy `tb run`, `terminal-bench-core@head`, and one
+`instruction_prompt`; replacing our port with that implementation would not
+support the approved TB2.1 dataset and full prompt-and-skill scope.
+
+| Adapter responsibility | Published upstream | This TB2.1 port |
+| --- | --- | --- |
+| Agent execution | Legacy `tb run` and Terminus wrapper | Pinned Harbor CLI and `PromptedTerminus` |
+| Editable text | One instruction prompt | All 14 prompts and two skills |
+| Scores and feedback | Passed parser checks, episode messages, success/failure text | Official verifier reward, ATIF traces, verifier diagnostics |
+| Execution errors | Result-reading errors become zero scores | Infrastructure or missing-evidence errors stop the run |
+
+Optimization, training pilots, and final evaluation all instantiate
+`gepa.adapters.terminal_bench_adapter.TerminusAdapter`; `TerminalBenchAdapter`
+remains an alias for existing callers. Final evaluation uses the adapter's
+evaluation path without constructing reflection feedback. There is no fallback
+to the legacy runner. Run contract version 27 and pilot configuration version 6
+record the adapter entry point, the explicit `harbor_port` implementation, and
+upstream provenance. Missing or changed adapter identity prevents optimization
+resume and final comparison; use fresh run directories for older contracts.
+
 #### Methods and campaign matrix
 
 Each model arm follows HotPotQA's six-configuration comparison:
@@ -245,8 +276,8 @@ separate policies above.
 Every physical attempt is recorded in `provider-attempts.jsonl` and in the
 existing `token-usage.jsonl` files, including failures with unknown usage.
 The two files describe the same requests, so their totals must not be added.
-The policy is pinned in run contract version 26 and pilot configuration version
-5; older or changed policies cannot resume or enter final evaluation.
+The policy is pinned in run contract version 27 and pilot configuration version
+6; older or changed policies cannot resume or enter final evaluation.
 
 #### Reference protocol and pending confirmation
 
@@ -355,7 +386,7 @@ counted for these fresh executions.
 Completed checkpoint records and optimizer response journals remain available
 for recovery of the same logical work. They do not supply results for unrelated
 new evaluations, and completed held-out repetitions remain resumable. Run
-contract version 26 records `cache_evaluation=false`, forwards it to GEPA, and
+contract version 27 records `cache_evaluation=false`, forwards it to GEPA, and
 rejects missing or changed policies on resume and before final comparison.
 
 #### Parent selection
@@ -375,7 +406,7 @@ The final winner remains the harness with the highest mean validation score.
 
 `candidate_selection_strategy="pareto"` and `frontier_type="instance"` are
 explicit run contract fields forwarded to the optimizer for every method and
-budget. Run contract version 26 rejects missing or changed parent-selection
+budget. Run contract version 27 rejects missing or changed parent-selection
 policies on resume and before final comparison.
 
 #### Proposal acceptance and validation
@@ -395,7 +426,7 @@ improvement or automatically replace the existing best harness.
 
 `acceptance_criterion="strict_improvement"` and
 `validation_evaluation="full_eval"` are explicit run contract fields and are
-forwarded to the optimizer. Run contract version 26 rejects missing or changed
+forwarded to the optimizer. Run contract version 27 rejects missing or changed
 policies on resume and before final comparison. This preserves the prior
 runtime defaults while making them part of the recorded experiment identity.
 

@@ -40,10 +40,11 @@ from examples.terminalbench.reflection import ComponentActionReflectionLM
 from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, observe_optimizer
 from gepa import optimize
 from gepa.adapters.terminal_bench_adapter import (
+    TERMINUS_ADAPTER_CONTRACT,
     HarborCLI,
-    TerminalBenchAdapter,
     TerminalBenchManifest,
     TerminalBenchTask,
+    TerminusAdapter,
     load_terminalbench_manifest,
 )
 from gepa.adapters.terminal_bench_adapter.documents import (
@@ -293,7 +294,8 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 26,
+        "schema_version": 27,
+        "adapter": deepcopy(TERMINUS_ADAPTER_CONTRACT),
         "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
         "token_limits": terminalbench_limits(args.student_model),
@@ -436,7 +438,7 @@ def main() -> None:
         text_limits=text_limits,
     )
     harbor.check_requirements()
-    adapter = TerminalBenchAdapter(manifest, harbor)
+    adapter = TerminusAdapter(manifest, harbor)
 
     reflection_lm_kwargs: dict[str, Any] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,

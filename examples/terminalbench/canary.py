@@ -19,7 +19,12 @@ from examples.terminalbench.model_settings import (
     terminalbench_model_info,
 )
 from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, summarize_usage
-from gepa.adapters.terminal_bench_adapter import HarborCLI, TerminalBenchAdapter, load_terminalbench_manifest
+from gepa.adapters.terminal_bench_adapter import (
+    TERMINUS_ADAPTER_CONTRACT,
+    HarborCLI,
+    TerminusAdapter,
+    load_terminalbench_manifest,
+)
 from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import TASK_CONTEXT_SETTINGS
 from gepa.strategies.text_limits import parse_text_limits, resolve_text_limits
 
@@ -72,7 +77,8 @@ def main() -> None:
     (args.output_dir / "canary-config.json").write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
+                "adapter": TERMINUS_ADAPTER_CONTRACT,
                 "provider_retry_policy": PROVIDER_RETRY_POLICY,
                 "experiment": args.experiment,
                 "split": "train",
@@ -94,7 +100,7 @@ def main() -> None:
         + "\n"
     )
     try:
-        batch = TerminalBenchAdapter(manifest, harbor).evaluate(tasks, candidate)
+        batch = TerminusAdapter(manifest, harbor).evaluate(tasks, candidate)
         (args.output_dir / "task-results.json").write_text(json.dumps(batch.outputs, indent=2) + "\n")
     finally:
         report = summarize_usage([args.output_dir / "harbor"])

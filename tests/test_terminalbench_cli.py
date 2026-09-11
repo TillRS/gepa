@@ -29,7 +29,11 @@ from examples.terminalbench.main import (
 )
 from examples.terminalbench.model_settings import terminalbench_decoding, terminalbench_limits, terminalbench_model_info
 from gepa import optimize
-from gepa.adapters.terminal_bench_adapter import load_terminalbench_manifest
+from gepa.adapters.terminal_bench_adapter import (
+    TERMINUS_ADAPTER_CONTRACT,
+    TerminusAdapter,
+    load_terminalbench_manifest,
+)
 from gepa.adapters.terminal_bench_adapter.documents import COMPONENT_KINDS
 from gepa.core.adapter import EvaluationBatch
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
@@ -179,7 +183,8 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 26
+    assert contract["schema_version"] == 27
+    assert contract["adapter"] == TERMINUS_ADAPTER_CONTRACT
     assert contract["task_context_settings"] == {
         "enable_summarize": True,
         "proactive_summarization_threshold": 8_000,
@@ -306,8 +311,10 @@ def test_provider_settings_reach_all_runtime_roles(
     requirements.assert_called_once_with()
     harbor_kwargs = harbor_factory.call_args.kwargs
     optimize_kwargs = optimizer.call_args.kwargs
+    assert type(optimize_kwargs["adapter"]) is TerminusAdapter
     assert harbor_kwargs["text_limits"] == optimize_kwargs["text_limits"] == limits
     saved = json.loads((tmp_path / "run" / terminalbench_main.RUN_CONTRACT_FILENAME).read_text())
+    assert saved["adapter"] == TERMINUS_ADAPTER_CONTRACT
     assert saved["text_limits"] == limits.to_dict()
     assert saved["reflection_feedback"]["max_chars_per_verifier_log"] == limits.verifier_log_chars
     student_kwargs = harbor_kwargs["student_agent_kwargs"]
@@ -489,7 +496,7 @@ def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
         results.append(optimize(**kwargs, display_progress_bar=False))
 
     monkeypatch.setattr(terminalbench_main.HarborCLI, "check_requirements", Mock())
-    monkeypatch.setattr(terminalbench_main, "TerminalBenchAdapter", lambda *args: BudgetAdapter())
+    monkeypatch.setattr(terminalbench_main, "TerminusAdapter", lambda *args: BudgetAdapter())
     monkeypatch.setattr(terminalbench_main, "optimize", optimize_offline)
     monkeypatch.setattr(
         sys,

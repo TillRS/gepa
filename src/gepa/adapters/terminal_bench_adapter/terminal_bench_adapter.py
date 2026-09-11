@@ -1,8 +1,10 @@
-"""Terminal-Bench 2.1 experiments backed by the pinned Harbor CLI.
+"""Port GEPA's TerminusAdapter to Terminal-Bench 2.1 and the pinned Harbor CLI.
 
 Harbor runs in a separate Python environment through a subprocess, so GEPA
 retains Python 3.10+ support. Harbor supplies the official Docker verifier and
-ATIF trajectories.
+ATIF trajectories. This maintained port replaces the upstream legacy ``tb run``
+transport and single-prompt feedback; see ``TERMINUS_ADAPTER_CONTRACT`` for its
+upstream source and the README for the compatibility differences.
 """
 
 from __future__ import annotations
@@ -92,6 +94,9 @@ class TerminalBenchOutput(TypedDict):
     rewards: dict[str, float]
     errors: list[str]
     evaluation_id: str
+    candidate_digest: str
+    job_dir: str
+    config_path: str
     harbor_returncode: int
     harbor_stdout_path: str
     harbor_stderr_path: str
@@ -930,8 +935,12 @@ class HarborCLI:
         )
 
 
-class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, TerminalBenchOutput]):
-    """Evaluate the selected text target with Terminus and official Harbor rewards.
+class TerminusAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, TerminalBenchOutput]):
+    """Evaluate prompts and skills through GEPA's Terminus adapter port for Harbor.
+
+    The upstream adapter name and GEPA evaluation/reflection interface are retained.
+    Its legacy runner, result parsing, and single-prompt feedback are replaced for
+    TB2.1; this is not the unmodified upstream implementation or constructor API.
 
     Args:
         manifest: Checked-in, validated experiment manifest.
@@ -964,7 +973,7 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
 
         Args:
             batch: Pinned task records.
-            candidate: The single system prompt or full prompt-and-skill bundle.
+            candidate: The full prompt-and-skill bundle.
             capture_traces: Whether to return full ATIF/result evidence to GEPA.
 
         Returns:
@@ -993,6 +1002,9 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
                 "rewards": trial.rewards,
                 "errors": errors,
                 "evaluation_id": evaluation.evaluation_id,
+                "candidate_digest": evaluation.candidate_digest,
+                "job_dir": str(evaluation.job_dir),
+                "config_path": str(evaluation.config_path),
                 "harbor_returncode": evaluation.returncode,
                 "harbor_stdout_path": str(evaluation.stdout_path),
                 "harbor_stderr_path": str(evaluation.stderr_path),
@@ -1094,4 +1106,17 @@ class TerminalBenchAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajector
         }
 
 
-TerminusAdapter = TerminalBenchAdapter
+TerminalBenchAdapter = TerminusAdapter
+
+TERMINUS_ADAPTER_CONTRACT = {
+    "version": 1,
+    "entry_point": f"{TerminusAdapter.__module__}.{TerminusAdapter.__qualname__}",
+    "implementation": "harbor_port",
+    "upstream_repository": "https://github.com/gepa-ai/gepa",
+    "upstream_commit": "4f1613773d0c13c8f1551543a801b299bd8acf73",
+    "upstream_path": "src/gepa/adapters/terminal_bench_adapter/terminal_bench_adapter.py",
+    "upstream_blob": "1786e06b8e4bdee4129d85521bca4a26fcab7c7e",
+    "upstream_class": "TerminusAdapter",
+    "runtime": "harbor_cli",
+    "harbor_version": PINNED_HARBOR_VERSION,
+}

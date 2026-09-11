@@ -21,6 +21,7 @@ from examples.terminalbench.model_settings import (
     terminalbench_model_info,
 )
 from examples.terminalbench.token_usage import observe_optimizer, record_usage, summarize_usage
+from gepa.adapters.terminal_bench_adapter import TERMINUS_ADAPTER_CONTRACT
 from gepa.core.adapter import EvaluationBatch
 from gepa.lm import LM
 from gepa.response_journal import response_journal_scope
@@ -151,7 +152,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
             raise RuntimeError("failed pilot")
         return EvaluationBatch(outputs=[{"task_id": task.task_id} for task in tasks], scores=[0.0] * len(tasks))
 
-    monkeypatch.setattr(canary.TerminalBenchAdapter, "evaluate", evaluate)
+    monkeypatch.setattr(canary.TerminusAdapter, "evaluate", evaluate)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -173,7 +174,8 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     else:
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
-    assert config["schema_version"] == 5
+    assert config["schema_version"] == 6
+    assert config["adapter"] == TERMINUS_ADAPTER_CONTRACT
     assert config["experiment"] == "tb2.1"
     assert config["task_context_settings"] == {
         "enable_summarize": True,

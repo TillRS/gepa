@@ -20,7 +20,12 @@ from examples.terminalbench.main import (
     TEST_REPETITIONS,
     build_run_contract,
 )
-from gepa.adapters.terminal_bench_adapter import HarborCLI, TerminalBenchManifest, load_terminalbench_manifest
+from gepa.adapters.terminal_bench_adapter import (
+    HarborCLI,
+    TerminalBenchManifest,
+    TerminusAdapter,
+    load_terminalbench_manifest,
+)
 from gepa.core.result import GEPAResult
 from gepa.core.state import GEPAState
 from gepa.strategies.text_limits import resolve_text_limits
@@ -182,6 +187,7 @@ def evaluate_comparison(
     Raises:
         ValueError: Frozen identity changed or saved test results are invalid.
     """
+    adapter = TerminusAdapter(manifest, harbor)
     output_dir.mkdir(parents=True, exist_ok=True)
     frozen_path = output_dir / FROZEN_COMPARISON_FILENAME
     if frozen_path.exists():
@@ -219,19 +225,20 @@ def evaluate_comparison(
         if (label, repetition) in records:
             continue
         print(f"Testing {label}, repetition {repetition}/{TEST_REPETITIONS} ({len(task_ids)} tasks)", flush=True)
-        evaluation = harbor.run(task_ids, comparison["harnesses"][label]["documents"])
+        batch = adapter.evaluate(manifest.tasks("test"), comparison["harnesses"][label]["documents"])
+        job = batch.outputs[0]
         record = {
             **identity,
-            "candidate_digest": evaluation.candidate_digest,
-            "evaluation_id": evaluation.evaluation_id,
-            "job_dir": str(evaluation.job_dir),
-            "config_path": str(evaluation.config_path),
-            "scores": {task_id: trial.reward for task_id, trial in evaluation.trials.items()},
+            "candidate_digest": job["candidate_digest"],
+            "evaluation_id": job["evaluation_id"],
+            "job_dir": job["job_dir"],
+            "config_path": job["config_path"],
+            "scores": {output["task_id"]: score for output, score in zip(batch.outputs, batch.scores, strict=True)},
         }
         _validate_repetition(record, identity, task_ids)
-        if evaluation.evaluation_id in seen_evaluations:
+        if record["evaluation_id"] in seen_evaluations:
             raise ValueError("Each test repetition must use a distinct Harbor evaluation")
-        seen_evaluations.add(evaluation.evaluation_id)
+        seen_evaluations.add(record["evaluation_id"])
         _write_json(output_dir / f"{label}-repetition-{repetition}.json", record)
         records[label, repetition] = record
 

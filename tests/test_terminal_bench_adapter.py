@@ -97,6 +97,7 @@ def _candidate(**documents: str) -> dict[str, str]:
 def test_terminus_adapter_alias_preserves_public_api() -> None:
     """Keep the documented pre-existing adapter name importable."""
     assert TerminusAdapter is TerminalBenchAdapter
+    assert TerminusAdapter.__name__ == "TerminusAdapter"
 
 
 def _write_job_result(job_dir: Path, task_count: int, *, errored_trials: int = 0) -> None:
@@ -556,6 +557,11 @@ def test_runner_isolates_candidates_and_adapter_maps_complete_evidence_by_task_i
     assert [output["task_id"] for output in evaluated.outputs] == [task.task_id for task in batch]
     assert evaluated.scores == [1.0, 0.0]
     assert evaluated.num_metric_calls == 2
+    for output in evaluated.outputs:
+        assert output["candidate_digest"] == manifest.candidate_digest(_candidate(instruction_prompt=SEED_PROMPT))
+        config = json.loads(Path(output["config_path"]).read_text())
+        assert Path(output["job_dir"]) == Path(config["jobs_dir"]) / config["job_name"]
+        assert output["evaluation_id"] == Path(output["config_path"]).parent.name
     assert evaluated.trajectories is not None
     assert [trajectory["task_id"] for trajectory in evaluated.trajectories] == [task.task_id for task in batch]
     assert all(
