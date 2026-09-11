@@ -488,7 +488,7 @@ def build_run_contract(condition: str, args) -> dict:
     reflection_role_decoding = None
     if condition in _REACT_V2_CONDITIONS:
         manifestor_decoding = deepcopy(reflection_decoding)
-        manifestor_decoding["temperature"] = 0
+        manifestor_decoding["temperature"] = float(experiment_decoding(args.reflection_model)["temperature"])
         reflection_role_decoding = {
             "controller": (
                 {
@@ -549,7 +549,7 @@ def build_run_contract(condition: str, args) -> dict:
         else:
             semantic_controller_policy = deepcopy(CONTROLLER_POLICY_CONTRACT)
     return {
-        "schema_version": 16,
+        "schema_version": 17,
         "benchmark": "hotpotqa-fullwiki-wiki17",
         "reference_artifact_commit": GEPA_ARTIFACT_COMMIT,
         "scientific_contract_enforced": scientific_contract,
@@ -1178,6 +1178,7 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
             controller_selection="uniform_random" if condition == "react_v2_random" else "verbalized",
             rng=random.Random(args.seed),
             manifestor_traces_chars=None,
+            manifestor_temperature=float(experiment_decoding(args.reflection_model)["temperature"]),
         )
 
     merge_config = None

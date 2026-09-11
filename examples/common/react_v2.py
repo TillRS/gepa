@@ -199,8 +199,9 @@ def build_react_v2_strategy(
     controller_selection: str = "verbalized",
     rng: random.Random | None = None,
     manifestor_traces_chars: int | None = MAX_TRACES_CHARS,
+    manifestor_temperature: float = 0.0,
 ) -> tuple[ThreeRoleReflectionLM, str]:
-    """Build Controller -> Manifestor -> ReAct V2 with deterministic guidance.
+    """Build Controller -> Manifestor -> ReAct V2 with explicit role settings.
 
     Args:
         reflection_model: Runtime model used by Manifestor and proposer, plus
@@ -217,6 +218,9 @@ def build_react_v2_strategy(
         rng: Optional Controller RNG kept separate from GEPA's engine RNG.
         manifestor_traces_chars: Trace character cap, or ``None`` to rely on
             the configured model's context window.
+        manifestor_temperature: Manifestor sampling temperature. Benchmarks
+            following provider guidance pass their model's recommended value;
+            the default preserves other callers' existing configuration.
 
     Returns:
         Configured three-role strategy and its resolved template family.
@@ -224,7 +228,7 @@ def build_react_v2_strategy(
     resolved_family = resolve_template_family(template_family, task_model)
     proposer_kwargs = dict(lm_kwargs)
     manifestor_kwargs = dict(lm_kwargs)
-    manifestor_kwargs["temperature"] = 0
+    manifestor_kwargs["temperature"] = manifestor_temperature
     if "response_journal_path" in lm_kwargs:
         proposer_kwargs["response_journal_namespace"] = "controller-proposer"
         manifestor_kwargs["response_journal_namespace"] = "manifestor"

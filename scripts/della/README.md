@@ -21,6 +21,15 @@ smaller than the model author's recommendation for unrestricted maximum reasonin
 See the [model card](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731)
 and [vLLM recipe](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash).
 
+HotPotQA uses provider-recommended thinking-mode temperatures for every role,
+including the Manifestor: 1.0 for both pinned models. The temperature policy
+prefers applicable task-specific provider guidance and otherwise uses the
+model/mode default. The [source review](../../examples/common/temperature_policy.md)
+records the factual-QA, terminal-agent, and optimizer-role decisions, with links
+to the exact checkpoint model cards. The prior Manifestor temperature of 0.0
+is superseded for HotPotQA, TB2, and TB4. Changed role settings require fresh
+run contracts and campaign checkpoints.
+
 After configuring `scripts/della/.env` from `.env.example`, prepare and submit:
 
 ```bash

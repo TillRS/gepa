@@ -253,6 +253,46 @@ def test_experiment_model_pairs_build_without_running_an_experiment(model: str, 
     }
 
 
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+@pytest.mark.parametrize(
+    ("budget", "condition"),
+    [
+        (budget, condition)
+        for budget, conditions in _SCIENTIFIC_CONDITIONS_BY_BUDGET.items()
+        for condition in conditions
+    ],
+)
+def test_hotpot_provider_temperature_reaches_every_model_role(model: str, budget: int, condition: str) -> None:
+    """Apply provider temperature through all six cells and persist the actual role values."""
+    args = _hotpot_args(solver_model=model, reflection_model=model, max_metric_calls=budget)
+    reflection_kwargs = {**experiment_decoding(model), **experiment_request_overrides(model)}
+    config, selector = build_hotpotqa_config(condition, args, reflection_kwargs)
+    contract = build_hotpotqa_run_contract(condition, args)
+    expected = experiment_decoding(model)["temperature"]
+
+    assert expected == 1.0
+    assert contract["models"]["solver_decoding"]["temperature"] == expected
+    assert config.reflection.reflection_lm_kwargs["temperature"] == expected
+    if selector is not None:
+        assert selector.lm.completion_kwargs["temperature"] == expected
+    strategy = config.reflection.reflection_strategy
+    if strategy is not None:
+        assert strategy.base_lm.completion_kwargs["temperature"] == expected
+        assert strategy.manifestor_lm.completion_kwargs["temperature"] == expected
+        assert contract["models"]["reflection_role_decoding"]["manifestor"]["requested"]["temperature"] == expected
+
+
+def test_hotpot_rejects_resume_with_the_previous_manifestor_temperature(tmp_path: Path) -> None:
+    """Prevent continuing a Manifestor-0.0 checkpoint under provider-temperature sampling."""
+    contract = build_hotpotqa_run_contract("react_v2", _hotpot_args())
+    old = deepcopy(contract)
+    old["models"]["reflection_role_decoding"]["manifestor"]["requested"]["temperature"] = 0.0
+    ensure_wikipedia_run_contract(tmp_path, old)
+
+    with pytest.raises(ValueError, match="different Wikipedia benchmark configuration"):
+        ensure_wikipedia_run_contract(tmp_path, contract)
+
+
 def _hotpot_args(**overrides):
     """Build a complete HotPotQA argument namespace with targeted overrides.
 
@@ -901,7 +941,7 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
     assert hover["models"]["solver_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
     assert hover["models"]["reflection_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
 
-    assert hotpot["schema_version"] == 16
+    assert hotpot["schema_version"] == 17
     assert hotpot["optimizer"]["manifestor_traces_chars"] is None
     assert hotpot["optimizer"]["reflection_context"]["version"] == 1
     assert hotpot["scientific_contract_enforced"] is False
@@ -1024,7 +1064,7 @@ def test_deepseek_contract_uses_the_deepseek_pair_and_local_request_settings() -
                 "provider_ignored_fields": [],
             },
             "manifestor": {
-                "requested": {**deepseek_decoding, "temperature": 0},
+                "requested": deepseek_decoding,
                 "provider_ignored_fields": [],
             },
             "react_v2_proposer": {
@@ -1196,6 +1236,7 @@ def test_hover_react_v2_uses_an_experiment_seeded_controller_rng() -> None:
     assert config.reflection.reflection_prompt_template == InstructionProposalSignature.default_prompt_template
     assert config.reflection.reflection_strategy is not None
     assert config.reflection.reflection_strategy.rng.getstate() == random.Random(19).getstate()
+    assert config.reflection.reflection_strategy.manifestor_lm.completion_kwargs["temperature"] == 0.0
     assert vanilla_config.engine.seed == config.engine.seed
     assert vanilla_config.engine.max_workers == config.engine.max_workers
     assert vanilla_config.engine.val_evaluation_policy == config.engine.val_evaluation_policy
@@ -1307,7 +1348,7 @@ def test_stateless_action_menu_contract_matches_between_wikipedia_benchmarks() -
     expected = build_hotpotqa_run_contract("random", args)["optimizer"]["stateless_action_menu"]
 
     for build_contract, schema_version in (
-        (build_hotpotqa_run_contract, 16),
+        (build_hotpotqa_run_contract, 17),
         (build_hover_run_contract, 4),
     ):
         contract = build_contract("random", args)
