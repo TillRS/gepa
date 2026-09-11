@@ -17,6 +17,9 @@ from examples.common.experiment_models import (
     QWEN3_8_27B_MODEL,
     QWEN3_8_27B_MODEL_INFO,
     experiment_decoding,
+    experiment_model_info,
+    experiment_model_version,
+    experiment_request_overrides,
 )
 from examples.terminalbench import main as terminalbench_main
 from examples.terminalbench.main import (
@@ -176,8 +179,9 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 14
+    assert contract["schema_version"] == 15
     assert contract["manifestor_traces_chars"] is None
+    assert contract["manifestor_temperature"] == 1.0
     assert contract["reflection_context"]["version"] == 1
     assert contract["failure_policy"]["accepted_trial_exceptions"] == ["AgentTimeoutError"]
     assert contract["failure_policy"]["harbor_max_retries"] == 0
@@ -222,10 +226,11 @@ def test_deepseek_run_contract_uses_the_separate_same_model_condition(tmp_path: 
 
 @pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
 @pytest.mark.parametrize("condition,budget", list(terminalbench_main.CAMPAIGN_CELLS.values()))
-def test_deepseek_settings_reach_both_runtime_roles(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, condition: str, budget: str
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+def test_provider_settings_reach_all_runtime_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, condition: str, budget: str, model: str
 ) -> None:
-    """Forward DeepSeek thinking and context settings through both experiment CLIs."""
+    """Forward each provider's sampling and thinking settings through every campaign cell."""
     requirements = Mock()
     monkeypatch.setattr(terminalbench_main.HarborCLI, "check_requirements", requirements)
     harbor_factory = Mock(wraps=terminalbench_main.HarborCLI)
@@ -244,9 +249,9 @@ def test_deepseek_settings_reach_both_runtime_roles(
             "--budget",
             budget,
             "--student-model",
-            DEEPSEEK_V4_FLASH_MODEL,
+            model,
             "--proposer-model",
-            DEEPSEEK_V4_FLASH_MODEL,
+            model,
             "--student-api-base",
             "http://localhost:8000/v1",
             "--proposer-api-base",
@@ -270,11 +275,15 @@ def test_deepseek_settings_reach_both_runtime_roles(
     harbor_kwargs = harbor_factory.call_args.kwargs
     optimize_kwargs = optimizer.call_args.kwargs
     student_kwargs = harbor_kwargs["student_agent_kwargs"]
-    expected_body = {"chat_template_kwargs": {"thinking": True, "reasoning_effort": "max"}}
-    assert harbor_kwargs["student_model"] == optimize_kwargs["reflection_lm"] == DEEPSEEK_V4_FLASH_MODEL
-    assert student_kwargs["model_info"] == DEEPSEEK_V4_FLASH_MODEL_INFO
-    assert student_kwargs["llm_kwargs"]["extra_body"] == expected_body
-    assert optimize_kwargs["reflection_lm_kwargs"]["extra_body"] == expected_body
+    expected_body = experiment_request_overrides(model).get("extra_body")
+    temperature = experiment_decoding(model)["temperature"]
+    assert temperature == 1.0
+    assert harbor_kwargs["student_model"] == optimize_kwargs["reflection_lm"] == model
+    assert student_kwargs["model_info"] == experiment_model_info(model)
+    assert student_kwargs["llm_kwargs"].get("extra_body") == expected_body
+    assert optimize_kwargs["reflection_lm_kwargs"].get("extra_body") == expected_body
+    assert student_kwargs["llm_kwargs"]["temperature"] == temperature
+    assert optimize_kwargs["reflection_lm_kwargs"]["temperature"] == temperature
     assert harbor_kwargs["student_api_base"] == optimize_kwargs["reflection_lm_kwargs"]["api_base"]
     assert len(optimize_kwargs["trainset"]) == len(optimize_kwargs["valset"]) == 1
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
@@ -283,19 +292,22 @@ def test_deepseek_settings_reach_both_runtime_roles(
     strategy = optimize_kwargs["reflection_strategy"]
     if condition in terminalbench_main.FOREST_CONDITIONS:
         assert strategy.controller_selection == ("uniform_random" if condition == "react_v2_random" else "verbalized")
-        assert strategy.base_lm.model == strategy.manifestor_lm.model == DEEPSEEK_V4_FLASH_MODEL
-        assert strategy.base_lm.completion_kwargs["extra_body"] == expected_body
+        assert strategy.base_lm.model == strategy.manifestor_lm.model == model
+        assert strategy.base_lm.completion_kwargs.get("extra_body") == expected_body
         assert strategy.base_lm.completion_kwargs["api_base"] == "http://localhost:8000/v1"
-        assert strategy.manifestor_lm.completion_kwargs["temperature"] == 0
+        assert strategy.base_lm.completion_kwargs["temperature"] == temperature
+        assert strategy.manifestor_lm.completion_kwargs["temperature"] == temperature
     elif condition == "action":
         assert isinstance(strategy, terminalbench_main.ComponentActionReflectionLM)
         for reflector in strategy.reflectors.values():
-            assert reflector.lm.model == reflector.action_selector.lm.model == DEEPSEEK_V4_FLASH_MODEL
+            assert reflector.lm.model == reflector.action_selector.lm.model == model
             assert (
-                reflector.lm.completion_kwargs["extra_body"]
-                == reflector.action_selector.lm.completion_kwargs["extra_body"]
+                reflector.lm.completion_kwargs.get("extra_body")
+                == reflector.action_selector.lm.completion_kwargs.get("extra_body")
                 == expected_body
             )
+            assert reflector.lm.completion_kwargs["temperature"] == temperature
+            assert reflector.action_selector.lm.completion_kwargs["temperature"] == temperature
             assert (
                 reflector.lm.completion_kwargs["api_base"] == reflector.action_selector.lm.completion_kwargs["api_base"]
             )
@@ -309,14 +321,13 @@ def test_deepseek_settings_reach_both_runtime_roles(
     contract = json.loads((tmp_path / "run" / "terminalbench-run-contract.json").read_text())
     assert contract["experiment"] == experiment
     assert contract["module_selector"] == optimize_kwargs["module_selector"]
+    assert contract["student_model_version"] == contract["proposer_model_version"] == experiment_model_version(model)
     assert (
-        contract["student_model_version"]
-        == contract["proposer_model_version"]
-        == ("7872f01b1d1fe23eabc4c98b48bffcef5a386062")
+        contract["student_request_overrides"]
+        == contract["proposer_request_overrides"]
+        == experiment_request_overrides(model)
     )
-    assert (
-        contract["student_request_overrides"] == contract["proposer_request_overrides"] == {"extra_body": expected_body}
-    )
+    assert contract["manifestor_temperature"] == temperature
 
 
 @pytest.mark.parametrize("experiment,iterations,padding", [("tb2", 40, 0), ("tb4", 32, 1)])

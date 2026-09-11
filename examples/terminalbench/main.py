@@ -264,7 +264,7 @@ def build_run_contract(
         UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT if condition == "react_v2_random" else CONTROLLER_POLICY_CONTRACT
     )
     return {
-        "schema_version": 14,
+        "schema_version": 15,
         "experiment": manifest.experiment,
         "optimization_target": "agent_text",
         "condition": condition,
@@ -286,6 +286,7 @@ def build_run_contract(
         "reflection_feedback": deepcopy(REFLECTION_FEEDBACK_CONTRACT),
         "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
         "manifestor_traces_chars": None,
+        "manifestor_temperature": float(experiment_decoding(args.proposer_model)["temperature"]),
         "failure_policy": deepcopy(FAILURE_POLICY_CONTRACT),
         "optimization_budget": {
             "unit": "training_epochs",
@@ -407,6 +408,7 @@ def main() -> None:
             controller_selection=contract["controller_selection"],
             rng=random.Random(args.seed),
             manifestor_traces_chars=None,
+            manifestor_temperature=contract["manifestor_temperature"],
         )
     elif condition == "action":
         reflection_strategy = ComponentActionReflectionLM(

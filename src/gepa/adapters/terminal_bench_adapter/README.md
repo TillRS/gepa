@@ -392,6 +392,14 @@ Use the same model and endpoint flags for `tb4`, with matching separate
 output paths. Model identity, checkpoint revision, and thinking settings are
 recorded in the resume contract; changing any of them requires a fresh run.
 
+Temperatures follow the model author's applicable task/mode guidance, with the
+general recommendation as the fallback. For both pinned thinking-mode models,
+the current recommendation is 1.0 for task execution and every optimizer role,
+including the Manifestor. The [provider source review](../../../../examples/common/temperature_policy.md)
+records the HotPotQA, TB2, TB4, Controller, Manifestor, and proposer mappings.
+The previous Manifestor-0.0 policy cannot resume or enter a final comparison
+under the new contract. These values apply at both optimization budgets.
+
 Offline tests in `tests/harbor/` exercise the shared actual agent loop for both benchmarks and Harbor job
 schemas with simulated model and terminal boundaries. They make no paid model
 calls and do not require Docker. The upstream prompt and adapted methods are

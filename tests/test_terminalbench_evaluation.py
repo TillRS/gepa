@@ -276,6 +276,7 @@ def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Pat
         "different_failure_policy",
         "different_context_policy",
         "manifestor_trace_cap",
+        "manifestor_temperature",
         "missing_failure_policy",
     ],
 )
@@ -311,6 +312,7 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
         "different_failure_policy",
         "different_context_policy",
         "manifestor_trace_cap",
+        "manifestor_temperature",
         "missing_failure_policy",
     }:
         path = forest / RUN_CONTRACT_FILENAME
@@ -331,6 +333,8 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
             contract["reflection_context"]["minimum_reference_chars"] = 8000
         elif damage == "manifestor_trace_cap":
             contract["manifestor_traces_chars"] = 8000
+        elif damage == "manifestor_temperature":
+            contract["manifestor_temperature"] = 0.0
         elif damage == "missing_failure_policy":
             del contract["failure_policy"]
         else:
