@@ -146,13 +146,17 @@ def test_run_runtime_canary_cycles_all_four_tools_for_twenty_attempts(monkeypatc
     api_base = "http://127.0.0.1:8000/v1"
     summary = runtime_canary.run_runtime_canary(model, api_base, 20)
 
-    resolve_kwargs.assert_called_once_with(model, api_base, "scientific")
-    lm_factory.assert_called_once_with(model, temperature=1.0, timeout=600)
+    resolve_kwargs.assert_called_once_with(model, api_base)
+    assert lm_factory.call_args.args == (model,)
+    assert lm_factory.call_args.kwargs["temperature"] == 1.0
+    assert lm_factory.call_args.kwargs["timeout"] == 600
+    assert lm_factory.call_args.kwargs["num_retries"] == lm_factory.call_args.kwargs["max_retries"] == 0
     ordinary_probe.assert_called_once_with(lm)
     continuation_probe.assert_called_once_with(lm)
     tools = EDIT_TOOL_SETS["broad"]
     assert edit_probe.call_args_list == [call(lm, tools[offset % len(tools)], offset + 1) for offset in range(20)]
     assert summary == {
+        "provider_retry_policy": runtime_canary.PROVIDER_RETRY_POLICY,
         "status": "passed",
         "model": model,
         "api_base": api_base,

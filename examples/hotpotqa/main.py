@@ -45,6 +45,7 @@ from examples.common.experiment_models import (
     validate_experiment_model_pair,
     validate_experiment_vllm_version,
 )
+from examples.common.provider_retries import PROVIDER_RETRY_POLICY, provider_retry_kwargs
 from examples.common.react_v2 import (
     benchmark_data_identity,
     build_react_v2_strategy,
@@ -556,7 +557,8 @@ def build_run_contract(condition: str, args) -> dict:
         else:
             semantic_controller_policy = deepcopy(CONTROLLER_POLICY_CONTRACT)
     return {
-        "schema_version": 21,
+        "schema_version": 22,
+        "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "benchmark": "hotpotqa-fullwiki-wiki17",
         "reference_artifact_commit": GEPA_ARTIFACT_COMMIT,
         "scientific_contract_enforced": scientific_contract,
@@ -1155,6 +1157,10 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
     _validate_scientific_contract(args)
     text_limits = resolve_text_limits(getattr(args, "text_limits", None))
     resolved_run_dir = run_dir or condition_run_dir(condition, args.program, args.tag, _run_key(condition, args))
+    reflection_lm_kwargs = {
+        **(reflection_lm_kwargs or {}),
+        **provider_retry_kwargs(Path(resolved_run_dir) / "provider-attempts.jsonl", "optimizer"),
+    }
     response_journal_path = os.path.join(resolved_run_dir, ".lm-response-journal", "responses.sqlite3")
     reflection_proposer_kwargs = deepcopy(reflection_lm_kwargs or {})
     reflection_proposer_kwargs["response_journal_path"] = response_journal_path
@@ -1495,15 +1501,6 @@ def main():
         args.reflection_model,
         reflection_api_base,
     )
-    evaluator = make_evaluator(
-        args.solver_model,
-        retriever,
-        api_base=solver_api_base,
-        program=args.program,
-        retrieval_k=args.retrieval_k,
-        solver_lm_kwargs=solver_lm_kwargs,
-    )
-
     if args.condition == "all" and args.enforce_scientific_contract:
         conditions = list(_SCIENTIFIC_CONDITIONS_BY_BUDGET[args.max_metric_calls])
     elif args.condition == "all":
@@ -1526,6 +1523,17 @@ def main():
         run_dir = condition_run_dir(condition, args.program, args.tag, _run_key(condition, args))
         run_dirs[condition] = run_dir
         ensure_wikipedia_run_contract(run_dir, run_contract)
+        evaluator = make_evaluator(
+            args.solver_model,
+            retriever,
+            api_base=solver_api_base,
+            program=args.program,
+            retrieval_k=args.retrieval_k,
+            solver_lm_kwargs={
+                **solver_lm_kwargs,
+                **provider_retry_kwargs(Path(run_dir) / "provider-attempts.jsonl", "solver"),
+            },
+        )
         config, selector = build_config(condition, args, reflection_lm_kwargs, run_dir=run_dir)
         trackers[condition] = ActionDiversityCallback(selector=selector)
         callbacks = [trackers[condition]]
@@ -1591,7 +1599,10 @@ def main():
             max_workers=args.max_workers,
             program=args.program,
             retrieval_k=args.retrieval_k,
-            solver_lm_kwargs=solver_lm_kwargs,
+            solver_lm_kwargs={
+                **solver_lm_kwargs,
+                **provider_retry_kwargs(Path(run_dirs[name]) / "provider-attempts.jsonl", "solver"),
+            },
             checkpoint_dir=Path(run_dirs[name]) / "heldout",
         )
         diversity = prompt_diversity(result.candidates)

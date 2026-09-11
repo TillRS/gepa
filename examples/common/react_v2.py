@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from examples.common.provider_retries import PROVIDER_RETRY_KEY
 from gepa.lm import LM
 from gepa.proposer.reflective_mutation.three_role import ThreeRoleReflectionLM
 from gepa.strategies.document_template import TEMPLATE_FAMILIES, infer_template_family
@@ -243,6 +244,13 @@ def build_react_v2_strategy(
         controller_kwargs["response_journal_namespace"] = "controller"
         proposer_kwargs["response_journal_namespace"] = "proposer" if separate_controller else "controller-proposer"
         manifestor_kwargs["response_journal_namespace"] = "manifestor"
+    if PROVIDER_RETRY_KEY in lm_kwargs:
+        for kwargs, role in (
+            (controller_kwargs, "controller"),
+            (proposer_kwargs, "editor" if separate_controller else "controller_editor"),
+            (manifestor_kwargs, "manifestor"),
+        ):
+            kwargs[PROVIDER_RETRY_KEY] = {**kwargs[PROVIDER_RETRY_KEY], "role": role}
     strategy = ThreeRoleReflectionLM(
         base_lm=LM(reflection_model, **proposer_kwargs),
         level=level,

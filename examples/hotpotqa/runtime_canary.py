@@ -6,9 +6,11 @@ import argparse
 import json
 import re
 from collections import Counter
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from examples.common.provider_retries import PROVIDER_RETRY_POLICY, provider_retry_kwargs
 from examples.hotpotqa.utils import resolve_hotpotqa_lm_kwargs
 from gepa.lm import LM, ToolCompletion
 from gepa.proposer.reflective_mutation.react_v2_proposer import ReActV2Proposer
@@ -293,13 +295,16 @@ def _edit_probe(lm: LM, tool: EditTool, attempt: int) -> None:
     _validate_edit_result(tool, result.new_text)
 
 
-def run_runtime_canary(model: str, api_base: str, attempts: int) -> dict[str, object]:
+def run_runtime_canary(
+    model: str, api_base: str, attempts: int, attempt_log: Path | None = None,
+) -> dict[str, object]:
     """Run the complete local completion and ReAct V2 compatibility gate.
 
     Args:
         model: Exact local LiteLLM model identifier served by the Slurm job.
         api_base: Local OpenAI-compatible /v1 endpoint.
         attempts: Number of representative four-tool-menu repetitions.
+        attempt_log: Optional destination for physical provider-attempt records.
 
     Returns:
         JSON-serializable pass summary with per-operator attempt counts.
@@ -314,7 +319,8 @@ def run_runtime_canary(model: str, api_base: str, attempts: int) -> dict[str, ob
         raise RuntimeCanaryError(
             f"The fail-closed runtime gate requires at least {_MINIMUM_ATTEMPTS} repetitions; received {attempts}."
         )
-    lm_kwargs = resolve_hotpotqa_lm_kwargs(model, api_base, "scientific")
+    lm_kwargs: dict[str, Any] = dict(resolve_hotpotqa_lm_kwargs(model, api_base))
+    lm_kwargs.update(provider_retry_kwargs(attempt_log, "runtime_canary"))
     lm_kwargs["timeout"] = _CANARY_TIMEOUT_SECONDS
     lm = LM(model, **lm_kwargs)
     _ordinary_completion_probe(lm)
@@ -333,6 +339,7 @@ def run_runtime_canary(model: str, api_base: str, attempts: int) -> dict[str, ob
         )
     return {
         "status": "passed",
+        "provider_retry_policy": PROVIDER_RETRY_POLICY,
         "model": model,
         "api_base": api_base,
         "attempts": attempts,
@@ -349,6 +356,7 @@ def main() -> None:
     )
     parser.add_argument("--model", required=True, help="Exact local LiteLLM model identifier")
     parser.add_argument("--api-base", required=True, help="Local OpenAI-compatible /v1 endpoint")
+    parser.add_argument("--attempt-log", type=Path, help="JSONL destination for provider attempts")
     parser.add_argument(
         "--attempts",
         required=True,
@@ -357,7 +365,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
-        summary = run_runtime_canary(args.model, args.api_base, args.attempts)
+        summary = run_runtime_canary(args.model, args.api_base, args.attempts, args.attempt_log)
     except (RuntimeError, ValueError, TypeError) as exc:
         parser.exit(1, f"Runtime canary failed: {exc}\n")
     print(json.dumps(summary, indent=2, sort_keys=True))

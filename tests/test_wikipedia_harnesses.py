@@ -1,5 +1,6 @@
 """Tests for the Wikipedia-backed HotPotQA and HOVER runners."""
 
+import asyncio
 import fcntl
 import json
 import random
@@ -7,14 +8,16 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, call
+from unittest.mock import AsyncMock, Mock, call
 
 import datasets
+import litellm
 import pytest
 from litellm.utils import get_optional_params
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
+from examples.common import provider_retries
 from examples.common.experiment_models import (
     DEEPSEEK_V4_FLASH_MODEL,
     EXPERIMENT_NUM_RETRIES,
@@ -101,7 +104,9 @@ def test_hotpot_lm_uses_local_campaign_decoding(monkeypatch, model: str) -> None
         **experiment_request_overrides(model, explicit_reasoning=True),
     }
     expected_request["seed"] = hotpot_utils.HOTPOTQA_SCIENTIFIC_REQUEST_SEED
-    assert {key: value for key, value in calls[0].items() if key not in {"model", "messages"}} == expected_request
+    assert {key: value for key, value in calls[0].items() if key not in {"model", "messages"}} == {
+        **expected_request, "max_retries": 0,
+    }
     assert calls[0].get("extra_body") == experiment_request_overrides(model, explicit_reasoning=True).get("extra_body")
 
 
@@ -434,6 +439,32 @@ def test_hotpot_heldout_evaluation_scores_only_task_parse_errors_as_zero(monkeyp
             max_workers=1,
             checkpoint_dir=tmp_path,
         )
+
+
+@pytest.mark.skipif(hotpot_utils.dspy is None, reason="HotPotQA's locked DSPy group is not installed")
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_real_dspy_provider_requests_use_three_attempts(tmp_path, monkeypatch, model, asynchronous):
+    """Exercise the pinned DSPy transport with the same bounded retry policy."""
+    raw = litellm.ModelResponse(
+        model=model,
+        choices=[{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+    )
+    outcomes = [ConnectionError("temporary"), ConnectionError("temporary"), raw]
+    provider = AsyncMock(side_effect=outcomes) if asynchronous else Mock(side_effect=outcomes)
+    monkeypatch.setattr(litellm, "acompletion" if asynchronous else "completion", provider)
+    monkeypatch.setattr(provider_retries.time, "sleep", Mock())
+    monkeypatch.setattr(provider_retries.asyncio, "sleep", AsyncMock())
+    path = tmp_path / "provider-attempts.jsonl"
+    settings = hotpot_utils.resolve_hotpotqa_lm_kwargs(model, "http://localhost:8000/v1")
+    settings.update(provider_retries.provider_retry_kwargs(path, "solver"))
+    lm = hotpot_utils.build_hotpotqa_task_lm(model, None, settings)
+    result = asyncio.run(lm.aforward(prompt="test", cache=False)) if asynchronous else lm.forward(prompt="test", cache=False)
+    assert result.choices[0].message.content == "done"
+    assert provider.call_count == 3
+    assert all(call.kwargs["num_retries"] == call.kwargs["max_retries"] == 0 for call in provider.call_args_list)
+    assert len(path.read_text().splitlines()) == 3
 
 
 @pytest.mark.skipif(hotpot_utils.dspy is None, reason="HotPotQA's locked DSPy group is not installed")
