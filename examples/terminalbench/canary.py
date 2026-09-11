@@ -11,6 +11,7 @@ from examples.common.experiment_models import (
     experiment_model_version,
     experiment_request_overrides,
 )
+from examples.common.provider_retries import PROVIDER_RETRY_POLICY
 from examples.terminalbench.main import EXPERIMENT_MANIFESTS, REPO_ROOT, seed_candidate
 from examples.terminalbench.model_settings import (
     terminalbench_decoding,
@@ -71,7 +72,8 @@ def main() -> None:
     (args.output_dir / "canary-config.json").write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 5,
+                "provider_retry_policy": PROVIDER_RETRY_POLICY,
                 "experiment": args.experiment,
                 "split": "train",
                 "n_concurrent": args.n_concurrent,

@@ -1070,7 +1070,7 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
     assert hover["models"]["solver_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
     assert hover["models"]["reflection_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
 
-    assert hotpot["schema_version"] == 21
+    assert hotpot["schema_version"] == 22
     assert hotpot["optimizer"]["react_execution"]["completion"] == "explicit_finish"
     assert hotpot["optimizer"]["react_execution"]["max_iterations"] is None
     assert hotpot["optimizer"]["react_execution"]["max_tool_calls"] is None
@@ -1397,6 +1397,15 @@ def test_run_contract_rejects_drift_and_legacy_state(tmp_path: Path) -> None:
     assert ensure_wikipedia_run_contract(run_dir, contract) == path
     with pytest.raises(ValueError, match="different Wikipedia benchmark configuration"):
         ensure_wikipedia_run_contract(run_dir, {**contract, "tag": "drift"})
+    assert contract["provider_retry_policy"]["max_attempts"] == 3
+    for missing in (True, False):
+        changed = deepcopy(contract)
+        if missing:
+            del changed["provider_retry_policy"]
+        else:
+            changed["provider_retry_policy"]["max_attempts"] = 9
+        with pytest.raises(ValueError, match="different Wikipedia benchmark configuration"):
+            ensure_wikipedia_run_contract(run_dir, changed)
 
     legacy_dir = tmp_path / "legacy"
     legacy_dir.mkdir()
@@ -1480,7 +1489,7 @@ def test_stateless_action_menu_contract_matches_between_wikipedia_benchmarks() -
     expected = build_hotpotqa_run_contract("random", args)["optimizer"]["stateless_action_menu"]
 
     for build_contract, schema_version in (
-        (build_hotpotqa_run_contract, 21),
+        (build_hotpotqa_run_contract, 22),
         (build_hover_run_contract, 4),
     ):
         contract = build_contract("random", args)

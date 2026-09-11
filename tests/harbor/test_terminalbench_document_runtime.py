@@ -45,8 +45,10 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     candidate = {name: text + f"\nSENTINEL_{name} {{literal}}" for name, text in seed_documents("generic").items()}
     bundle = write_document_bundle(tmp_path, candidate)
     model = SimpleNamespace(
+        _llm_kwargs={},
         call=AsyncMock(), get_model_context_limit=lambda: 32768, get_model_output_limit=lambda: 4096
     )
+    model_call = model.call
     monkeypatch.setattr(Terminus2, "_init_llm", Mock(return_value=model))
     root = Path(__file__).parents[2]
     manifest = load_terminalbench_manifest(root / "examples/terminalbench/terminalbench-v2.1-manifest.json")
@@ -65,6 +67,7 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
         model_name=settings["model_name"],
         **{**settings["kwargs"], "record_terminal_session": False},
     )
+    model.call = model_call
     return agent, candidate, model, tmp_path
 
 

@@ -115,12 +115,17 @@ def test_cli_gives_both_methods_the_same_documents_and_runtime(
         "trainset",
         "valset",
         "max_metric_calls",
-        "reflection_lm_kwargs",
         "template_family",
     ):
         assert vanilla[key] == forest[key]
     assert vanilla["reflection_lm"].model == forest["reflection_lm"].model
-    assert vanilla["reflection_lm"].completion_kwargs == forest["reflection_lm"].completion_kwargs
+    for field in ("reflection_lm_kwargs", "completion_kwargs"):
+        settings = [item[field] if field == "reflection_lm_kwargs" else item["reflection_lm"].completion_kwargs for item in (vanilla, forest)]
+        assert {key: value for key, value in settings[0].items() if key != "_gepa_provider_retry"} == {
+            key: value for key, value in settings[1].items() if key != "_gepa_provider_retry"
+        }
+        for condition, kwargs in zip(("vanilla", "react_v2"), settings, strict=True):
+            assert kwargs["_gepa_provider_retry"]["log_path"] == str(tmp_path / condition / "provider-attempts.jsonl")
     assert forest["reflection_strategy"].react_max_iterations is None
     assert forest["reflection_strategy"].react_max_tool_calls is None
     assert vanilla["reflection_level"] == 0

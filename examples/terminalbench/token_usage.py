@@ -10,12 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from examples.common.provider_retries import PROVIDER_RETRY_KEY, provider_retry_kwargs
+
 TOKEN_USAGE_POLICY = {
-    "schema_version": 1,
+    "schema_version": 2,
     "counts": "provider_reported_only",
     "missing_counts": "null",
     "length_finish": "provider_length_finish_not_inferred_from_text",
-    "scope": "returned_live_completions_and_harbor_provider_errors",
+    "scope": "every_live_provider_attempt_including_errors",
     "journal_replays": "excluded",
     "raw_text": False,
 }
@@ -72,7 +74,7 @@ def record_usage(
 
 
 def observe_optimizer(lm: Any, path: Path, role: str, limits: dict[str, Any]) -> Any:
-    """Observe GEPA's live completion hook while preserving its journal replay.
+    """Record every optimizer transport attempt while preserving journal replay.
 
     Args:
         lm: Existing GEPA LM; shared role clients must be attached only once.
@@ -81,43 +83,25 @@ def observe_optimizer(lm: Any, path: Path, role: str, limits: dict[str, Any]) ->
         limits: Serving and generation limits for the model arm.
 
     Returns:
-        The same client with unchanged requests, outputs, and cost accounting.
+        The same client with the approved retry and raw-usage policy.
     """
-    # Plain, tool, and batch completions share this hook; journal replay bypasses it.
-    original = lm._capture_and_validate_response_identity
-
-    def record(response: Any) -> Any:
-        """Keep raw limit evidence even if response validation subsequently fails."""
-        record_usage(path, role, lm.model, limits, response)
-        return original(response)
-
-    lm._capture_and_validate_response_identity = record
+    settings = provider_retry_kwargs(path.with_name("provider-attempts.jsonl"), role)
+    settings[PROVIDER_RETRY_KEY].update(token_usage_log=str(path), token_limits=limits)
+    lm.completion_kwargs.update(settings)
     return lm
 
 
 def observe_harbor(llm: Any, path: Path, limits: dict[str, Any]) -> None:
-    """Observe pinned Harbor hooks before truncation handling discards usage.
+    """Record each Harbor transport attempt before parsing or length recovery.
 
     Args:
         llm: Harbor 0.22.0 LiteLLM instance shared by main and summary calls.
         path: Trial-local usage log.
         limits: Effective model limits.
     """
-    original_usage = llm._extract_usage_info
-    original_error = llm._handle_litellm_error
-
-    def record(response: Any) -> Any:
-        """Record one raw completion, including responses ending at a limit."""
-        record_usage(path, "task_agent", llm._model_name, limits, response)
-        return original_usage(response)
-
-    def record_error(error: Exception) -> Any:
-        """Preserve the provider error type without changing Harbor recovery."""
-        record_usage(path, "task_agent", llm._model_name, limits, error=error)
-        return original_error(error)
-
-    llm._extract_usage_info = record
-    llm._handle_litellm_error = record_error
+    settings = provider_retry_kwargs(path.with_name("provider-attempts.jsonl"), "task_agent")
+    settings[PROVIDER_RETRY_KEY].update(token_usage_log=str(path), token_limits=limits)
+    llm._llm_kwargs.update(settings)
 
 
 def summarize_usage(paths: list[Path]) -> dict[str, Any]:

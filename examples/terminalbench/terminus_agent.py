@@ -1,8 +1,9 @@
 """Apply candidate documents inside Harbor 0.22.0's Terminus agent.
 
-The summarization and retry methods are adapted from harbor-framework/harbor
+The summarization and recovery methods are adapted from harbor-framework/harbor
 v0.22.0, src/harbor/agents/terminus_2/terminus_2.py (Apache-2.0). They retain
-Harbor's control flow while routing instructions through the document bundle.
+the document and context flow while the shared provider policy replaces nested
+transport retries and propagates exhausted provider requests.
 See HARBOR_LICENSE for the upstream license.
 This module deliberately has no GEPA imports: Harbor uses its own interpreter.
 """
@@ -15,7 +16,8 @@ import time
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, cast
+from types import MethodType
+from typing import Any, NoReturn, cast
 
 from harbor.agents.terminus_2 import Terminus2
 from harbor.agents.terminus_2.tmux_session import TmuxSession
@@ -24,8 +26,14 @@ from harbor.llms.base import ContextLengthExceededError, LLMResponse, OutputLeng
 from harbor.llms.chat import Chat
 from harbor.llms.lite_llm import LiteLLM
 from harbor.models.trajectories import Step, SubagentTrajectoryRef
-from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
+from litellm.exceptions import BadRequestError
 
+from examples.common.provider_retries import (
+    PROVIDER_RETRY_KEY,
+    ProviderRequestError,
+    is_provider_request_error,
+    provider_retry_kwargs,
+)
 from examples.terminalbench.token_usage import observe_harbor
 
 
@@ -75,9 +83,26 @@ class PromptedTerminus(Terminus2):
         if requested_model != kwargs.get("model_name", ""):
             self._model_name = requested_model
             cast(LiteLLM, self._llm)._model_name = requested_model
+        llm = cast(LiteLLM, self._llm)
+        llm._llm_kwargs.update(provider_retry_kwargs(logs_dir / "provider-attempts.jsonl", "task_agent"))
+        # The transport wrapper owns all retries; Harbor's decorator would multiply them.
+        llm.call = MethodType(cast(Any, LiteLLM.call).__wrapped__, llm)
+
+        def translate_error(e: Exception) -> NoReturn:
+            """Preserve Harbor's recognition of context errors in HTTP 400 bodies."""
+            cause = e.__cause__
+            if isinstance(e, ProviderRequestError) and isinstance(cause, BadRequestError):
+                if llm._is_context_length_error(cause):
+                    raise ContextLengthExceededError from cause
+            LiteLLM._handle_litellm_error(llm, e)
+
+        llm._handle_litellm_error = translate_error
         logs_dir.mkdir(parents=True, exist_ok=True)
         if token_limits is not None:
             observe_harbor(self._llm, logs_dir / "token-usage.jsonl", token_limits)
+        self._llm_call_kwargs.update({
+            key: llm._llm_kwargs[key] for key in (PROVIDER_RETRY_KEY, "num_retries", "max_retries")
+        })
         (logs_dir / "document-bundle.json").write_text(self._bundle_path.read_text(encoding="utf-8"), encoding="utf-8")
 
     def _document(self, component: str, **fields: str) -> str:
@@ -244,11 +269,20 @@ class PromptedTerminus(Terminus2):
         handoff_prompt = self._document("handoff", answers=answers_response.content)
         return (handoff_prompt, subagent_trajectory_refs)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        retry=retry_if_not_exception_type(ContextLengthExceededError) & retry_if_exception_type(Exception),
-        reraise=True,
-    )
+    async def _check_proactive_summarization(
+        self, chat: Chat, original_instruction: str, session: TmuxSession,
+    ) -> tuple[str, list[SubagentTrajectoryRef] | None] | None:
+        """Keep Harbor's trigger while propagating exhausted provider requests."""
+        free_tokens = self._llm.get_model_context_limit() - self._count_total_tokens(chat)
+        if free_tokens < self._proactive_summarization_threshold:
+            try:
+                return await self._summarize(chat, original_instruction, session)
+            except Exception as error:
+                if is_provider_request_error(error):
+                    raise
+                self.logger.error(f"Error in proactively summarizing: {error}")
+        return None
+
     async def _query_llm(
         self, chat: Chat, prompt: str, original_instruction: str = "", session: TmuxSession | None = None
     ) -> LLMResponse:
@@ -261,7 +295,7 @@ class PromptedTerminus(Terminus2):
             session: Terminal session used during context recovery.
 
         Returns:
-            Model response following Harbor's existing retry policy.
+            Model response following the shared provider-attempt policy.
 
         Raises:
             ContextLengthExceededError: Summarization is disabled.
@@ -289,6 +323,8 @@ class PromptedTerminus(Terminus2):
                 self._pending_handoff_prompt = summary_prompt
                 self.logger.debug("SUMMARIZATION: Full summary succeeded")
             except Exception as e:
+                if is_provider_request_error(e):
+                    raise
                 self.logger.debug(f"SUMMARIZATION: Full summary failed: {e}")
             if summary_prompt is None:
                 try:
@@ -307,6 +343,8 @@ class PromptedTerminus(Terminus2):
                     )
                     self.logger.debug("SUMMARIZATION: Short summary succeeded")
                 except Exception as e:
+                    if is_provider_request_error(e):
+                        raise
                     self.logger.error(f"SUMMARIZATION: Short summary failed: {e}")
             if summary_prompt is None:
                 self.logger.debug("SUMMARIZATION: Using ultimate fallback")
@@ -325,6 +363,8 @@ class PromptedTerminus(Terminus2):
                 request_time_ms = (end_time - start_time) * 1000
                 self._api_request_times.append(request_time_ms)
             except Exception as e:
+                if is_provider_request_error(e):
+                    raise
                 self.logger.error(f"Even fallback chat failed: {e}")
                 llm_response = LLMResponse(content="Technical difficulties. Please continue with the task.")
             return llm_response

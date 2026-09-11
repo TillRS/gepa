@@ -74,14 +74,15 @@ def test_report_keeps_unknown_usage_and_distinguishes_caps_from_cutoffs(tmp_path
 
 
 @pytest.mark.parametrize("mode", ["plain", "tools", "batch"])
+@pytest.mark.parametrize("failures", [0, 2])
 def test_optimizer_usage_records_live_responses_once_and_excludes_journal_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, failures: int
 ) -> None:
     """Exercise real GEPA clients, request ceilings, usage accounting, and replay."""
     model = EXPERIMENT_MODELS[0]
     raw = response(model, 32_768, "length", 30_000)
-    provider = Mock(return_value=[raw] if mode == "batch" else raw)
-    monkeypatch.setattr(litellm, "batch_completion" if mode == "batch" else "completion", provider)
+    provider = Mock(side_effect=[ConnectionError("temporary")] * failures + [raw])
+    monkeypatch.setattr(litellm, "completion", provider)
     monkeypatch.setattr(litellm, "completion_cost", Mock(return_value=0.25))
     path = tmp_path / "token-usage.jsonl"
     for _ in range(2):
@@ -108,11 +109,12 @@ def test_optimizer_usage_records_live_responses_once_and_excludes_journal_replay
                 assert lm.batch_complete([[{"role": "user", "content": "input"}]]) == ["private model text"]
         assert lm.total_tokens_out == 32_768
         assert lm.total_cost == 0.25
-    provider.assert_called_once()
+    assert provider.call_count == failures + 1
     assert provider.call_args.kwargs["max_tokens"] == 32_768
     records = [json.loads(line) for line in path.read_text().splitlines()]
-    assert len(records) == 1
-    assert records[0]["length_finish"] and records[0]["reasoning_tokens"] == 30_000
+    assert len(records) == failures + 1
+    assert records[-1]["length_finish"] and records[-1]["reasoning_tokens"] == 30_000
+    assert all(record["completion_tokens"] is None for record in records[:-1])
 
 
 @pytest.mark.parametrize("experiment", [None, "tb2.1"])
@@ -171,7 +173,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     else:
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
-    assert config["schema_version"] == 4
+    assert config["schema_version"] == 5
     assert config["experiment"] == "tb2.1"
     assert config["task_context_settings"] == {
         "enable_summarize": True,

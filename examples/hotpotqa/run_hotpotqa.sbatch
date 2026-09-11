@@ -591,7 +591,8 @@ if [[ "${MODEL_PROFILE}" == "deepseek-v4-flash" ]]; then
         "${PY}" -m examples.hotpotqa.runtime_canary \
             --model "${SOLVER_MODEL}" \
             --api-base "${SOLVER_API_BASE}" \
-            --attempts 20
+            --attempts 20 \
+            --attempt-log "${LOG_DIR}/provider-attempts-${SLURM_JOB_ID:-local}.jsonl"
         if ! kill -0 "${GEN_PID}" 2>/dev/null || ! generator_reports_expected_model; then
             echo "ERROR: DeepSeek endpoint failed after the runtime canary" >&2
             exit 1
@@ -619,7 +620,7 @@ from gepa.lm import LM
 
 model = sys.argv[1]
 api_base = sys.argv[2] or None
-kwargs = resolve_hotpotqa_lm_kwargs(model, api_base, "scientific")
+kwargs = resolve_hotpotqa_lm_kwargs(model, api_base)
 completion = LM(model, **kwargs).complete_with_tools(
     [{"role": "user", "content": "Call the echo function exactly once with value ready."}],
     [

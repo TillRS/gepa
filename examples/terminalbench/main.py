@@ -29,6 +29,7 @@ from examples.common.experiment_models import (
     experiment_request_overrides,
     validate_experiment_model_pair,
 )
+from examples.common.provider_retries import PROVIDER_RETRY_POLICY, provider_retry_kwargs
 from examples.common.react_v2 import build_react_v2_strategy, resolve_template_family
 from examples.terminalbench.model_settings import (
     terminalbench_decoding,
@@ -292,7 +293,8 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 22,
+        "schema_version": 23,
+        "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
         "token_limits": terminalbench_limits(args.student_model),
         "token_usage_policy": deepcopy(TOKEN_USAGE_POLICY),
@@ -433,6 +435,7 @@ def main() -> None:
 
     reflection_lm_kwargs: dict[str, Any] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
+        **provider_retry_kwargs(args.run_dir / "provider-attempts.jsonl", "optimizer"),
         **terminalbench_decoding(args.proposer_model, agentic=False),
         **experiment_request_overrides(args.proposer_model, explicit_reasoning=True),
     }

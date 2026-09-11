@@ -2,6 +2,11 @@
 
 Every benchmark arm uses the same model for execution and optimization:
 
+Every model role uses the shared [provider retry policy](../../examples/common/provider_retries.md):
+at most three attempts for temporary provider failures, with per-attempt logs
+and nested SDK retries disabled. Completed answers and benchmark tasks are not
+retried by this policy.
+
 | Arm | Student and proposer | Serving |
 | --- | --- | --- |
 | Qwen | `Qwen/Qwen3.8-27B` | Local POSIT/vLLM |

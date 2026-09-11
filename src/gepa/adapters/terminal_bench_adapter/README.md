@@ -233,6 +233,21 @@ inferred from `total_metric_calls`; unavailable usage is not zero cost.
 Run contracts pin this policy and reject earlier or changed policies on resume
 and when freezing final comparisons.
 
+Model requests use the shared [provider retry policy](../../../../examples/common/provider_retries.md):
+at most three attempts for temporary connection/server failures, with one- and
+two-second backoff. An explicit request timeout covers all attempts together.
+Permanent request errors stop immediately. Both SDK retry settings remain zero,
+and Harbor's nested retry decorators are bypassed so they cannot multiply the
+three-attempt allowance. Exhausted summary and context-recovery requests stop
+the run. Completed task scores and FOREST tool-error correction keep their
+separate policies above.
+
+Every physical attempt is recorded in `provider-attempts.jsonl` and in the
+existing `token-usage.jsonl` files, including failures with unknown usage.
+The two files describe the same requests, so their totals must not be added.
+The policy is pinned in run contract version 23 and pilot configuration version
+5; older or changed policies cannot resume or enter final evaluation.
+
 #### Reference protocol and pending confirmation
 
 The working decision is to optimize the full text surface on TB2.1. The
@@ -547,12 +562,13 @@ which limit caused the cutoff. Missing usage or finish reasons stay unknown
 and get separate unreported counts. Inspect those counts and the file list;
 an empty report is not evidence of zero usage or no cutoffs.
 
-Optimizer observation covers returned plain, tool, and batch completions;
+Optimizer observation covers plain, tool, and individual batch requests;
 response-journal replay does not count as another physical call. A shared Qwen
 Controller/editor client is reported as `controller-proposer`. Harbor records
 provider responses before truncation recovery, plus provider-error types.
-Optimizer provider errors and killed requests that return no completion have
-no usage record; their consumption is unknown. This log contains no prompt or
+Provider errors and cooperative cancellations retain an attempt record with
+unknown counts when none were returned. A process killed before logging can
+still leave consumption unrecorded. This log contains no prompt or
 response text, and raw execution evidence remains in the original artifacts.
 Caps and observation policy are part of run identity, so older 16,384-token
 Terminal-Bench runs cannot resume or enter the new final comparison unchanged.

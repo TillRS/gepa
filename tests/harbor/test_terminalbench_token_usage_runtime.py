@@ -11,10 +11,13 @@ import pytest
 pytest.importorskip("harbor.agents.terminus_2")
 
 import litellm
+from harbor.llms.base import ContextLengthExceededError
 from harbor.llms.chat import Chat
 from harbor.models.trajectories import Step
 
+from examples.common import provider_retries
 from examples.common.experiment_models import EXPERIMENT_MODELS, experiment_request_overrides
+from examples.common.provider_retries import ProviderRequestError, install_provider_retries
 from examples.terminalbench.model_settings import terminalbench_decoding, terminalbench_limits, terminalbench_model_info
 from examples.terminalbench.terminus_agent import PromptedTerminus
 from gepa.adapters.terminal_bench_adapter.documents import seed_documents, write_document_bundle
@@ -43,6 +46,8 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
     provider = AsyncMock()
     monkeypatch.setattr(litellm, "acompletion", provider)
     monkeypatch.setattr(litellm, "completion_cost", Mock(return_value=0.0))
+    monkeypatch.setattr(provider_retries.asyncio, "sleep", AsyncMock())
+    install_provider_retries()
     return agent, provider, tmp_path, model
 
 
@@ -109,10 +114,81 @@ def test_provider_failure_retains_unknown_usage_and_original_error(runtime: tupl
     agent, provider, root, model = runtime
     error = litellm.AuthenticationError(message="private error", model=model, llm_provider="hosted_vllm")
     provider.side_effect = error
-    with pytest.raises(litellm.AuthenticationError):
+    with pytest.raises(ProviderRequestError):
         asyncio.run(agent._llm.call("input"))
     provider.assert_called_once()
     record = json.loads((root / "logs" / "token-usage.jsonl").read_text())
     assert record["error_type"] == "AuthenticationError"
     assert record["completion_tokens"] is record["prompt_tokens"] is record["length_finish"] is None
     assert "private error" not in json.dumps(record)
+
+
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_main_agent_provider_retries_do_not_multiply(runtime: tuple, succeeds: bool) -> None:
+    """Count real transport attempts across both formerly nested Harbor layers."""
+    agent, provider, root, model = runtime
+    error = litellm.ServiceUnavailableError(message="private error", model=model, llm_provider="hosted_vllm")
+    provider.side_effect = [error, error, response(model, "done") if succeeds else error]
+    if succeeds:
+        assert asyncio.run(agent._query_llm(Chat(agent._llm), "input")).content == "done"
+    else:
+        with pytest.raises(ProviderRequestError):
+            asyncio.run(agent._query_llm(Chat(agent._llm), "input"))
+    assert provider.call_count == 3
+    records = [json.loads(line) for line in (root / "logs" / "token-usage.jsonl").read_text().splitlines()]
+    assert len(records) == 3
+    assert records[0]["error_type"] == "ServiceUnavailableError"
+    assert records[-1]["completion_tokens"] == (20 if succeeds else None)
+    assert all(call.kwargs["num_retries"] == call.kwargs["max_retries"] == 0 for call in provider.call_args_list)
+
+
+def test_bad_request_does_not_trigger_harbor_parameter_fallback(runtime: tuple) -> None:
+    """Stop before Harbor can silently remove request fields and call again."""
+    agent, provider, _root, model = runtime
+    provider.side_effect = litellm.BadRequestError(
+        message="Unrecognized request argument session_id",
+        model=model,
+        llm_provider="hosted_vllm",
+    )
+    with pytest.raises(ProviderRequestError):
+        asyncio.run(agent._query_llm(Chat(agent._llm), "input"))
+    provider.assert_called_once()
+
+
+def test_context_overflow_in_bad_request_keeps_harbor_recovery(runtime: tuple) -> None:
+    """Translate a context-shaped HTTP 400 without automatically retrying it."""
+    agent, provider, _root, model = runtime
+    provider.side_effect = litellm.BadRequestError(
+        message="Input exceeds the model's context length",
+        model=model,
+        llm_provider="hosted_vllm",
+    )
+    with pytest.raises(ContextLengthExceededError):
+        asyncio.run(agent._llm.call("input"))
+    provider.assert_called_once()
+
+
+@pytest.mark.parametrize("during_context_recovery", [False, True])
+def test_summary_provider_failure_stops_without_fallback(runtime: tuple, during_context_recovery: bool) -> None:
+    """Propagate exhausted summary requests instead of manufacturing continuation text."""
+    agent, provider, _root, model = runtime
+    error = litellm.ServiceUnavailableError(message="private error", model=model, llm_provider="hosted_vllm")
+    chat = Chat(agent._llm)
+    chat._messages = [{"role": "user", "content": "TASK_INPUT"}]
+    agent._trajectory_steps = [Step(step_id=1, source="user", message="TASK_INPUT")]
+    session = SimpleNamespace(capture_pane=AsyncMock(return_value="REAL_STATE"))
+    if during_context_recovery:
+        provider.side_effect = [
+            litellm.ContextWindowExceededError(message="context full", model=model, llm_provider="hosted_vllm"),
+            error,
+            error,
+            error,
+        ]
+        operation = agent._query_llm(chat, "input", "TASK_INPUT", session)
+    else:
+        provider.side_effect = error
+        agent._count_total_tokens = Mock(return_value=agent._llm.get_model_context_limit())
+        operation = agent._check_proactive_summarization(chat, "TASK_INPUT", session)
+    with pytest.raises(ProviderRequestError):
+        asyncio.run(operation)
+    assert provider.call_count == (4 if during_context_recovery else 3)

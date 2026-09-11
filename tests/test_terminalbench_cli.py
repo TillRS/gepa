@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock
 
+import litellm
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -17,6 +18,7 @@ from examples.common.experiment_models import (
     experiment_model_version,
     experiment_request_overrides,
 )
+from examples.common.provider_retries import install_provider_retries
 from examples.terminalbench import main as terminalbench_main
 from examples.terminalbench.main import (
     EXPERIMENT_MANIFESTS,
@@ -177,7 +179,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 22
+    assert contract["schema_version"] == 23
     assert contract["task_context_settings"] == {
         "enable_summarize": True,
         "proactive_summarization_threshold": 8_000,
@@ -376,13 +378,14 @@ def test_provider_settings_reach_all_runtime_roles(
     unique_clients = {id(client): client for client in clients}
     for client in unique_clients.values():
         assert client.completion_kwargs["max_tokens"] == 32_768
-        client._capture_and_validate_response_identity(
-            {
-                "model": model,
-                "usage": {"prompt_tokens": 10, "completion_tokens": 32_768},
-                "choices": [{"finish_reason": "length"}],
-            }
+        raw = litellm.ModelResponse(
+            model=model, choices=[{"message": {"role": "assistant", "content": "done"}, "finish_reason": "length"}],
+            usage={"prompt_tokens": 10, "completion_tokens": 32_768, "total_tokens": 32_778},
         )
+        monkeypatch.setattr(litellm, "completion", Mock(return_value=raw))
+        monkeypatch.setattr(litellm, "completion_cost", Mock(return_value=0.0))
+        install_provider_retries()
+        assert client("offline input") == "done"
     records = [json.loads(line) for line in (tmp_path / "run" / "token-usage.jsonl").read_text().splitlines()]
     assert len(records) == len(unique_clients)
     assert all(record["length_finish"] and record["output_cap_reached"] for record in records)

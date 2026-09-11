@@ -406,6 +406,26 @@ def test_task_context_drift_cannot_resume_or_enter_final_test(
         evaluate.freeze_comparison(run_dirs)
 
 
+@pytest.mark.parametrize("missing", [False, True])
+def test_provider_retry_drift_cannot_resume_or_enter_final_test(tmp_path: Path, missing: bool) -> None:
+    """Reject absent or changed provider-attempt policies before any task runs."""
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
+    forest = run_dirs["react_v2"]
+    path = forest / RUN_CONTRACT_FILENAME
+    original = json.loads(path.read_text())
+    changed = json.loads(path.read_text())
+    assert original["provider_retry_policy"]["max_attempts"] == 3
+    if missing:
+        del changed["provider_retry_policy"]
+    else:
+        changed["provider_retry_policy"]["max_attempts"] = 9
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+        ensure_run_contract(forest, original)
+    with pytest.raises(ValueError, match="expected a matching react_v2 run"):
+        evaluate.freeze_comparison(run_dirs)
+
+
 @pytest.mark.parametrize("experiment", ["tb2", "tb4"])
 def test_removed_benchmark_cannot_enter_final_comparison(tmp_path: Path, experiment: str) -> None:
     """Reject obsolete dataset identities before loading any selected harness."""

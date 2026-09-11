@@ -26,6 +26,7 @@ from examples.common.experiment_models import (
     experiment_decoding,
     experiment_request_overrides,
 )
+from examples.common.provider_retries import provider_retry_kwargs
 from examples.common.wikipedia import WikipediaPassage, WikipediaRetriever
 
 DEFAULT_DATA_PATH = os.path.join(
@@ -165,6 +166,7 @@ def resolve_hotpotqa_lm_kwargs(
     """
     kwargs: dict[str, object] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
+        **provider_retry_kwargs(role="solver"),
         **experiment_decoding(model, agentic=False),
         **experiment_request_overrides(model, explicit_reasoning=True),
     }
