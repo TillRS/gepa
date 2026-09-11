@@ -6,14 +6,13 @@
 import pytest
 
 from gepa.proposer.reflective_mutation.manifestor import (
-    MAX_STEERING_MESSAGE_CHARS,
-    MAX_TRACES_CHARS,
     ManifestationError,
     Manifestor,
 )
 from gepa.strategies.document_template import EditTarget
 from gepa.strategies.edit_tools import EditTool
 from gepa.strategies.intervention import ControllerChoice, SemanticActionSpec
+from gepa.strategies.text_limits import TextLimitError, TextLimits
 
 SPEC = SemanticActionSpec(
     name="contextualize",
@@ -127,13 +126,21 @@ def test_instruction_spec_is_manifested_once_with_section_grounding() -> None:
     assert "do not write the edit" in prompt.lower()
 
 
-def test_overlong_manifestation_is_truncated() -> None:
-    """Keep steering within the configured length bound."""
-    lm = RecordingLM("x" * (MAX_STEERING_MESSAGE_CHARS + 50))
+@pytest.mark.parametrize("limit", [None, 1200])
+def test_steering_is_unlimited_unless_configured(limit: int | None) -> None:
+    """Keep complete steering by default and mark explicit excerpts."""
+    lm = RecordingLM("x" * 1500 + "Important final instruction.")
     choice = ControllerChoice(EditTarget("sys", "Rules"), SPEC)
-    result = Manifestor(lm).manifest(choice, "region", "feedback", "traces")
+    result = Manifestor(lm, text_limits=TextLimits(manifestor_steering_chars=limit)).manifest(
+        choice, "region", "feedback", "traces"
+    )
     assert result is not None
-    assert result == "x" * MAX_STEERING_MESSAGE_CHARS + "..."
+    if limit is None:
+        assert result == lm.reply
+    else:
+        assert result.startswith("x" * limit)
+        assert "characters omitted" in result
+        assert "Important final instruction" not in result
 
 
 def test_empty_manifestation_is_retried_once() -> None:
@@ -183,23 +190,23 @@ def test_blank_fixed_manifestation_is_rejected() -> None:
     assert lm.calls == []
 
 
-def test_only_traces_are_bounded_by_default() -> None:
-    """Keep the section and feedback whole while bounding the trace input."""
-    large_state = "s" * (MAX_TRACES_CHARS + 10)
-    large_traces = "t" * (MAX_TRACES_CHARS + 10)
+def test_manifestor_inputs_are_unlimited_by_default() -> None:
+    """Keep the section, feedback, and traces complete without configured caps."""
+    large_state = "s" * 8010
+    large_traces = "t" * 8010
     lm = RecordingLM()
     choice = ControllerChoice(EditTarget("sys", "Rules"), SPEC)
     Manifestor(lm).manifest(choice, large_state, large_state, large_traces)
     prompt = lm.calls[0]
     assert prompt.count(large_state) == 2
-    assert large_traces not in prompt
-    assert "...(+10 chars)" in prompt
+    assert large_traces in prompt
+    assert "characters omitted" not in prompt
 
 
 @pytest.mark.parametrize(
     ("limit", "expected"),
     [
-        pytest.param(5, "01234\n...(+5 chars)", id="custom_bound"),
+        pytest.param(5, "01234\n[... 5 characters omitted ...]\n", id="custom_bound"),
         pytest.param(None, "0123456789", id="unbounded"),
     ],
 )
@@ -214,3 +221,12 @@ def test_trace_bound_is_configurable(limit: int | None, expected: str) -> None:
     choice = ControllerChoice(EditTarget("sys", "Rules"), SPEC)
     Manifestor(lm, max_traces_chars=limit).manifest(choice, "region", "feedback", "0123456789")
     assert expected in lm.calls[0]
+
+
+def test_full_manifestor_prompt_limit_prevents_a_model_call() -> None:
+    """Reject an oversized assembled prompt without chopping its instructions."""
+    lm = RecordingLM()
+    choice = ControllerChoice(EditTarget("sys", "Rules"), SPEC)
+    with pytest.raises(TextLimitError, match="max_prompt_chars=100"):
+        Manifestor(lm, text_limits=TextLimits(max_prompt_chars=100)).manifest(choice, "region", "feedback", "traces")
+    assert not lm.calls

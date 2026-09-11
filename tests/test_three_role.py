@@ -20,6 +20,7 @@ from gepa.proposer.reflective_mutation.three_role import ThreeRoleReflectionLM, 
 from gepa.strategies.document_template import TEMPLATE_FAMILIES, TEMPLATES, DocumentTemplate, MalformedDocumentError
 from gepa.strategies.edit_tools import EDIT_TOOL_SETS, EditTool
 from gepa.strategies.intervention import build_controller_menu
+from gepa.strategies.text_limits import TextLimits
 
 PROMPT = TEMPLATES["system_prompt"].render({"Role": "helper", "Rules": "- be nice\n- be brief"})
 SKILL = TEMPLATES["skill"].render(
@@ -415,11 +416,12 @@ def test_three_role_run_contract_blocks_catalog_or_policy_drift(tmp_path: Path) 
     """
     strat, _ = strategy(2)
     contract = strat.run_contract({"sys": PROMPT})
-    assert contract["schema_version"] == 8
+    assert contract["schema_version"] == 9
     assert contract["max_chars"] is None
     assert contract["document_length"] == {
-        "version": 1,
+        "version": 2,
         "max_component_chars": None,
+        "max_candidate_chars": None,
         "selector_target_chars": None,
     }
     assert contract["max_proposer_model_calls"] is None
@@ -1096,14 +1098,19 @@ def test_revision_records_include_only_completed_component_revisions() -> None:
     ]
 
 
-def test_attempt_history_fields_are_bounded_and_json_serializable() -> None:
+@pytest.mark.parametrize("limit", [None, 2000])
+def test_attempt_history_fields_are_configurable_and_json_serializable(limit: int | None) -> None:
     """Bound persistent assistant/error/observation detail without losing provenance."""
     lm = ThreeRoleLM(["x" * 5000])
-    strat, _ = strategy(2, lm=lm, react_max_iterations=1)
+    strat, _ = strategy(2, lm=lm, react_max_iterations=1, text_limits=TextLimits(history_text_chars=limit))
     proposal, _ = strat.reflect({"sys": PROMPT}, deepcopy(SYS_REFLECTIVE_DATASET), ["sys"])
     record = proposal.metadata["attempt_records"][0]
-    assert len(record["react_steps"][0]["assistant"]) < 2100
-    assert "...(+3000 chars)" in record["react_steps"][0]["assistant"]
+    if limit is None:
+        assert record["react_steps"][0]["assistant"] == "x" * 5000
+    else:
+        assert record["react_steps"][0]["assistant"].startswith("x" * limit)
+        assert "3000 characters omitted" in record["react_steps"][0]["assistant"]
+    assert record["chat_messages"][0]["content"] == "x" * 5000
     json.dumps(record)
 
 

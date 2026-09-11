@@ -59,6 +59,7 @@ trap cleanup_local_files EXIT
 MODEL_PROFILE="${MODEL_PROFILE:-qwen3.8-27b}"
 BUDGET_PROFILE="${BUDGET_PROFILE:-campaign}"
 CONDITION="${CONDITION:-all}"
+HOTPOTQA_TEXT_LIMITS_B64="$(printf '%s' "${HOTPOTQA_TEXT_LIMITS_JSON:-null}" | base64 | tr -d '\n')"
 HOTPOTQA_CAMPAIGN_ID="${HOTPOTQA_CAMPAIGN_ID:-hotpotqa-final-v1}"
 MAX_WORKERS="${MAX_WORKERS:-}"
 WIKI17_DIR="${WIKI17_DIR:-${SCRATCH_BASE}/.cache/gepa/wiki17}"
@@ -454,6 +455,10 @@ cleanup_export_file() {
 }
 trap cleanup_export_file EXIT
 
+export HOTPOTQA_TEXT_LIMITS_JSON="\$(printf '%s' '${HOTPOTQA_TEXT_LIMITS_B64}' | base64 --decode)"
+"\${GEPA_UV_BIN}" run --no-sync python -c \
+    'import os; from gepa.strategies.text_limits import parse_text_limits; parse_text_limits(os.environ["HOTPOTQA_TEXT_LIMITS_JSON"])'
+
 write_sbatch_export_file() {
     local run_budget_profile="$1"
     local run_max_metric_calls="$2"
@@ -466,6 +471,7 @@ write_sbatch_export_file() {
         "BUDGET_PROFILE=\${run_budget_profile}" \
         "MAX_METRIC_CALLS=\${run_max_metric_calls}" \
         "CONDITION=\${run_condition}" \
+        "HOTPOTQA_TEXT_LIMITS_JSON=\${HOTPOTQA_TEXT_LIMITS_JSON}" \
         "HOTPOTQA_CANARY_ONLY=\${canary_only}" \
         "HOTPOTQA_CAMPAIGN_ID=${HOTPOTQA_CAMPAIGN_ID}" \
         "MAX_WORKERS=${MAX_WORKERS}" \

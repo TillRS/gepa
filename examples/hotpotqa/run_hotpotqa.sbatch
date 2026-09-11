@@ -659,6 +659,7 @@ echo "==> retrieval=Wiki-2017/BM25 k=7 concurrent_examples=${MAX_WORKERS} root=$
     "${REFLECTION_API_ARG[@]}" \
     --max-metric-calls "${MAX_METRIC_CALLS}" \
     --condition "${CONDITION}" \
+    --text-limits "${HOTPOTQA_TEXT_LIMITS_JSON:-null}" \
     --program 2stage \
     --seed-style structured \
     --seed 0 \

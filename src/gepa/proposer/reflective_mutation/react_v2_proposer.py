@@ -31,6 +31,7 @@ from gepa.strategies.edit_tools import (
     ReplaceTextArgs,
     apply_edit,
 )
+from gepa.strategies.text_limits import TextLimits, resolve_text_limits
 
 
 class ReActV2ProtocolError(ValueError):
@@ -488,6 +489,7 @@ class ReActV2Proposer:
         max_iterations: int | None = None,
         max_tool_calls: int | None = None,
         logger: Any | None = None,
+        text_limits: TextLimits | None = None,
     ):
         """Validate and store the ReAct proposer configuration.
 
@@ -498,6 +500,7 @@ class ReActV2Proposer:
             max_iterations: Maximum assistant turns, or ``None`` for no limit.
             max_tool_calls: Maximum valid calls, or ``None`` for no limit.
             logger: Optional run logger.
+            text_limits: Optional full-request and component character limits.
 
         Raises:
             ValueError: The tool basis is empty or any configured limit is
@@ -515,6 +518,7 @@ class ReActV2Proposer:
         self.max_iterations = max_iterations
         self.max_tool_calls = max_tool_calls
         self.logger = logger
+        self.text_limits = resolve_text_limits(text_limits)
 
     def _initial_messages(
         self,
@@ -778,6 +782,8 @@ class ReActV2Proposer:
             native_tools=use_native_tools,
         )
         current = region_text
+        if max_chars is None:
+            max_chars = self.text_limits.max_component_chars
         executed_all: list[str] = []
         steps: list[ReActV2Step] = []
         valid_calls = 0
@@ -788,6 +794,7 @@ class ReActV2Proposer:
         turn = 0
         while self.max_iterations is None or turn < self.max_iterations:
             turn += 1
+            self.text_limits.check_prompt(messages, provider_tools if use_native_tools else None)
             native_calls: tuple[NativeToolCall, ...] = ()
             action_text = ""
             assistant_history_content = ""

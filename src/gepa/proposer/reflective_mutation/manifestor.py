@@ -10,15 +10,14 @@ candidate; ReAct V2 applies the selected operation.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from gepa.proposer.reflective_mutation.base import LanguageModel
 from gepa.strategies.intervention import ControllerChoice
+from gepa.strategies.text_limits import TextLimits, clip_text, resolve_text_limits
 
-MAX_STEERING_MESSAGE_CHARS = 1200
 MAX_MANIFESTATION_ATTEMPTS = 2
-# Traces are the only unbounded input; the selected region and feedback stay whole.
-MAX_TRACES_CHARS = 8000
 
 MANIFESTOR_PROMPT = """\
 Write the next instruction for a language model editor. After reading it, the editor applies {tool} to region
@@ -79,7 +78,8 @@ class Manifestor:
         self,
         lm: LanguageModel,
         logger: Any | None = None,
-        max_traces_chars: int | None = MAX_TRACES_CHARS,
+        max_traces_chars: int | None = None,
+        text_limits: TextLimits | None = None,
     ):
         """Configure semantic-action manifestation.
 
@@ -88,10 +88,15 @@ class Manifestor:
             logger: Optional run logger with a ``log(message)`` method.
             max_traces_chars: Maximum execution-trace characters included in
                 the manifestation prompt; ``None`` keeps all traces.
+            text_limits: Optional steering, trace, and assembled-prompt limits.
         """
         self.lm = lm
         self.logger = logger
-        self.max_traces_chars = max_traces_chars
+        limits = resolve_text_limits(text_limits)
+        if max_traces_chars is not None:
+            limits = replace(limits, manifestor_trace_chars=max_traces_chars)
+        self.text_limits = limits
+        self.max_traces_chars = limits.manifestor_trace_chars
 
     def manifest(
         self,
@@ -103,7 +108,7 @@ class Manifestor:
         """Return steering guidance for ``action`` or ``None`` when it has no spec.
 
         Fixed text is returned without an LM call. Instruction-based actions
-        retry one empty response and enforce the text and trace limits.
+        retry one empty response and apply only explicitly configured limits.
 
         Args:
             action: The Controller's joint decision; only its
@@ -126,9 +131,8 @@ class Manifestor:
         if spec.fixed_text is not None:
             if not spec.fixed_text.strip():
                 raise ManifestationError(f"SemanticActionSpec {spec.name!r} has empty fixed steering text.")
-            return spec.fixed_text
-        if self.max_traces_chars is not None and len(traces) > self.max_traces_chars:
-            traces = traces[: self.max_traces_chars] + f"\n...(+{len(traces) - self.max_traces_chars} chars)"
+            return clip_text(spec.fixed_text, self.text_limits.manifestor_steering_chars)
+        traces = clip_text(traces, self.max_traces_chars)
         state = STATE_TEMPLATE.format(
             region=action.edit_target.section,
             region_text=region_text,
@@ -144,11 +148,10 @@ class Manifestor:
             instruction=spec.instruction,
         )
         for attempt in range(MAX_MANIFESTATION_ATTEMPTS):
+            self.text_limits.check_prompt(prompt)
             raw = self.lm(prompt).strip()
             if raw:
-                if len(raw) > MAX_STEERING_MESSAGE_CHARS:
-                    raw = raw[:MAX_STEERING_MESSAGE_CHARS] + "..."
-                return raw
+                return clip_text(raw, self.text_limits.manifestor_steering_chars)
             if self.logger is not None:
                 self.logger.log(
                     f"Manifestor returned no visible steering text for action {spec.name!r} "
