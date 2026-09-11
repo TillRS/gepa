@@ -426,6 +426,30 @@ def test_provider_retry_drift_cannot_resume_or_enter_final_test(tmp_path: Path, 
         evaluate.freeze_comparison(run_dirs)
 
 
+@pytest.mark.parametrize(
+    "field,value", [("acceptance_criterion", "improvement_or_equal"), ("validation_evaluation", "partial")]
+)
+@pytest.mark.parametrize("missing", [False, True])
+def test_acceptance_policy_drift_cannot_resume_or_enter_final_test(
+    tmp_path: Path, field: str, value: str, missing: bool
+) -> None:
+    """Reject tied-score acceptance or partial validation before any held-out work."""
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
+    forest = run_dirs["react_v2"]
+    path = forest / RUN_CONTRACT_FILENAME
+    original = json.loads(path.read_text())
+    changed = json.loads(path.read_text())
+    if missing:
+        del changed[field]
+    else:
+        changed[field] = value
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+        ensure_run_contract(forest, original)
+    with pytest.raises(ValueError, match="expected a matching react_v2 run"):
+        evaluate.freeze_comparison(run_dirs)
+
+
 @pytest.mark.parametrize("experiment", ["tb2", "tb4"])
 def test_removed_benchmark_cannot_enter_final_comparison(tmp_path: Path, experiment: str) -> None:
     """Reject obsolete dataset identities before loading any selected harness."""

@@ -179,7 +179,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 23
+    assert contract["schema_version"] == 24
     assert contract["task_context_settings"] == {
         "enable_summarize": True,
         "proactive_summarization_threshold": 8_000,
@@ -397,6 +397,8 @@ def test_provider_settings_reach_all_runtime_roles(
     contract = json.loads((tmp_path / "run" / "terminalbench-run-contract.json").read_text())
     assert contract["experiment"] == experiment
     assert contract["module_selector"] == optimize_kwargs["module_selector"]
+    assert contract["acceptance_criterion"] == optimize_kwargs["acceptance_criterion"] == "strict_improvement"
+    assert contract["validation_evaluation"] == optimize_kwargs["val_evaluation_policy"] == "full_eval"
     assert contract["student_model_version"] == contract["proposer_model_version"] == experiment_model_version(model)
     assert (
         contract["student_request_overrides"]
@@ -417,7 +419,7 @@ def test_provider_settings_reach_all_runtime_roles(
 
 
 @pytest.mark.parametrize("experiment,iterations,padding", [("tb2.1", 40, 0)])
-@pytest.mark.parametrize("outcome", ["accepted", "rejected", "perfect"])
+@pytest.mark.parametrize("outcome", ["accepted", "tied", "worse", "perfect"])
 @pytest.mark.parametrize("budget_name,epochs", [("standard", 4), ("double", 8)])
 def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
     tmp_path: Path,
@@ -454,7 +456,9 @@ def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
             """Return controlled rewards for training and validation tasks."""
             evaluations.append([task.task_id for task in batch])
             score = sum(text.count("budget_step") for text in candidate.values()) / (100 * len(candidate))
-            if outcome != "accepted":
+            if outcome == "worse":
+                score = 0.0 if score else 0.5
+            elif outcome != "accepted":
                 score = 1.0 if outcome == "perfect" else 0.0
             return EvaluationBatch(
                 outputs=[{} for _ in batch],
@@ -527,9 +531,16 @@ def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
         per_iteration += len(contract["val_task_ids"])
     assert results[-1].total_metric_calls == len(contract["val_task_ids"]) + iterations * per_iteration
     assert selected_components == ([] if outcome == "perfect" else [set(contract["component_kinds"])] * iterations)
+    validation_batches = [batch for batch in evaluations if set(batch) == set(contract["val_task_ids"])]
+    assert len(validation_batches) == (iterations + 1 if outcome == "accepted" else 1)
+    training_batches = [batch for batch in evaluations if set(batch).issubset(contract["train_task_ids"])]
+    if outcome != "perfect":
+        assert training_batches[::2] == training_batches[1::2]
     if outcome == "accepted":
         assert len(results[-1].candidates) == iterations + 1
         assert all(text.count("budget_step") == iterations for text in results[-1].candidates[-1].values())
+    else:
+        assert len(results[-1].candidates) == 1
 
 
 @pytest.mark.parametrize("field,value", [("reflection_minibatch_size", 0), ("max_metric_calls", -1)])
@@ -564,6 +575,8 @@ def test_six_cell_matrix_pins_methods_budgets_and_resume_identity(tmp_path: Path
         assert contract["condition"] == condition
         assert contract["optimization_budget"]["max_iterations"] == (80 if budget == "double" else 40)
         assert contract["module_selector"] == "all"
+        assert contract["acceptance_criterion"] == "strict_improvement"
+        assert contract["validation_evaluation"] == "full_eval"
         assert contract["max_proposer_model_calls"] is None
         assert contract["document_length"] == {
             "version": 2,

@@ -245,7 +245,7 @@ separate policies above.
 Every physical attempt is recorded in `provider-attempts.jsonl` and in the
 existing `token-usage.jsonl` files, including failures with unknown usage.
 The two files describe the same requests, so their totals must not be added.
-The policy is pinned in run contract version 23 and pilot configuration version
+The policy is pinned in run contract version 24 and pilot configuration version
 5; older or changed policies cannot resume or enter final evaluation.
 
 #### Reference protocol and pending confirmation
@@ -342,6 +342,27 @@ operational runs. It is checked at iteration boundaries and can be exceeded by
 the final iteration's evaluations. A run stopped by that cap before its selected
 epoch budget does not complete the protocol. The normal commands omit this cap.
 Final held-out test evaluation remains separate.
+
+#### Proposal acceptance and validation
+
+All six campaign configurations use the same strict-improvement rule as
+HotPotQA. Evaluate the parent and proposed harness on the same training
+minibatch (three tasks by default). Advance the proposal only if its summed
+reward is strictly higher; reject ties and regressions. A parent with a perfect
+minibatch score skips mutation. Every iteration still consumes its approved
+training-pass budget.
+
+Evaluate the initial harness on all 19 validation tasks. Every proposal that
+passes the training comparison also receives full validation; rejected edits
+receive no validation run. Validation scores govern the candidate frontier and
+final winner selection. A training improvement does not guarantee a validation
+improvement or automatically replace the existing best harness.
+
+`acceptance_criterion="strict_improvement"` and
+`validation_evaluation="full_eval"` are explicit run contract fields and are
+forwarded to the optimizer. Run contract version 24 rejects missing or changed
+policies on resume and before final comparison. This preserves the prior
+runtime defaults while making them part of the recorded experiment identity.
 
 #### Repetitions and final testing
 
