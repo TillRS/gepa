@@ -457,15 +457,25 @@ def _validated_branch_history(
     return messages
 
 
+REACT_V2_EXECUTION_CONTRACT = {
+    "version": 1,
+    "completion": "explicit_finish",
+    "scope": "selected_section",
+    "semantic_action": "fixed_for_proposal",
+    "max_iterations": None,
+    "max_tool_calls": None,
+}
+
+
 class ReActV2Proposer:
-    """Run a bounded ReAct tool loop over one selected document region.
+    """Run a ReAct tool loop over one selected document region until finish.
 
     Args:
         lm: Model driving the ReAct conversation.
         template: Canonical document template.
         allowed_tools: Tools exposed by the configured edit basis.
-        max_iterations: Maximum assistant turns, including invalid retries and finish.
-        max_tool_calls: Maximum valid calls in an atomic-basis proposal.
+        max_iterations: Optional assistant-turn limit, including retries and finish.
+        max_tool_calls: Optional valid tool-call limit per proposal.
         logger: Optional run logger.
     """
 
@@ -475,18 +485,18 @@ class ReActV2Proposer:
         template: DocumentTemplate,
         allowed_tools: Sequence[EditTool],
         *,
-        max_iterations: int = 8,
-        max_tool_calls: int = 4,
+        max_iterations: int | None = None,
+        max_tool_calls: int | None = None,
         logger: Any | None = None,
     ):
-        """Validate and store the bounded ReAct proposer configuration.
+        """Validate and store the ReAct proposer configuration.
 
         Args:
             lm: Model driving the ReAct conversation.
             template: Canonical document template for section validation.
             allowed_tools: Non-empty edit-tool basis exposed to the proposer.
-            max_iterations: Maximum assistant turns, including invalid retries.
-            max_tool_calls: Maximum valid calls in one proposal.
+            max_iterations: Maximum assistant turns, or ``None`` for no limit.
+            max_tool_calls: Maximum valid calls, or ``None`` for no limit.
             logger: Optional run logger.
 
         Raises:
@@ -495,9 +505,9 @@ class ReActV2Proposer:
         """
         if not allowed_tools:
             raise ValueError("ReAct V2 requires at least one allowed edit tool.")
-        if max_iterations < 1:
+        if max_iterations is not None and max_iterations < 1:
             raise ValueError("max_iterations must be at least 1.")
-        if max_tool_calls < 1:
+        if max_tool_calls is not None and max_tool_calls < 1:
             raise ValueError("max_tool_calls must be at least 1.")
         self.lm = lm
         self.template = template
@@ -537,20 +547,26 @@ class ReActV2Proposer:
         lowered_tool = _lowered_semantic_tool(preferred_tool, self.allowed_tools)
         if direct_tool is not None:
             completion_rule = (
-                f"This semantic action is coupled to {direct_tool.value}. Make exactly one valid "
-                f"{direct_tool.value} call; that call completes the proposal automatically."
+                f"This semantic action is coupled to {direct_tool.value}. Make as many {direct_tool.value} "
+                "calls as needed within the selected section, all serving the same semantic action and steering. "
+                "Compare the completed revision with the original section to preserve the action's constraints. "
+                "Emit <finish> when that revision is complete."
             )
         elif lowered_tool is EditTool.REPLACE_TEXT:
             completion_rule = (
                 "This semantic action is coupled to REPLACE_TEXT, which is hidden by the atomic basis. "
-                "Reproduce it with exactly one DELETE_TEXT call followed by one INSERT_TEXT call at the "
-                "deleted target's original location, then emit <finish>."
+                "For each replacement, use one DELETE_TEXT call followed by one INSERT_TEXT call at the "
+                "deleted target's original location. Repeat complete pairs as needed for the same semantic action "
+                "and steering within this section, then emit <finish>. The final revision must satisfy the "
+                "action's constraints relative to the original section."
             )
         elif lowered_tool is EditTool.MOVE_TEXT:
             completion_rule = (
                 "This semantic action is coupled to MOVE_TEXT, which is hidden by the atomic basis. "
-                "Reproduce it with exactly one DELETE_TEXT call followed by one INSERT_TEXT call that "
-                "reinserts the exact deleted bytes at a distinct valid anchor, then emit <finish>."
+                "For each move, use one DELETE_TEXT call followed by one INSERT_TEXT call that reinserts the exact "
+                "deleted bytes at a distinct valid anchor. Repeat complete pairs as needed for the same semantic "
+                "action and steering within this section, then emit <finish>. The final revision must satisfy "
+                "the action's constraints relative to the original section."
             )
         elif preferred_tool is not None:
             completion_rule = (
@@ -704,7 +720,7 @@ class ReActV2Proposer:
         branch_history: Sequence[Mapping[str, Any]],
         max_chars: int | None,
     ) -> ReActV2Result:
-        """Run ReAct V2 until a direct semantic call or explicit finish succeeds.
+        """Run ReAct V2 until explicit finish succeeds or a configured limit ends it.
 
         Args:
             region_text: Complete body of the Controller-selected section.
@@ -766,10 +782,12 @@ class ReActV2Proposer:
         steps: list[ReActV2Step] = []
         valid_calls = 0
         lowered_delete: DeleteTextArgs | None = None
-        lowering_complete = False
+        lowering_region = region_text
         last_output = ""
 
-        for turn in range(1, self.max_iterations + 1):
+        turn = 0
+        while self.max_iterations is None or turn < self.max_iterations:
+            turn += 1
             native_calls: tuple[NativeToolCall, ...] = ()
             action_text = ""
             assistant_history_content = ""
@@ -829,26 +847,10 @@ class ReActV2Proposer:
                 continue
             finish = finish_blocks[0] if finish_blocks else None
             if finish is not None:
-                if direct_tool is not None:
-                    error = f"The semantic action requires one valid {direct_tool.value} call before finishing."
-                    observation = f"ERROR: {error}"
-                    steps.append(
-                        ReActV2Step(
-                            turn,
-                            assistant_history_content,
-                            "INVALID",
-                            observation,
-                            error,
-                            region_text=current,
-                        )
-                    )
-                    self._append_observation(messages, observation, None)
-                    continue
-                if lowered_tool is not None and not lowering_complete:
-                    required = EditTool.DELETE_TEXT if lowered_delete is None else EditTool.INSERT_TEXT
+                if lowered_tool is not None and lowered_delete is not None:
                     error = (
                         f"The {lowered_tool.value} lowering is incomplete; make the required "
-                        f"{required.value} call before finishing."
+                        "INSERT_TEXT call before finishing."
                     )
                     observation = f"ERROR: {error}"
                     steps.append(
@@ -913,11 +915,6 @@ class ReActV2Proposer:
                     )
                 expected_region: str | None = None
                 if lowered_tool is not None:
-                    if lowering_complete:
-                        raise ReActV2ProtocolError(
-                            f"The {lowered_tool.value} decomposition is complete; emit <finish> without "
-                            "another tool call."
-                        )
                     expected_atomic_tool = EditTool.DELETE_TEXT if lowered_delete is None else EditTool.INSERT_TEXT
                     if tool is not expected_atomic_tool:
                         raise ReActV2ProtocolError(
@@ -941,13 +938,13 @@ class ReActV2Proposer:
                                 anchor=args.anchor,
                                 where=args.where,
                             )
-                        expected_region, _ = self._apply_to_region(region_text, edit_target, direct_args)
-                        if expected_region == region_text:
+                        expected_region, _ = self._apply_to_region(lowering_region, edit_target, direct_args)
+                        if expected_region == lowering_region:
                             raise ReActV2ProtocolError(
-                                f"The {lowered_tool.value} lowering must change the original selected section; "
+                                f"The {lowered_tool.value} lowering must change the section before this pair; "
                                 "choose a distinct replacement or MOVE_TEXT destination."
                             )
-                if valid_calls >= self.max_tool_calls:
+                if self.max_tool_calls is not None and valid_calls >= self.max_tool_calls:
                     raise ReActV2ProtocolError(
                         f"Tool-call budget exhausted after {self.max_tool_calls} valid calls; emit <finish>."
                     )
@@ -956,7 +953,7 @@ class ReActV2Proposer:
                     assert lowered_tool is not None
                     raise ReActV2ProtocolError(
                         f"The INSERT_TEXT call does not reproduce one {lowered_tool.value} operation "
-                        "on the original selected region. Use the exact deleted location for REPLACE_TEXT, or the "
+                        "on the section before this pair. Use the exact deleted location for REPLACE_TEXT, or the "
                         "same destination anchor and placement as MOVE_TEXT."
                     )
                 if new_region == current:
@@ -983,14 +980,15 @@ class ReActV2Proposer:
                 self._append_observation(messages, observation, native_call)
                 continue
 
-            current = new_region
-            valid_calls += 1
             if lowered_tool is not None:
                 if lowered_delete is None:
                     assert isinstance(args, DeleteTextArgs)
+                    lowering_region = current
                     lowered_delete = args
                 else:
-                    lowering_complete = True
+                    lowered_delete = None
+            current = new_region
+            valid_calls += 1
             executed_all.extend(executed)
             observation = f"OK: {tool.value} applied.\nLatest selected region:\n{new_region}"
             steps.append(
@@ -1004,16 +1002,6 @@ class ReActV2Proposer:
                     region_text=current,
                 )
             )
-            if direct_tool is not None:
-                return ReActV2Result(
-                    new_text=current,
-                    changed=True,
-                    executed_edit=executed_all,
-                    iterations=turn,
-                    tool_calls=valid_calls,
-                    final_output=raw,
-                    steps=steps,
-                )
             self._append_observation(messages, f"{observation}\nContinue with one action.", native_call)
 
         reason = f"No completed revision within {self.max_iterations} ReAct V2 turns."
@@ -1023,7 +1011,7 @@ class ReActV2Proposer:
             new_text=region_text,
             changed=False,
             executed_edit=executed_all,
-            iterations=self.max_iterations,
+            iterations=turn,
             tool_calls=valid_calls,
             dropped_reason=reason,
             final_output=last_output,

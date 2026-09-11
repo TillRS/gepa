@@ -332,7 +332,7 @@ def build_run_contract(
         "proposer_num_retries": EXPERIMENT_NUM_RETRIES,
         "reflection_level": reflection_level,
         "reflection_minibatch_size": args.reflection_minibatch_size,
-        "max_proposer_model_calls": 8 if operated else None,
+        "max_proposer_model_calls": None,
         "semantic_action_space": (
             deepcopy(SEMANTIC_ACTION_CATALOGS) if reflection_level == 2 or condition == "action" else None
         ),

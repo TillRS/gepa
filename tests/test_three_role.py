@@ -6,6 +6,7 @@
 import json
 import random
 from copy import deepcopy
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -69,7 +70,10 @@ BROAD_LEVEL1_REPLIES = [
     tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"),
     "<finish>The edit is complete.</finish>",
 ]
-DIRECT_REEXPRESS_REPLIES = [tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind")]
+DIRECT_REEXPRESS_REPLIES = [
+    tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"),
+    "<finish>The revision is complete.</finish>",
+]
 MINIMAL_REEXPRESS_REPLIES = [
     tool_call(EditTool.DELETE_TEXT, target="- be nice\n- be brief"),
     tool_call(EditTool.INSERT_TEXT, anchor="", where="after", text="- be kind\n- be brief"),
@@ -411,7 +415,18 @@ def test_three_role_run_contract_blocks_catalog_or_policy_drift(tmp_path: Path) 
     """
     strat, _ = strategy(2)
     contract = strat.run_contract({"sys": PROMPT})
-    assert contract["schema_version"] == 6
+    assert contract["schema_version"] == 7
+    assert contract["max_proposer_model_calls"] is None
+    assert contract["react_max_iterations"] is None
+    assert contract["react_max_tool_calls"] is None
+    assert contract["react_execution"] == {
+        "version": 1,
+        "completion": "explicit_finish",
+        "scope": "selected_section",
+        "semantic_action": "fixed_for_proposal",
+        "max_iterations": None,
+        "max_tool_calls": None,
+    }
     assert contract["component_kinds"] == {"sys": "system_prompt"}
     assert contract["controller"]["version"] == 4
     assert contract["controller"]["factorization"] == "P(region, action)"
@@ -434,6 +449,8 @@ def test_three_role_run_contract_blocks_catalog_or_policy_drift(tmp_path: Path) 
         ensure_reflection_run_contract(str(tmp_path), {**contract, "reflection_level": 1})
     with pytest.raises(ValueError, match="different reflection strategy contract"):
         ensure_reflection_run_contract(str(tmp_path), {**contract, "schema_version": 2})
+    with pytest.raises(ValueError, match="different reflection strategy contract"):
+        ensure_reflection_run_contract(str(tmp_path), {**contract, "react_max_iterations": 8})
 
     legacy_dir = tmp_path / "legacy"
     legacy_dir.mkdir()
@@ -548,15 +565,15 @@ def test_three_role_routes_calls_to_the_selected_clients(controller_selection: s
     assert proposal.new_texts["sys"] != PROMPT
     assert controller.roles == (["controller"] if controller_selection == "verbalized" else [])
     assert manifestor.roles == ["manifestor"]
-    assert editor.roles == ["react_v2"]
+    assert editor.roles == ["react_v2", "react_v2"]
 
 
-def test_level2_selects_semantic_action_manifests_and_executes_one_direct_call() -> None:
-    """Run reexpress through Controller, Manifestor, and one coupled REPLACE call."""
+def test_level2_selects_semantic_action_manifests_edits_and_finishes() -> None:
+    """Run reexpress through Controller, Manifestor, an edit, and explicit finish."""
     strat, lm = strategy(2)
     proposal, _ = strat.reflect({"sys": PROMPT}, deepcopy(SYS_REFLECTIVE_DATASET), ["sys"])
     assert proposal.new_texts["sys"] != PROMPT
-    assert lm.roles == ["controller", "manifestor", "react_v2"]
+    assert lm.roles == ["controller", "manifestor", "react_v2", "react_v2"]
     assert proposal.metadata["semantic_action"] == "reexpress"
     assert proposal.metadata["action_choice"] == "reexpress@Rules/REPLACE_TEXT"
     assert proposal.metadata["action_operator"] == "REPLACE_TEXT"
@@ -567,7 +584,7 @@ def test_level2_selects_semantic_action_manifests_and_executes_one_direct_call()
     assert record["action_choice"] == proposal.metadata["action_choice"]
     assert record["action_operator"] == proposal.metadata["action_operator"]
     assert record["action_target_section"] == proposal.metadata["action_target_section"]
-    assert record["react_iterations"] == 1
+    assert record["react_iterations"] == 2
     assert record["react_tool_calls"] == 1
     assert record["react_steps"][0]["action"] == "REPLACE_TEXT"
     sampling = proposal.metadata["controller_sampling"]
@@ -581,6 +598,40 @@ def test_level2_selects_semantic_action_manifests_and_executes_one_direct_call()
     assert sampling["joint_sampling_probability"] == pytest.approx(sampling["sampled_probabilities"][0])
     assert sampling["joint_sampling_probability"] > 0
     assert record["controller_sampling"] == sampling
+
+
+@pytest.mark.parametrize("selection", ["verbalized", "uniform_random"])
+def test_default_strategy_keeps_one_controller_choice_across_ten_edits(selection: str) -> None:
+    """Let both FOREST variants finish ten edits under one section/action choice.
+
+    Args:
+        selection: Controller selection policy used by the experiment.
+    """
+    replacements = ["be nice"] + [f"be kind {index}" for index in range(10)]
+    replies = [
+        tool_call(EditTool.REPLACE_TEXT, target=before, text=after)
+        for before, after in pairwise(replacements)
+    ] + ["<finish>Done.</finish>"]
+    lm = ThreeRoleLM(replies)
+    strat, _ = strategy(2, lm=lm, controller_selection=selection)
+    if selection == "uniform_random":
+        strat.rng.choice = lambda menu: next(
+            action for action in menu if action.menu_id == "reexpress@Rules/REPLACE_TEXT"
+        )
+
+    proposal, _ = strat.reflect({"sys": PROMPT}, deepcopy(SYS_REFLECTIVE_DATASET), ["sys"])
+
+    assert TEMPLATES["system_prompt"].parse(proposal.new_texts["sys"]) == {
+        **TEMPLATES["system_prompt"].parse(PROMPT),
+        "Rules": "- be kind 9\n- be brief",
+    }
+    assert lm.roles.count("controller") == (1 if selection == "verbalized" else 0)
+    assert lm.roles.count("manifestor") == 1
+    assert lm.roles.count("react_v2") == 11
+    record = proposal.metadata["three_role_actions"][0]
+    assert record["react_tool_calls"] == 10
+    assert record["react_iterations"] == 11
+    assert record["action_choice"] == "reexpress@Rules/REPLACE_TEXT"
 
 
 def test_level2_uniform_random_controller_draws_once_from_the_complete_menu() -> None:
@@ -611,7 +662,7 @@ def test_level2_uniform_random_controller_draws_once_from_the_complete_menu() ->
     assert len(expected_menu) == 70
     assert expected_action.menu_id == "reexpress@Rules/REPLACE_TEXT"
     assert strat.rng.getstate() == expected_rng.getstate()
-    assert lm.roles == ["manifestor", "react_v2"]
+    assert lm.roles == ["manifestor", "react_v2", "react_v2"]
     assert proposal.new_texts["sys"] != PROMPT
     assert proposal.metadata["action_choice"] == expected_action.menu_id
     assert proposal.metadata["action_operator"] == expected_action.edit_tool.value
@@ -653,7 +704,7 @@ def test_uniform_random_controller_preserves_target_scoped_branch_history() -> N
         metadata={"branch_edit_history": history},
     )
 
-    assert lm.roles == ["manifestor", "react_v2"]
+    assert lm.roles == ["manifestor", "react_v2", "react_v2"]
     assert lm.react_calls[0][1:3] == history
     assert proposal.metadata["branch_history_length"] == len(history)
 
@@ -800,7 +851,7 @@ def test_inline_reasoning_adapter_retries_empty_manifestation_then_runs_react() 
     proposal, _ = strat.reflect({"sys": PROMPT}, deepcopy(SYS_REFLECTIVE_DATASET), ["sys"])
     assert proposal.new_texts["sys"] != PROMPT
     assert len(raw_manifestor.calls) == 2
-    assert base.roles == ["controller", "react_v2"]
+    assert base.roles == ["controller", "react_v2", "react_v2"]
     assert proposal.metadata["steering_message"] == "Make the vague rule exact."
 
 
@@ -867,7 +918,12 @@ def test_long_context_roles_receive_late_evidence_and_feedback_once() -> None:
 
 def test_reconstructed_component_enforces_the_full_length_cap() -> None:
     """Reject a section body that fits alone but overflows its parent document."""
-    lm = ThreeRoleLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be much nicer")])
+    lm = ThreeRoleLM(
+        [
+            tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be much nicer"),
+            "<finish>Done.</finish>",
+        ]
+    )
     strat, _ = strategy(2, lm=lm, max_chars=len(PROMPT))
 
     proposal, _ = strat.reflect({"sys": PROMPT}, deepcopy(SYS_REFLECTIVE_DATASET), ["sys"])
@@ -1116,8 +1172,8 @@ def test_reflect_many_aligns_each_job_with_its_own_history() -> None:
     assert all(isinstance(proposal, ReflectionProposal) for proposal, _ in results)
     assert {message["content"] for message in lm.react_calls[0]} >= {"left-only"}
     assert all(message["content"] != "right-only" for message in lm.react_calls[0])
-    assert {message["content"] for message in lm.react_calls[1]} >= {"right-only"}
-    assert all(message["content"] != "left-only" for message in lm.react_calls[1])
+    assert {message["content"] for message in lm.react_calls[2]} >= {"right-only"}
+    assert all(message["content"] != "left-only" for message in lm.react_calls[2])
 
 
 def test_reflect_many_validates_metadata_alignment() -> None:

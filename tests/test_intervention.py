@@ -118,7 +118,7 @@ def test_every_document_role_derives_the_same_actions_for_each_named_section(tem
 def test_semantic_action_catalog_persists_the_full_ordered_contract() -> None:
     """Make action-space changes part of benchmark identity and safe resume."""
     catalog = SEMANTIC_ACTION_CATALOGS["prompt"]
-    assert catalog["version"] == 2
+    assert catalog["version"] == 3
     assert catalog["kind"] == "prompt"
     assert [(action["name"], action["operator"]) for action in catalog["actions"]] == [
         (spec.name, spec.edit_tool.value) for spec in SEMANTIC_ACTIONS
