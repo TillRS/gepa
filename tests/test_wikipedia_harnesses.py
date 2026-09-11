@@ -98,11 +98,11 @@ def test_hotpot_lm_uses_local_campaign_decoding(monkeypatch, model: str) -> None
     expected_request = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
         **experiment_decoding(model, agentic=False),
-        **experiment_request_overrides(model),
+        **experiment_request_overrides(model, explicit_reasoning=True),
     }
     expected_request["seed"] = hotpot_utils.HOTPOTQA_SCIENTIFIC_REQUEST_SEED
     assert {key: value for key, value in calls[0].items() if key not in {"model", "messages"}} == expected_request
-    assert calls[0].get("extra_body") == experiment_request_overrides(model).get("extra_body")
+    assert calls[0].get("extra_body") == experiment_request_overrides(model, explicit_reasoning=True).get("extra_body")
 
 
 @pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
@@ -140,22 +140,22 @@ def test_hover_lm_uses_local_decoding_and_thinking(monkeypatch, model: str) -> N
     assert calls[0].get("extra_body") == experiment_request_overrides(model).get("extra_body")
 
 
-def test_litellm_preserves_local_deepseek_chat_template_settings() -> None:
-    """Keep DeepSeek maximum reasoning and clear-history settings intact."""
-    request_overrides = experiment_request_overrides(DEEPSEEK_V4_FLASH_MODEL)
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+def test_litellm_preserves_local_thinking_and_effort_settings(model: str) -> None:
+    """Keep both providers' explicit thinking controls in the outgoing vLLM request."""
+    request_overrides = experiment_request_overrides(model, explicit_reasoning=True)
 
     transformed = get_optional_params(
-        model="deepseek-ai/DeepSeek-V4-Flash-0731",
+        model=model.removeprefix("hosted_vllm/"),
         custom_llm_provider="hosted_vllm",
         drop_params=True,
-        **experiment_decoding(DEEPSEEK_V4_FLASH_MODEL),
+        **experiment_decoding(model),
         **request_overrides,
     )
 
-    assert transformed["extra_body"]["chat_template_kwargs"] == {
-        "reasoning_effort": "max",
-        "thinking": True,
-    }
+    assert transformed["extra_body"]["chat_template_kwargs"] == request_overrides["extra_body"]["chat_template_kwargs"]
+    if model == QWEN3_8_27B_MODEL:
+        assert transformed["extra_body"]["top_k"] == 20
     assert transformed["temperature"] == 1.0
     assert transformed["top_p"] == 0.95
 
