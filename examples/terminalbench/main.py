@@ -52,6 +52,7 @@ from gepa.adapters.terminal_bench_adapter.documents import (
 from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import (
     FAILURE_POLICY_CONTRACT,
     REFLECTION_FEEDBACK_CONTRACT,
+    TASK_CONTEXT_SETTINGS,
 )
 from gepa.lm import LM
 from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT
@@ -292,7 +293,8 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 20,
+        "schema_version": 21,
+        "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
         "token_limits": terminalbench_limits(args.student_model),
         "token_usage_policy": deepcopy(TOKEN_USAGE_POLICY),
         "experiment": manifest.experiment,

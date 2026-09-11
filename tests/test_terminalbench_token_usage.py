@@ -172,7 +172,11 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     else:
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
-    assert config["schema_version"] == 3
+    assert config["schema_version"] == 4
+    assert config["task_context_settings"] == {
+        "enable_summarize": True,
+        "proactive_summarization_threshold": 8_000,
+    }
     assert config["split"] == "train"
     assert config["n_concurrent"] == factory.call_args.kwargs["n_concurrent"] == (n_concurrent or 1)
     settings = factory.call_args.kwargs["student_agent_kwargs"]

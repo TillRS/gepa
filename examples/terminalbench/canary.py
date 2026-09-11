@@ -19,6 +19,7 @@ from examples.terminalbench.model_settings import (
 )
 from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, summarize_usage
 from gepa.adapters.terminal_bench_adapter import HarborCLI, TerminalBenchAdapter, load_terminalbench_manifest
+from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import TASK_CONTEXT_SETTINGS
 from gepa.strategies.text_limits import parse_text_limits, resolve_text_limits
 
 
@@ -70,10 +71,11 @@ def main() -> None:
     (args.output_dir / "canary-config.json").write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "experiment": args.experiment,
                 "split": "train",
                 "n_concurrent": args.n_concurrent,
+                "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
                 "task_ids": [task.task_id for task in tasks],
                 "task_refs": {task.task_id: manifest.task_refs[task.task_id] for task in tasks},
                 "model": args.model,

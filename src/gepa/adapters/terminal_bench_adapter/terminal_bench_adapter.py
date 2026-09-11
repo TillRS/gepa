@@ -31,6 +31,10 @@ from gepa.core.adapter import EvaluationBatch, GEPAAdapter
 from gepa.strategies.text_limits import TextLimits, clip_text, resolve_text_limits, validate_char_limit
 
 PINNED_HARBOR_VERSION = "0.22.0"
+TASK_CONTEXT_SETTINGS = {
+    "enable_summarize": True,
+    "proactive_summarization_threshold": 8_000,
+}
 EXPERIMENT_DATASETS = {
     "tb2": {
         "identifier": "terminal-bench",
@@ -560,7 +564,8 @@ class HarborCLI:
         docker_executable: Docker CLI name or path used for readiness checks.
         student_api_base: Optional LiteLLM API base for the student model.
         student_agent_kwargs: Extra Terminus kwargs that do not alter the fixed
-            documents, tmux tool, skill loading, or unbounded-turn default.
+            documents, tmux tool, skill loading, context management, or
+            unbounded-turn default.
         process_timeout_sec: Optional whole-job subprocess timeout. ``None``
             leaves long-horizon completion governed by each pinned task's
             Harbor agent/verifier timeouts.
@@ -610,6 +615,7 @@ class HarborCLI:
             raise ValueError("process_timeout_sec must be positive when provided")
         extra_kwargs = dict(student_agent_kwargs or {})
         fixed_keys = {
+            *TASK_CONTEXT_SETTINGS,
             "disable_skills",
             "max_episodes",
             "max_turns",
@@ -727,6 +733,7 @@ class HarborCLI:
             "record_terminal_session": True,
             "store_all_messages": True,
             "trajectory_config": {"linear_history": False},
+            **TASK_CONTEXT_SETTINGS,
             **self.student_agent_kwargs,
         }
         if self.student_api_base is not None:

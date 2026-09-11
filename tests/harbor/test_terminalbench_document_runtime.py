@@ -71,13 +71,19 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fix
     return agent, candidate, model, tmp_path
 
 
-def test_summary_questions_answers_and_handoff_reach_the_model(runtime: tuple) -> None:
-    """Run all three real summarization stages and verify histories and saved traces.
+def test_summary_questions_answers_and_handoff_reach_the_model(
+    runtime: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Trigger real summarization near the context limit and verify saved traces.
 
     Args:
         runtime: Agent fixture with a fake model transport.
+        monkeypatch: Fixture controlling the conversation's estimated token count.
     """
     agent, candidate, model, root = runtime
+    assert agent._enable_summarize is True
+    assert agent._proactive_summarization_threshold == 8_000
+    monkeypatch.setattr(agent, "_count_total_tokens", Mock(return_value=25_000))
     calls = []
 
     async def respond(prompt: str, **kwargs: object) -> LLMResponse:
@@ -98,7 +104,7 @@ def test_summary_questions_answers_and_handoff_reach_the_model(runtime: tuple) -
     chat._messages = [{"role": "user", "content": "TASK_INPUT"}]
     agent._trajectory_steps = [Step(step_id=1, source="user", message="TASK_INPUT")]
     session = SimpleNamespace(capture_pane=AsyncMock(return_value="REAL_STATE"))
-    handoff, refs = asyncio.run(agent._summarize(chat, "TASK_INPUT", session))
+    handoff, refs = asyncio.run(agent._check_proactive_summarization(chat, "TASK_INPUT", session))
     for index, name in enumerate(("summary", "summary_questions", "summary_answers")):
         assert candidate[name] in calls[index][0]
     assert "TASK_INPUT" in calls[0][0]

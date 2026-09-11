@@ -382,6 +382,30 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
         evaluate.freeze_comparison(run_dirs)
 
 
+@pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
+@pytest.mark.parametrize("damage", ["disabled", "changed_threshold", "missing"])
+def test_task_context_drift_cannot_resume_or_enter_final_test(
+    tmp_path: Path, experiment: str, damage: str
+) -> None:
+    """Reject disabled, changed, or unrecorded task summarization across methods."""
+    run_dirs = _write_comparison(tmp_path, experiment)
+    forest = run_dirs["react_v2"]
+    path = forest / RUN_CONTRACT_FILENAME
+    original = json.loads(path.read_text())
+    changed = json.loads(path.read_text())
+    if damage == "missing":
+        del changed["task_context_settings"]
+    elif damage == "disabled":
+        changed["task_context_settings"]["enable_summarize"] = False
+    else:
+        changed["task_context_settings"]["proactive_summarization_threshold"] = 0
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+        ensure_run_contract(forest, original)
+    with pytest.raises(ValueError, match="expected a matching react_v2 run"):
+        evaluate.freeze_comparison(run_dirs)
+
+
 @pytest.mark.parametrize("role", ["student", "proposer"])
 @pytest.mark.parametrize("damage", ["implicit", "lower_effort", "thinking_disabled"])
 def test_reasoning_changes_are_rejected_before_final_test(tmp_path: Path, role: str, damage: str) -> None:

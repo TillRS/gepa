@@ -257,6 +257,8 @@ def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: P
     assert "disable_skills" not in agent["kwargs"]
     assert agent["kwargs"]["llm_kwargs"] == _QWEN3_8_27B_LM_KWARGS
     assert agent["kwargs"]["model_info"] == _QWEN3_8_27B_MODEL_INFO
+    assert agent["kwargs"]["enable_summarize"] is True
+    assert agent["kwargs"]["proactive_summarization_threshold"] == 8_000
     assert "max_turns" not in agent["kwargs"]
     assert "max_episodes" not in agent["kwargs"]
     assert config["environment"]["type"] == "docker"
@@ -268,6 +270,23 @@ def test_job_config_fixes_dataset_agent_tools_skills_and_turn_policy(tmp_path: P
             work_dir=tmp_path / "invalid",
             agent_python_path=REPO_ROOT,
             student_agent_kwargs={"max_turns": 5},
+        )
+
+
+@pytest.mark.parametrize("version", [2, 4])
+@pytest.mark.parametrize("settings", [{"enable_summarize": False}, {"proactive_summarization_threshold": 0}])
+def test_task_context_settings_cannot_be_overridden(tmp_path: Path, version: int, settings: dict) -> None:
+    """Reject agent overrides that would change the campaign's context management."""
+    manifest = load_terminalbench_manifest(
+        REPO_ROOT / f"examples/terminalbench/terminalbench-v{version}-manifest.json"
+    )
+    with pytest.raises(ValueError, match="cannot override fixed harness keys"):
+        HarborCLI(
+            manifest=manifest,
+            student_model=_QWEN3_8_27B_MODEL,
+            work_dir=tmp_path,
+            agent_python_path=REPO_ROOT,
+            student_agent_kwargs=settings,
         )
 
 

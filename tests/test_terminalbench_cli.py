@@ -177,7 +177,11 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 20
+    assert contract["schema_version"] == 21
+    assert contract["task_context_settings"] == {
+        "enable_summarize": True,
+        "proactive_summarization_threshold": 8_000,
+    }
     assert contract["max_proposer_model_calls"] is None
     assert contract["react_execution"]["completion"] == "explicit_finish"
     assert contract["react_execution"]["max_iterations"] is None

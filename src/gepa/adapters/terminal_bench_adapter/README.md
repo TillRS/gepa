@@ -116,6 +116,27 @@ budget increases optimization opportunities while keeping per-task limits fixed.
 An optional `--harbor-process-timeout-sec` is a whole-job operational limit
 recorded in the run contract.
 
+#### Task-agent context summarization
+
+Automatic summarization stays enabled for TB2 and TB4 across all methods and
+both budgets. The campaign explicitly supplies `enable_summarize=true` and
+retains Harbor 0.22.0's existing proactive trigger: fewer than 8,000 estimated
+tokens remaining in the context window. This is a token-space trigger, separate
+from the optional character limits on optimizer inputs and candidate text.
+
+The task model summarizes its working conversation, asks questions about missing
+details, answers them using the prior history, and continues from a handoff.
+The summary, question, answer, handoff, and recovery instructions remain editable
+components for every optimizer. The trigger and execution flow stay fixed;
+custom agent kwargs cannot disable summarization or change its threshold.
+This preserves the pinned [Harbor flow](https://github.com/harbor-framework/harbor/blob/v0.22.0/src/harbor/agents/terminus_2/terminus_2.py).
+
+Summarization can omit details and adds model calls. Original execution
+trajectories and the summarization traces remain saved for reflection, and the
+existing usage observer records the extra calls. Training pilots record the
+context settings; optimization contracts reject missing or changed settings on
+resume and before final comparison. All execution paths use the same settings.
+
 #### Textual feedback for reflection
 
 Every method receives the same training-evidence format: task identity, ATIF
