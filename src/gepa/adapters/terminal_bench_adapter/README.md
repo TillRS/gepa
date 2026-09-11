@@ -44,6 +44,13 @@ before another operation or submission. Run contracts record this policy and
 reject earlier checkpoints. This changes the optimizer editor's stopping rule;
 the approved per-call token budgets and benchmark task timeouts are unchanged.
 
+Evolved prompts and skills have no fixed character limit. The former
+10,000-character FOREST cap and 8,000-character selector target are removed,
+including the stateless action baseline's size instruction. Selectors retain
+the current length as information and encourage useful detail without
+unnecessary repetition. Model context and per-call output limits still apply.
+Run contracts record the length policy and require fresh state when it changes.
+
 HotPotQA's budget levels are 6,871 and 13,742 metric calls. Terminal-Bench retains
 the approved epoch-based rule: four and eight training epochs. Thus the method
 matrix and 2× budget multiplier match HotPotQA; the budget unit differs.

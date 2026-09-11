@@ -404,22 +404,24 @@ def test_changed_output_budget_or_usage_policy_cannot_resume_or_enter_final_test
 
 @pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
 @pytest.mark.parametrize(
-    "field,value",
+    "policy,field,value",
     [
-        ("max_iterations", 8),
-        ("max_tool_calls", 4),
-        ("completion", "first_successful_edit"),
-        ("scope", "whole_document"),
+        ("react_execution", "max_iterations", 8),
+        ("react_execution", "max_tool_calls", 4),
+        ("react_execution", "completion", "first_successful_edit"),
+        ("react_execution", "scope", "whole_document"),
+        ("document_length", "max_component_chars", 10000),
+        ("document_length", "selector_target_chars", 8000),
     ],
 )
 def test_old_editor_limits_or_scope_cannot_enter_final_comparison(
-    tmp_path: Path, experiment: str, field: str, value: object
+    tmp_path: Path, experiment: str, policy: str, field: str, value: object
 ) -> None:
-    """Reject completion or scope drift even though editor policy is method-specific."""
+    """Reject changed editor limits, length targets, completion, or section scope."""
     run_dirs = _write_comparison(tmp_path, experiment)
     path = run_dirs["react_v2"] / RUN_CONTRACT_FILENAME
     contract = json.loads(path.read_text())
-    contract["react_execution"][field] = value
+    contract[policy][field] = value
     path.write_text(json.dumps(contract))
     with pytest.raises(ValueError):
         evaluate.freeze_comparison(run_dirs)

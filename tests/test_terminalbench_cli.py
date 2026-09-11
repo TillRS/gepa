@@ -176,7 +176,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 18
+    assert contract["schema_version"] == 19
     assert contract["max_proposer_model_calls"] is None
     assert contract["react_execution"]["completion"] == "explicit_finish"
     assert contract["react_execution"]["max_iterations"] is None
@@ -302,6 +302,7 @@ def test_provider_settings_reach_all_runtime_roles(
     clients = [optimize_kwargs["reflection_lm"]]
     if condition in terminalbench_main.FOREST_CONDITIONS:
         assert strategy.controller_selection == ("uniform_random" if condition == "react_v2_random" else "verbalized")
+        assert strategy.max_chars is None
         clients.extend([strategy.base_lm, strategy.manifestor_lm])
         if condition == "react_v2":
             clients.append(strategy.controller_lm)
@@ -526,6 +527,11 @@ def test_six_cell_matrix_pins_methods_budgets_and_resume_identity(tmp_path: Path
         assert contract["optimization_budget"]["max_iterations"] == (64 if budget == "double" else 32)
         assert contract["module_selector"] == "all"
         assert contract["max_proposer_model_calls"] is None
+        assert contract["document_length"] == {
+            "version": 1,
+            "max_component_chars": None,
+            "selector_target_chars": None,
+        }
         if condition in terminalbench_main.FOREST_CONDITIONS:
             assert contract["react_execution"]["completion"] == "explicit_finish"
             assert contract["react_execution"]["max_iterations"] is None
