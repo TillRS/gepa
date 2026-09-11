@@ -277,7 +277,7 @@ def _edit_probe(lm: LM, tool: EditTool, attempt: int) -> None:
             {"role": "user", "content": "Keep each revision scoped to the selected section."},
             {"role": "assistant", "content": "I will preserve unrelated instructions."},
         ],
-        max_chars=2_000,
+        max_chars=None,
     )
     if not result.changed or result.tool_calls != 1 or result.dropped_reason is not None:
         raise RuntimeCanaryError(

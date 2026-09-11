@@ -10,6 +10,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from gepa.strategies.text_limits import TextLimits
+
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from examples.common.experiment_models import (
@@ -254,6 +256,39 @@ def test_experiment_model_pairs_build_without_running_an_experiment(model: str, 
     }
 
 
+@pytest.mark.parametrize("condition", ["vanilla", "react_v2", "react_v2_random", "action"])
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+def test_hotpotqa_text_limits_reach_roles_and_contracts(condition: str, model: str, tmp_path: Path) -> None:
+    """Keep optional limits identical in actual role wiring and saved run identity."""
+    limits = TextLimits(
+        max_component_chars=25000,
+        max_candidate_chars=100000,
+        selector_target_chars=20000,
+        max_prompt_chars=200000,
+        controller_feedback_chars=17000,
+        stateless_feedback_chars=15000,
+        manifestor_trace_chars=80000,
+        manifestor_steering_chars=3000,
+        history_text_chars=7000,
+    )
+    args = _hotpot_args(solver_model=model, reflection_model=model, text_limits=limits.to_dict())
+    config, selector = build_hotpotqa_config(condition, args, resolve_hotpotqa_lm_kwargs(model, None))
+    contract = build_hotpotqa_run_contract(condition, args)
+    assert config.reflection.text_limits == limits
+    assert contract["optimizer"]["text_limits"] == limits.to_dict()
+    assert contract["optimizer"]["document_length"] == limits.document_contract()
+    assert contract["optimizer"]["manifestor_traces_chars"] == 80000
+    if condition in ("react_v2", "react_v2_random"):
+        assert config.reflection.reflection_strategy.text_limits == limits
+        assert config.reflection.reflection_strategy.max_chars == 25000
+    if condition == "action":
+        assert selector.text_limits == limits
+    ensure_wikipedia_run_contract(tmp_path, contract)
+    args.text_limits["manifestor_steering_chars"] = 3001
+    with pytest.raises(ValueError, match="different Wikipedia benchmark configuration"):
+        ensure_wikipedia_run_contract(tmp_path, build_hotpotqa_run_contract(condition, args))
+
+
 @pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
 @pytest.mark.parametrize(
     ("budget", "condition"),
@@ -273,8 +308,9 @@ def test_hotpot_provider_sampling_reaches_every_model_role(model: str, budget: i
     config, selector = build_hotpotqa_config(condition, args, reflection_kwargs)
     contract = build_hotpotqa_run_contract(condition, args)
     assert contract["optimizer"]["document_length"] == {
-        "version": 1,
+        "version": 2,
         "max_component_chars": None,
+        "max_candidate_chars": None,
         "selector_target_chars": None,
     }
     expected = general["temperature"]
@@ -1034,7 +1070,7 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
     assert hover["models"]["solver_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
     assert hover["models"]["reflection_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
 
-    assert hotpot["schema_version"] == 20
+    assert hotpot["schema_version"] == 21
     assert hotpot["optimizer"]["react_execution"]["completion"] == "explicit_finish"
     assert hotpot["optimizer"]["react_execution"]["max_iterations"] is None
     assert hotpot["optimizer"]["react_execution"]["max_tool_calls"] is None
@@ -1444,7 +1480,7 @@ def test_stateless_action_menu_contract_matches_between_wikipedia_benchmarks() -
     expected = build_hotpotqa_run_contract("random", args)["optimizer"]["stateless_action_menu"]
 
     for build_contract, schema_version in (
-        (build_hotpotqa_run_contract, 20),
+        (build_hotpotqa_run_contract, 21),
         (build_hover_run_contract, 4),
     ):
         contract = build_contract("random", args)

@@ -45,8 +45,9 @@ from gepa.strategies.batch_sampler import BatchSampler
 from gepa.strategies.instruction_proposal import InstructionProposalSignature
 from gepa.strategies.intervention import StatelessActionConstraint
 from gepa.strategies.proposal_sampling import ProposalTask, SamplingStrategy, SingleMutationSampling
+from gepa.strategies.text_limits import TextLimitError, TextLimits, resolve_text_limits
 
-_FATAL_REFLECTION_EXCEPTIONS = (LMProviderError, ProviderIdentityMismatchError, ResponseJournalError)
+_FATAL_REFLECTION_EXCEPTIONS = (LMProviderError, ProviderIdentityMismatchError, ResponseJournalError, TextLimitError)
 
 
 class ReflectiveMutationProposer:
@@ -84,6 +85,7 @@ class ReflectiveMutationProposer:
         sampling_strategy: SamplingStrategy | None = None,
         reflection_strategy: ReflectionLM | None = None,
         action_selector: ActionSelector[StatelessActionConstraint] | None = None,
+        text_limits: TextLimits | None = None,
     ):
         """Configure reflective proposal generation and minibatch evaluation.
 
@@ -106,6 +108,8 @@ class ReflectiveMutationProposer:
                 default when omitted.
             reflection_strategy: Optional stateful or custom reflection owner.
             action_selector: Optional stateless semantic-action selector.
+            text_limits: Optional shared character limits; defaults to the
+                supplied strategy's limits, or unlimited.
 
         Raises:
             ValueError: Prompt templates are invalid or a reflection strategy
@@ -126,6 +130,16 @@ class ReflectiveMutationProposer:
         self.callbacks = callbacks
         self.sampling_strategy: SamplingStrategy = sampling_strategy or SingleMutationSampling()
         self.action_selector = action_selector
+        inherited_limits = getattr(reflection_strategy, "text_limits", None)
+        self.text_limits = resolve_text_limits(
+            text_limits if text_limits is not None else (
+                inherited_limits if isinstance(inherited_limits, TextLimits) else None
+            )
+        )
+        if text_limits is not None and reflection_strategy is not None:
+            strategy_limits = getattr(reflection_strategy, "text_limits", None)
+            if strategy_limits is not None and resolve_text_limits(strategy_limits) != self.text_limits:
+                raise ValueError("text_limits must match the supplied reflection_strategy configuration.")
 
         self.reflection_prompt_template = reflection_prompt_template
 
@@ -161,6 +175,7 @@ class ReflectiveMutationProposer:
                 reflection_prompt_template,
                 logger,
                 action_selector=self.action_selector,
+                text_limits=self.text_limits,
             )
             if reflection_lm is not None
             else None
@@ -687,6 +702,14 @@ class ReflectiveMutationProposer:
                 children.append(None)
                 continue
             new_texts, prompts, raw_outputs, reflection_metadata = texts
+            if new_texts:
+                try:
+                    self.text_limits.check_candidate({**task.parent_candidate, **new_texts})
+                except TextLimitError as exc:
+                    reflection_metadata = dict(reflection_metadata or {})
+                    reflection_metadata["length_capped_dropped"] = list(new_texts)
+                    reflection_metadata["text_limit_error"] = str(exc)
+                    new_texts = {}
 
             if not new_texts:
                 # Do not evaluate an unchanged child; retain metadata when an

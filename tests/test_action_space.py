@@ -37,6 +37,7 @@ from gepa.strategies.intervention import (
     StatelessActionConstraint,
     format_stateless_action_constraint,
 )
+from gepa.strategies.text_limits import TextLimits
 
 
 @dataclass(frozen=True)
@@ -227,14 +228,14 @@ class TestRandomActionSelector:
     def test_stateless_selector_policy_contract_records_material_defaults(self):
         """Verify selector contracts record behavior-bearing defaults."""
         assert stateless_selector_policy_contract("random") == {
-            "version": 2,
+            "version": 3,
             "selector": "random",
             "selection_granularity": "batch_shared",
             "context": "none",
             "sampling": "uniform",
         }
         assert stateless_selector_policy_contract("verbalized") == {
-            "version": 2,
+            "version": 3,
             "selector": "verbalized",
             "selection_granularity": "batch_shared",
             "context": "first_parent_and_aggregated_feedback",
@@ -243,6 +244,7 @@ class TestRandomActionSelector:
             "tau": 0.2,
             "require_full_support": False,
             "exploration_epsilon": 0.0,
+            "text_limits": TextLimits().to_dict(),
         }
 
 

@@ -84,7 +84,6 @@ from gepa.optimize_anything import (
 from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT
 from gepa.response_journal import RESPONSE_JOURNAL_SCHEMA_VERSION, RESPONSE_JOURNAL_SCOPE_POLICY
 from gepa.strategies.action_space import (
-    DOCUMENT_LENGTH_CONTRACT,
     RandomActionSelector,
     VerbalizedActionSelector,
     stateless_selector_policy_contract,
@@ -102,6 +101,7 @@ from gepa.strategies.intervention import (
 from gepa.strategies.proposal_sampling import SingleMutationSampling
 from gepa.strategies.proposal_selection import AllImprovements
 from gepa.strategies.reflection_context import REFLECTION_CONTEXT_CONTRACT
+from gepa.strategies.text_limits import parse_text_limits, resolve_text_limits
 
 # GEPA artifact components: summarize1 -> create_query_hop2 -> summarize2 -> final_answer.
 SEED_CANDIDATE = {
@@ -469,6 +469,7 @@ def build_run_contract(condition: str, args) -> dict:
     """
     _validate_hotpotqa_model_pair(args.solver_model, args.reflection_model)
     family = resolve_template_family(args.template_family, args.solver_model)
+    text_limits = resolve_text_limits(getattr(args, "text_limits", None))
     solver_api_base = args.solver_api_base if args.solver_api_base is not None else args.api_base
     reflection_api_base = args.reflection_api_base if args.reflection_api_base is not None else args.api_base
     scientific_contract = bool(getattr(args, "enforce_scientific_contract", False))
@@ -555,7 +556,7 @@ def build_run_contract(condition: str, args) -> dict:
         else:
             semantic_controller_policy = deepcopy(CONTROLLER_POLICY_CONTRACT)
     return {
-        "schema_version": 20,
+        "schema_version": 21,
         "benchmark": "hotpotqa-fullwiki-wiki17",
         "reference_artifact_commit": GEPA_ARTIFACT_COMMIT,
         "scientific_contract_enforced": scientific_contract,
@@ -595,8 +596,9 @@ def build_run_contract(condition: str, args) -> dict:
             "reflection_minibatch_size": 3,
             "component_selector": "round_robin",
             "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
-            "manifestor_traces_chars": None,
-            "document_length": deepcopy(DOCUMENT_LENGTH_CONTRACT),
+            "manifestor_traces_chars": text_limits.manifestor_trace_chars,
+            "document_length": text_limits.document_contract(),
+            "text_limits": text_limits.to_dict(),
             "react_execution": deepcopy(REACT_V2_EXECUTION_CONTRACT) if condition in _REACT_V2_CONDITIONS else None,
             "skip_perfect_score": True,
             "perfect_score": 1.0,
@@ -615,7 +617,9 @@ def build_run_contract(condition: str, args) -> dict:
             "semantic_controller_policy": semantic_controller_policy,
             "stateless_action_menu": stateless_action_menu,
             "stateless_selector_policy": (
-                stateless_selector_policy_contract("random" if condition == "random" else "verbalized")
+                stateless_selector_policy_contract(
+                    "random" if condition == "random" else "verbalized", text_limits=text_limits
+                )
                 if stateless_semantic
                 else None
             ),
@@ -1149,6 +1153,7 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
     """
     resolved_family = resolve_template_family(args.template_family, args.solver_model)
     _validate_scientific_contract(args)
+    text_limits = resolve_text_limits(getattr(args, "text_limits", None))
     resolved_run_dir = run_dir or condition_run_dir(condition, args.program, args.tag, _run_key(condition, args))
     response_journal_path = os.path.join(resolved_run_dir, ".lm-response-journal", "responses.sqlite3")
     reflection_proposer_kwargs = deepcopy(reflection_lm_kwargs or {})
@@ -1168,6 +1173,7 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
         action_selector = VerbalizedActionSelector(
             action_space,
             lm=LM(args.reflection_model, **action_selector_kwargs),
+            text_limits=text_limits,
         )
 
     reflection_strategy = None
@@ -1185,7 +1191,7 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
             component_kinds=_component_kinds(args.program),
             controller_selection="uniform_random" if condition == "react_v2_random" else "verbalized",
             rng=random.Random(args.seed),
-            manifestor_traces_chars=None,
+            text_limits=text_limits,
             manifestor_temperature=float(experiment_decoding(args.reflection_model, agentic=False)["temperature"]),
             react_top_p=float(experiment_decoding(args.reflection_model, agentic=True)["top_p"]),
         )
@@ -1224,6 +1230,7 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
             reflection_strategy=reflection_strategy,
             reflection_prompt_template=InstructionProposalSignature.default_prompt_template,
             action_selector=action_selector,
+            text_limits=text_limits,
         ),
         merge=merge_config,
     )
@@ -1410,6 +1417,10 @@ def main():
         help="Prompt template family; auto selects one from the student/solver model",
     )
     parser.add_argument("--tag", type=str, default="", help="Suffix appended to run dirs (e.g. rev2, 6871)")
+    parser.add_argument(
+        "--text-limits", type=parse_text_limits, default=None,
+        help="JSON object of optional character limits; omitted or null fields are unlimited",
+    )
     args = parser.parse_args()
     try:
         _validate_hotpotqa_model_pair(args.solver_model, args.reflection_model)

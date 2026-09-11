@@ -23,9 +23,9 @@ from gepa.strategies.action_space import (
 )
 from gepa.strategies.document_template import DocumentTemplate, EditTarget
 from gepa.strategies.edit_tools import EditTool
+from gepa.strategies.text_limits import clip_text, validate_char_limit
 
 logger = logging.getLogger(__name__)
-MAX_FEEDBACK_SUMMARY_CHARS = 8000
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,7 @@ class ControllerChoice:
 
 SEMANTIC_ACTION_CATALOG_VERSION = 3
 CONTROLLER_POLICY_VERSION = 4
-STATELESS_ACTION_MENU_VERSION = 2
+STATELESS_ACTION_MENU_VERSION = 3
 
 CONTROLLER_POLICY_CONTRACT: dict[str, Any] = {
     "version": CONTROLLER_POLICY_VERSION,
@@ -379,15 +379,22 @@ class StatelessActionConstraint:
         object.__setattr__(self, "menu_description", menu_description)
 
 
-def format_stateless_action_constraint(action: StatelessActionConstraint) -> str:
+def format_stateless_action_constraint(action: StatelessActionConstraint, target_chars: int | None = None) -> str:
     """Render one canonical action/region choice as a reflection constraint.
 
     Args:
         action: Semantic action bound to its selected target region.
+        target_chars: Optional soft section-size target; unlimited by default.
 
     Returns:
         Constraint suffix suitable for a stateless selected-section proposer.
     """
+    validate_char_limit("target_chars", target_chars)
+    length_guidance = (
+        f"Aim for a section body of about {target_chars} characters; preserve useful detail without repetition.\n\n"
+        if target_chars is not None
+        else ""
+    )
     section_scope = (
         f"The instruction document above is only the body of the selected '{action.target_section}' section. "
         "Return the complete revised body for that section without a '## <Section>' header. "
@@ -402,6 +409,7 @@ def format_stateless_action_constraint(action: StatelessActionConstraint) -> str
         f"Coupled text operator: {action.edit_tool.value}\n"
         f"{section_scope}\n"
         f"Guidance: {manifestation}\n\n"
+        f"{length_guidance}"
         "Make no other changes."
     )
 
@@ -490,17 +498,17 @@ class Controller(VerbalizedActionSelector[ControllerChoice]):
             exploration among positive-probability choices.
     """
 
-def summarize_feedback(reflective_entries: Any, max_chars: int = MAX_FEEDBACK_SUMMARY_CHARS) -> str:
-    """Join feedback and truncate its raw prefix before adding an ellipsis.
+def summarize_feedback(reflective_entries: Any, max_chars: int | None = None) -> str:
+    """Join all feedback, optionally retaining a marked prefix.
 
     Args:
         reflective_entries: Rows carrying ``Feedback`` or ``execution_feedback``.
-        max_chars: Characters retained from non-empty joined feedback before
-            an optional ``...`` suffix. The no-feedback marker is returned
+        max_chars: Source characters retained before an omission marker, or
+            ``None`` for unlimited. The no-feedback marker is returned
             verbatim regardless of this limit.
 
     Returns:
-        Joined feedback, a truncated prefix plus an ellipsis, or the
+        Joined feedback, a marked prefix, or the
         no-feedback marker.
     """
     parts: list[str] = []
@@ -509,6 +517,5 @@ def summarize_feedback(reflective_entries: Any, max_chars: int = MAX_FEEDBACK_SU
         if feedback:
             parts.append(str(feedback))
     summary = "\n".join(parts)
-    if len(summary) > max_chars:
-        summary = summary[:max_chars] + "..."
+    summary = clip_text(summary, max_chars)
     return summary or "(no feedback available)"

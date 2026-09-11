@@ -18,11 +18,11 @@ import os
 import random
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 from gepa.proposer.reflective_mutation.base import LanguageModel
 from gepa.proposer.reflective_mutation.manifestor import (
-    MAX_TRACES_CHARS,
     ManifestationError,
     Manifestor,
 )
@@ -33,7 +33,7 @@ from gepa.proposer.reflective_mutation.reflection_lm import (
     StatelessReflectionLM,
 )
 from gepa.response_journal import stable_api_base_identity
-from gepa.strategies.action_space import DOCUMENT_LENGTH_CONTRACT, IncompleteActionDistributionError
+from gepa.strategies.action_space import IncompleteActionDistributionError
 from gepa.strategies.document_template import TEMPLATE_FAMILIES, DocumentTemplate, MalformedDocumentError
 from gepa.strategies.edit_tools import EDIT_TOOL_SETS
 from gepa.strategies.intervention import (
@@ -46,8 +46,8 @@ from gepa.strategies.intervention import (
     summarize_feedback,
 )
 from gepa.strategies.reflection_context import REFLECTION_CONTEXT_CONTRACT, compact_reflection_records
+from gepa.strategies.text_limits import TextLimitError, TextLimits, clip_text, resolve_text_limits
 
-MAX_HISTORY_TEXT_CHARS = 2000
 MAX_HISTORY_STEPS = 16
 MAX_HISTORY_EDIT_ENTRIES = 32
 REFLECTION_RUN_CONTRACT_FILENAME = "reflection-run-contract.json"
@@ -187,21 +187,19 @@ def ensure_reflection_run_contract(run_dir: str, contract: Mapping[str, Any]) ->
     return path
 
 
-def _bounded_history_text(value: Any) -> str | None:
+def _bounded_history_text(value: Any, max_chars: int | None = None) -> str | None:
     """Render one optional history field within its persistent text bound.
 
     Args:
         value: Field value to stringify, or ``None`` when absent.
+        max_chars: Optional source-character limit for this stored field.
 
     Returns:
         Original string representation, a length-marked prefix, or ``None``.
     """
     if value is None:
         return None
-    text = str(value)
-    if len(text) <= MAX_HISTORY_TEXT_CHARS:
-        return text
-    return text[:MAX_HISTORY_TEXT_CHARS] + f"...(+{len(text) - MAX_HISTORY_TEXT_CHARS} chars)"
+    return clip_text(str(value), max_chars)
 
 
 def _react_chat_messages(steps: Sequence[Any]) -> list[dict[str, str]]:
@@ -465,12 +463,17 @@ class ThreeRoleReflectionLM:
         base_lm_run_identity: Mapping[str, Any] | None = None,
         controller_lm_run_identity: Mapping[str, Any] | None = None,
         manifestor_lm_run_identity: Mapping[str, Any] | None = None,
-        manifestor_traces_chars: int | None = MAX_TRACES_CHARS,
+        manifestor_traces_chars: int | None = None,
         proposer_model: str | None = None,
         react_max_iterations: int | None = None,
         react_max_tool_calls: int | None = None,
+        text_limits: TextLimits | None = None,
     ):
         """Validate and store the complete three-role strategy configuration.
+
+        ``text_limits`` configures optional character budgets for all roles.
+        Explicit legacy ``max_chars`` and ``manifestor_traces_chars`` values
+        override their corresponding entries.
 
         Args:
             base_lm: ReAct V2 model, also the default Controller model.
@@ -540,7 +543,13 @@ class ThreeRoleReflectionLM:
         self.logger = logger
         self.reflection_prompt_template = reflection_prompt_template
         self.max_menu = max_menu
-        self.max_chars = max_chars
+        limits = resolve_text_limits(text_limits)
+        if max_chars is not None:
+            limits = replace(limits, max_component_chars=max_chars)
+        if manifestor_traces_chars is not None:
+            limits = replace(limits, manifestor_trace_chars=manifestor_traces_chars)
+        self.text_limits = limits
+        self.max_chars = limits.max_component_chars
         self.controller_lm = controller_lm if controller_lm is not None else base_lm
         self.manifestor_lm = manifestor_lm if manifestor_lm is not None else base_lm
         self.base_lm_run_identity = base_lm_run_identity
@@ -554,7 +563,7 @@ class ThreeRoleReflectionLM:
             if manifestor_lm is None and manifestor_lm_run_identity is None
             else manifestor_lm_run_identity
         )
-        self.manifestor_traces_chars = manifestor_traces_chars
+        self.manifestor_traces_chars = limits.manifestor_trace_chars
         inferred_model = proposer_model
         if inferred_model is None:
             model_attribute = getattr(base_lm, "model", None)
@@ -563,7 +572,9 @@ class ThreeRoleReflectionLM:
         self.react_max_iterations = react_max_iterations
         self.react_max_tool_calls = react_max_tool_calls
         self._stateless: StatelessReflectionLM | None = (
-            StatelessReflectionLM(base_lm, reflection_prompt_template, logger, rng=self.rng) if level == 0 else None
+            StatelessReflectionLM(base_lm, reflection_prompt_template, logger, rng=self.rng, text_limits=limits)
+            if level == 0
+            else None
         )
 
     def _component_kind(self, name: str) -> str:
@@ -664,7 +675,7 @@ class ThreeRoleReflectionLM:
                 "when constructing ThreeRoleReflectionLM with custom callables."
             )
         return {
-            "schema_version": 8,
+            "schema_version": 9,
             "strategy": "three_role_reflection",
             "reflection_level": self.level,
             "edit_tool_set": self.edit_tool_set,
@@ -680,7 +691,8 @@ class ThreeRoleReflectionLM:
                 else None
             ),
             "max_chars": self.max_chars,
-            "document_length": {**DOCUMENT_LENGTH_CONTRACT, "max_component_chars": self.max_chars},
+            "document_length": self.text_limits.document_contract(),
+            "text_limits": self.text_limits.to_dict(),
             "manifestor_traces_chars": self.manifestor_traces_chars,
             "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
             "manifestor_delivery": "user_message",
@@ -967,7 +979,7 @@ class ThreeRoleReflectionLM:
 
             template = self.templates[self._component_kind(name)]
             text = candidate[name]
-            feedback = summarize_feedback(entries)
+            feedback = summarize_feedback(entries, self.text_limits.controller_feedback_chars)
             traces = _summarize_traces(entries)
             feedback_in_traces = "See each example's Feedback in Execution traces below."
             section_bodies = template.parse(text)
@@ -1001,6 +1013,7 @@ class ThreeRoleReflectionLM:
                     tau=self.tau,
                     rng=self.rng,
                     require_full_support=self.level >= 2,
+                    text_limits=self.text_limits,
                 )
                 try:
                     action = controller.select(
@@ -1010,7 +1023,7 @@ class ThreeRoleReflectionLM:
                         feedback_summary=feedback,
                     )[0]
                 except IncompleteActionDistributionError as exc:
-                    error = _bounded_history_text(exc) or "Controller action distribution failed."
+                    error = _bounded_history_text(exc, self.text_limits.history_text_chars) or "Controller action distribution failed."
                     controller_failures.append({"component": name, "error": error})
                     dropped.append(name)
                     if self.logger is not None:
@@ -1032,6 +1045,7 @@ class ThreeRoleReflectionLM:
                     self.manifestor_lm,
                     self.logger,
                     self.manifestor_traces_chars,
+                    text_limits=self.text_limits,
                 )
                 try:
                     steering_message = manifestor.manifest(
@@ -1041,7 +1055,7 @@ class ThreeRoleReflectionLM:
                         traces,
                     )
                 except ManifestationError as exc:
-                    error = _bounded_history_text(exc)
+                    error = _bounded_history_text(exc, self.text_limits.history_text_chars)
                     failed_proposer_record = {
                         "react_iterations": 0,
                         "react_tool_calls": 0,
@@ -1060,7 +1074,7 @@ class ThreeRoleReflectionLM:
                             "semantic_action": semantic_action,
                             "steering_message": "",
                             "manifestor_delivery": "user_message",
-                            "feedback": _bounded_history_text(feedback),
+                            "feedback": _bounded_history_text(feedback, self.text_limits.history_text_chars),
                             "controller_sampling": controller_sampling,
                             "manifestor_error": error,
                             "executed_edit": [],
@@ -1089,6 +1103,7 @@ class ThreeRoleReflectionLM:
                 max_iterations=self.react_max_iterations,
                 max_tool_calls=self.react_max_tool_calls,
                 logger=self.logger,
+                text_limits=self.text_limits,
             )
             result = react.propose(
                 region_text,
@@ -1106,12 +1121,12 @@ class ThreeRoleReflectionLM:
                 "react_steps": [
                     {
                         "turn": step.turn,
-                        "assistant": _bounded_history_text(step.assistant),
+                        "assistant": _bounded_history_text(step.assistant, self.text_limits.history_text_chars),
                         "action": step.action,
-                        "observation": _bounded_history_text(step.observation),
-                        "error": _bounded_history_text(step.error),
+                        "observation": _bounded_history_text(step.observation, self.text_limits.history_text_chars),
+                        "error": _bounded_history_text(step.error, self.text_limits.history_text_chars),
                         "executed_edit": [
-                            _bounded_history_text(value) or ""
+                            _bounded_history_text(value, self.text_limits.history_text_chars) or ""
                             for value in list(step.executed_edit)[:MAX_HISTORY_EDIT_ENTRIES]
                         ],
                     }
@@ -1130,6 +1145,13 @@ class ThreeRoleReflectionLM:
                         f"Edited component is {len(new_component)} characters, exceeding max_chars={self.max_chars}."
                     )
                     new_component = None
+                elif self.text_limits.max_candidate_chars is not None:
+                    try:
+                        self.text_limits.check_candidate({**candidate, **proposal.new_texts, name: new_component})
+                    except TextLimitError as exc:
+                        result.changed = False
+                        result.dropped_reason = str(exc)
+                        new_component = None
 
             record = {
                 "backend": "react_v2",
@@ -1140,16 +1162,16 @@ class ThreeRoleReflectionLM:
                 "action_target_section": section,
                 "preferred_edit_tool": preferred_edit_tool,
                 "semantic_action": semantic_action,
-                "steering_message": _bounded_history_text(steering_message) if steering_message is not None else "",
+                "steering_message": _bounded_history_text(steering_message, self.text_limits.history_text_chars) if steering_message is not None else "",
                 "manifestor_delivery": "user_message",
-                "feedback": _bounded_history_text(feedback),
+                "feedback": _bounded_history_text(feedback, self.text_limits.history_text_chars),
                 "controller_sampling": controller_sampling,
                 "manifestor_error": None,
                 "executed_edit": [
-                    _bounded_history_text(value) or ""
+                    _bounded_history_text(value, self.text_limits.history_text_chars) or ""
                     for value in list(result.executed_edit)[:MAX_HISTORY_EDIT_ENTRIES]
                 ],
-                "dropped_reason": _bounded_history_text(result.dropped_reason),
+                "dropped_reason": _bounded_history_text(result.dropped_reason, self.text_limits.history_text_chars),
                 "attempt_status": "completed" if result.changed else "dropped",
                 "tracking_id": _tracking_id(action),
                 "branch_history_length": len(history),

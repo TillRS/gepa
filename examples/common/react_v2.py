@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from gepa.lm import LM
-from gepa.proposer.reflective_mutation.manifestor import MAX_TRACES_CHARS
 from gepa.proposer.reflective_mutation.three_role import ThreeRoleReflectionLM
 from gepa.strategies.document_template import TEMPLATE_FAMILIES, infer_template_family
+from gepa.strategies.text_limits import TextLimits
 
 _TASK_SECTIONS = {
     "system_prompt": {
@@ -198,9 +198,10 @@ def build_react_v2_strategy(
     component_kinds: dict[str, str] | None = None,
     controller_selection: str = "verbalized",
     rng: random.Random | None = None,
-    manifestor_traces_chars: int | None = MAX_TRACES_CHARS,
+    manifestor_traces_chars: int | None = None,
     manifestor_temperature: float = 0.0,
     react_top_p: float | None = None,
+    text_limits: TextLimits | None = None,
 ) -> tuple[ThreeRoleReflectionLM, str]:
     """Build Controller -> Manifestor -> ReAct V2 with explicit role settings.
 
@@ -225,6 +226,7 @@ def build_react_v2_strategy(
         react_top_p: Optional ReAct-only top-p override. When it differs from
             the shared settings, verbalized Controller selection uses a
             separate client with the original settings.
+        text_limits: Optional character limits shared across all optimizer roles.
 
     Returns:
         Configured three-role strategy and its resolved template family.
@@ -253,5 +255,6 @@ def build_react_v2_strategy(
         proposer_model=proposer_model or reflection_model,
         rng=rng,
         manifestor_traces_chars=manifestor_traces_chars,
+        text_limits=text_limits,
     )
     return strategy, resolved_family
