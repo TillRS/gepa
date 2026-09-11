@@ -60,8 +60,8 @@ _EXPERIMENT_REQUEST_OVERRIDES: dict[str, dict[str, object]] = {
 }
 
 
-def experiment_decoding(model: str) -> dict[str, int | float | str]:
-    """Return the fixed decoding settings for one experiment model.
+def experiment_decoding(model: str, *, agentic: bool = True) -> dict[str, int | float | str]:
+    """Return provider decoding settings for the model and kind of work.
 
     Qwen3.8-27B and DeepSeek-V4-Flash-0731 use their published thinking-mode sampling
     parameters. Maximum DeepSeek reasoning is carried separately in its request
@@ -70,6 +70,9 @@ def experiment_decoding(model: str) -> dict[str, int | float | str]:
 
     Args:
         model: Exact LiteLLM model identifier used by a benchmark run.
+        agentic: Whether the role iteratively uses tools. DeepSeek recommends
+            top-p 0.95 for agentic work and 1.0 otherwise. The default preserves
+            existing callers; reviewed benchmarks classify each role explicitly.
 
     Returns:
         Independent decoding-parameter mapping for the requested model.
@@ -78,10 +81,13 @@ def experiment_decoding(model: str) -> dict[str, int | float | str]:
         ValueError: The model is not a supported experiment runtime.
     """
     try:
-        return dict(_EXPERIMENT_DECODING[model])
+        decoding = dict(_EXPERIMENT_DECODING[model])
     except KeyError as exc:
         supported = ", ".join(_EXPERIMENT_DECODING)
         raise ValueError(f"Unsupported experiment model {model!r}; expected one of: {supported}") from exc
+    if model == DEEPSEEK_V4_FLASH_MODEL and not agentic:
+        decoding["top_p"] = 1.0
+    return decoding
 
 
 def experiment_model_version(model: str) -> str:

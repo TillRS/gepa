@@ -165,7 +165,7 @@ def resolve_hotpotqa_lm_kwargs(
     """
     kwargs: dict[str, object] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
-        **experiment_decoding(model),
+        **experiment_decoding(model, agentic=False),
         **experiment_request_overrides(model),
     }
     if model in {QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL}:

@@ -411,14 +411,15 @@ def test_three_role_run_contract_blocks_catalog_or_policy_drift(tmp_path: Path) 
     """
     strat, _ = strategy(2)
     contract = strat.run_contract({"sys": PROMPT})
-    assert contract["schema_version"] == 5
+    assert contract["schema_version"] == 6
     assert contract["component_kinds"] == {"sys": "system_prompt"}
     assert contract["controller"]["version"] == 4
     assert contract["controller"]["factorization"] == "P(region, action)"
     assert len(contract["semantic_action_spaces"]["system_prompt"]["actions"]) == 10
     assert contract["semantic_action_spaces"]["system_prompt"]["kind"] == "prompt"
     assert contract["reflection_prompt_template"] is None
-    assert contract["controller_react_lm"]["configuration_source"] == "explicit"
+    assert contract["proposer_lm"]["configuration_source"] == "explicit"
+    assert contract["controller_lm"] == contract["proposer_lm"]
     assert contract["manifestor_lm"]["configuration_source"] == "explicit"
     assert contract["branch_history"] == {
         "storage": "target_scoped_user_assistant_messages",
@@ -442,7 +443,7 @@ def test_three_role_run_contract_blocks_catalog_or_policy_drift(tmp_path: Path) 
 
 
 def test_three_role_run_contract_identifies_role_lm_configuration_without_credentials() -> None:
-    """Distinguish Controller/ReAct and Manifestor behavior without writing secrets."""
+    """Distinguish all three role configurations without writing secrets."""
     base_lm = LM(
         "openai/controller-model",
         temperature=0.7,
@@ -459,11 +460,12 @@ def test_three_role_run_contract_identifies_role_lm_configuration_without_creden
         temperature=0.0,
         api_key="manifestor-secret",
     )
-    strat = ThreeRoleReflectionLM(base_lm, 2, manifestor_lm=manifestor_lm)
+    controller_lm = LM("openai/controller-model", top_p=1.0, api_key="separate-controller-secret")
+    strat = ThreeRoleReflectionLM(base_lm, 2, controller_lm=controller_lm, manifestor_lm=manifestor_lm)
     contract = strat.run_contract({"sys": PROMPT})
 
-    assert contract["controller_react_lm"]["model"] == "openai/controller-model"
-    assert contract["controller_react_lm"]["completion_kwargs"] == {
+    assert contract["proposer_lm"]["model"] == "openai/controller-model"
+    assert contract["proposer_lm"]["completion_kwargs"] == {
         "temperature": 0.7,
         "max_tokens": 123,
         "api_base": "https://example.test/v1",
@@ -473,6 +475,7 @@ def test_three_role_run_contract_identifies_role_lm_configuration_without_creden
         "secret_key": "<redacted>",
         "private_key": "<redacted>",
     }
+    assert contract["controller_lm"]["completion_kwargs"] == {"top_p": 1.0, "api_key": "<redacted>"}
     assert contract["manifestor_lm"]["model"] == "openai/manifestor-model"
     assert contract["manifestor_lm"]["completion_kwargs"]["temperature"] == 0.0
     assert contract["manifestor_lm"]["completion_kwargs"]["api_key"] == "<redacted>"
@@ -504,7 +507,7 @@ def test_three_role_run_contract_normalizes_only_ephemeral_loopback_ports(tmp_pa
     external = contract_for("https://different-provider.test/v1")
 
     assert first == resumed
-    assert first["controller_react_lm"]["completion_kwargs"]["api_base"] == "http://127.0.0.1/v1"
+    assert first["proposer_lm"]["completion_kwargs"]["api_base"] == "http://127.0.0.1/v1"
     ensure_reflection_run_contract(str(tmp_path), first)
     assert ensure_reflection_run_contract(str(tmp_path), resumed)
     with pytest.raises(ValueError, match="different reflection strategy contract"):
@@ -516,6 +519,36 @@ def test_three_role_run_contract_requires_identity_for_custom_lm() -> None:
     strat = ThreeRoleReflectionLM(ThreeRoleLM(DIRECT_REEXPRESS_REPLIES), 2)
     with pytest.raises(ValueError, match="stable run identity"):
         strat.run_contract({"sys": PROMPT})
+
+
+def test_separate_controller_sampling_is_material_to_resume(tmp_path: Path) -> None:
+    """Reject a Controller-only sampling change even when editor settings match."""
+    base = LM("hosted_vllm/test-model", top_p=0.95)
+    original = ThreeRoleReflectionLM(base, 2, controller_lm=LM(base.model, top_p=0.95))
+    updated = ThreeRoleReflectionLM(base, 2, controller_lm=LM(base.model, top_p=1.0))
+    ensure_reflection_run_contract(str(tmp_path), original.run_contract({"sys": PROMPT}))
+    with pytest.raises(ValueError, match="different reflection strategy contract"):
+        ensure_reflection_run_contract(str(tmp_path), updated.run_contract({"sys": PROMPT}))
+
+
+@pytest.mark.parametrize("controller_selection", ["verbalized", "uniform_random"])
+def test_three_role_routes_calls_to_the_selected_clients(controller_selection: str) -> None:
+    """Use the dedicated Controller only for verbalized selection and preserve other roles."""
+    controller = ThreeRoleLM([])
+    manifestor = ThreeRoleLM([])
+    strat, editor = strategy(
+        2,
+        controller_selection=controller_selection,
+        controller_lm=controller,
+        manifestor_lm=manifestor,
+    )
+    if controller_selection == "uniform_random":
+        strat.rng.choice = lambda menu: next(action for action in menu if action.menu_id.startswith("reexpress@Rules/"))
+    proposal, _ = strat.reflect({"sys": PROMPT}, deepcopy(SYS_REFLECTIVE_DATASET), ["sys"])
+    assert proposal.new_texts["sys"] != PROMPT
+    assert controller.roles == (["controller"] if controller_selection == "verbalized" else [])
+    assert manifestor.roles == ["manifestor"]
+    assert editor.roles == ["react_v2"]
 
 
 def test_level2_selects_semantic_action_manifests_and_executes_one_direct_call() -> None:
@@ -1111,6 +1144,12 @@ def test_strategy_hooks_and_cost_tracking_remain_compatible() -> None:
 
     shared = ThreeRoleReflectionLM(base, level=2, manifestor_lm=base)
     assert shared.total_cost == pytest.approx(1.25)
+
+    controller = CostTrackingLM(0.75, [])
+    separate = ThreeRoleReflectionLM(base, level=2, controller_lm=controller, manifestor_lm=manifestor)
+    assert separate.total_cost == pytest.approx(2.5)
+    shared_guidance = ThreeRoleReflectionLM(base, level=2, controller_lm=manifestor, manifestor_lm=manifestor)
+    assert shared_guidance.total_cost == pytest.approx(1.75)
 
 
 def test_explicit_strategy_rng_remains_independent_of_engine_sampling() -> None:
