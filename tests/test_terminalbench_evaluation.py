@@ -184,6 +184,11 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
         **contract["student_decoding"],
         **contract["student_request_overrides"],
     }
+    assert kwargs["student_agent_kwargs"]["llm_kwargs"]["extra_body"]["chat_template_kwargs"] == (
+        {"enable_thinking": True, "reasoning_effort": "xhigh"}
+        if model == QWEN3_8_27B_MODEL
+        else {"thinking": True, "reasoning_effort": "max"}
+    )
     evaluate.main()
     assert runner.run.call_count == 21
 
@@ -349,6 +354,26 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
             contract["seed"] = 19
         path.write_text(json.dumps(contract))
     with pytest.raises(ValueError):
+        evaluate.freeze_comparison(run_dirs)
+
+
+@pytest.mark.parametrize("role", ["student", "proposer"])
+@pytest.mark.parametrize("damage", ["implicit", "lower_effort", "thinking_disabled"])
+def test_reasoning_changes_are_rejected_before_final_test(tmp_path: Path, role: str, damage: str) -> None:
+    """Reject implicit or changed Qwen reasoning settings before freezing test candidates."""
+    run_dirs = _write_comparison(tmp_path, "tb4")
+    path = run_dirs["react_v2"] / RUN_CONTRACT_FILENAME
+    contract = json.loads(path.read_text())
+    if damage == "implicit":
+        contract[f"{role}_request_overrides"] = {}
+    else:
+        template_kwargs = contract[f"{role}_request_overrides"]["extra_body"]["chat_template_kwargs"]
+        if damage == "lower_effort":
+            template_kwargs["reasoning_effort"] = "low"
+        else:
+            template_kwargs["enable_thinking"] = False
+    path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="expected a matching react_v2 run"):
         evaluate.freeze_comparison(run_dirs)
 
 

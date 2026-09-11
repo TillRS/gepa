@@ -322,7 +322,7 @@ def build_run_contract(
         "reflection_role_decoding": reflection_role_decoding,
         "proposer_model": args.proposer_model,
         "proposer_model_version": experiment_model_version(args.proposer_model),
-        "proposer_request_overrides": experiment_request_overrides(args.proposer_model),
+        "proposer_request_overrides": experiment_request_overrides(args.proposer_model, explicit_reasoning=True),
         "proposer_num_retries": EXPERIMENT_NUM_RETRIES,
         "reflection_level": reflection_level,
         "reflection_minibatch_size": args.reflection_minibatch_size,
@@ -341,7 +341,7 @@ def build_run_contract(
         "student_decoding": experiment_decoding(args.student_model, agentic=True),
         "student_model": args.student_model,
         "student_model_version": experiment_model_version(args.student_model),
-        "student_request_overrides": experiment_request_overrides(args.student_model),
+        "student_request_overrides": experiment_request_overrides(args.student_model, explicit_reasoning=True),
         "student_model_info": experiment_model_info(args.student_model),
         "student_num_retries": EXPERIMENT_NUM_RETRIES,
         "template_family": resolved_family,
@@ -383,7 +383,7 @@ def main() -> None:
         "llm_kwargs": {
             "num_retries": EXPERIMENT_NUM_RETRIES,
             **experiment_decoding(args.student_model, agentic=True),
-            **experiment_request_overrides(args.student_model),
+            **experiment_request_overrides(args.student_model, explicit_reasoning=True),
         }
     }
     student_agent_kwargs["model_info"] = experiment_model_info(args.student_model)
@@ -406,7 +406,7 @@ def main() -> None:
     reflection_lm_kwargs: dict[str, Any] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
         **experiment_decoding(args.proposer_model, agentic=False),
-        **experiment_request_overrides(args.proposer_model),
+        **experiment_request_overrides(args.proposer_model, explicit_reasoning=True),
     }
     if args.proposer_api_base is not None:
         reflection_lm_kwargs["api_base"] = args.proposer_api_base

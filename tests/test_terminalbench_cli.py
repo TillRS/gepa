@@ -275,7 +275,7 @@ def test_provider_settings_reach_all_runtime_roles(
     harbor_kwargs = harbor_factory.call_args.kwargs
     optimize_kwargs = optimizer.call_args.kwargs
     student_kwargs = harbor_kwargs["student_agent_kwargs"]
-    expected_body = experiment_request_overrides(model).get("extra_body")
+    expected_body = experiment_request_overrides(model, explicit_reasoning=True)["extra_body"]
     general = experiment_decoding(model, agentic=False)
     agentic = experiment_decoding(model, agentic=True)
     temperature = general["temperature"]
@@ -298,6 +298,7 @@ def test_provider_settings_reach_all_runtime_roles(
         assert strategy.controller_selection == ("uniform_random" if condition == "react_v2_random" else "verbalized")
         assert strategy.base_lm.model == strategy.manifestor_lm.model == model
         assert strategy.base_lm.completion_kwargs.get("extra_body") == expected_body
+        assert strategy.manifestor_lm.completion_kwargs.get("extra_body") == expected_body
         assert strategy.base_lm.completion_kwargs["api_base"] == "http://localhost:8000/v1"
         assert strategy.base_lm.completion_kwargs["temperature"] == temperature
         assert strategy.manifestor_lm.completion_kwargs["temperature"] == temperature
@@ -305,6 +306,7 @@ def test_provider_settings_reach_all_runtime_roles(
         assert strategy.manifestor_lm.completion_kwargs["top_p"] == general["top_p"]
         if condition == "react_v2":
             assert strategy.controller_lm.model == model
+            assert strategy.controller_lm.completion_kwargs.get("extra_body") == expected_body
             assert strategy.controller_lm.completion_kwargs["temperature"] == temperature
             assert strategy.controller_lm.completion_kwargs["top_p"] == general["top_p"]
     elif condition == "action":
@@ -337,7 +339,7 @@ def test_provider_settings_reach_all_runtime_roles(
     assert (
         contract["student_request_overrides"]
         == contract["proposer_request_overrides"]
-        == experiment_request_overrides(model)
+        == experiment_request_overrides(model, explicit_reasoning=True)
     )
     assert contract["manifestor_temperature"] == temperature
     assert contract["student_decoding"] == agentic

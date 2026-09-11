@@ -405,6 +405,16 @@ clients preserve these settings. Role-specific decoding is recorded and
 validated before resume or final comparison. These values apply at both
 optimization budgets and during final task evaluation.
 
+Every role explicitly enables thinking: Qwen requests `xhigh`, its provider
+default, and DeepSeek requests `max`, the setting used in its published
+code-agent evaluations. Both pass the controls through
+`extra_body.chat_template_kwargs`; Qwen uses `enable_thinking=true` and
+DeepSeek uses `thinking=true`. Applying DeepSeek `max` to optimizer roles and
+HotPotQA is our approved experimental choice, documented in the provider source
+review. Contracts and final evaluation preserve these fields and reject
+missing or changed reasoning settings. The output ceiling remains 16,384
+tokens and is reviewed separately from effort.
+
 Offline tests in `tests/harbor/` exercise the shared actual agent loop for both benchmarks and Harbor job
 schemas with simulated model and terminal boundaries. They make no paid model
 calls and do not require Docker. The upstream prompt and adapted methods are
