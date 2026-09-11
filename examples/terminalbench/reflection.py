@@ -11,6 +11,7 @@ from gepa.proposer.reflective_mutation.reflection_lm import ReflectionProposal, 
 from gepa.strategies.action_space import ActionSelector, VerbalizedActionSelector
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import SEMANTIC_ACTIONS, StatelessActionConstraint
+from gepa.strategies.text_limits import TextLimitError, TextLimits, resolve_text_limits
 
 
 class ComponentActionReflectionLM:
@@ -24,6 +25,7 @@ class ComponentActionReflectionLM:
         component_kinds: dict[str, str],
         template_family: str,
         rng: random.Random,
+        text_limits: TextLimits | None = None,
     ) -> None:
         """Build the existing HotPotQA selector and rewriter for each document kind.
 
@@ -33,9 +35,11 @@ class ComponentActionReflectionLM:
             component_kinds: Document role for every editable component.
             template_family: Provider-specific prompt and skill section templates.
             rng: Seeded selection stream, isolated from training-task sampling.
+            text_limits: Optional limits shared by each selector and rewriter.
         """
         self.component_kinds = dict(component_kinds)
         self.rng = rng
+        self.text_limits = resolve_text_limits(text_limits)
         self.reflectors: dict[str, StatelessReflectionLM] = {}
         for kind in sorted(set(component_kinds.values())):
             template = TEMPLATE_FAMILIES[template_family][kind]
@@ -47,9 +51,11 @@ class ComponentActionReflectionLM:
             self.reflectors[kind] = StatelessReflectionLM(
                 lm,
                 action_selector=cast(
-                    ActionSelector[StatelessActionConstraint], VerbalizedActionSelector(actions, lm=selector_lm)
+                    ActionSelector[StatelessActionConstraint],
+                    VerbalizedActionSelector(actions, lm=selector_lm, text_limits=self.text_limits),
                 ),
                 rng=rng,
+                text_limits=self.text_limits,
             )
 
     def bind_logger(self, logger: Any) -> None:
@@ -100,4 +106,11 @@ class ComponentActionReflectionLM:
             proposal.prompts.update(edit.prompts)
             proposal.raw_lm_outputs.update(edit.raw_lm_outputs)
             proposal.metadata["component_actions"][name] = edit.metadata
+        if proposal.new_texts:
+            try:
+                self.text_limits.check_candidate({**candidate, **proposal.new_texts})
+            except TextLimitError as exc:
+                proposal.metadata["length_capped_dropped"] = list(proposal.new_texts)
+                proposal.metadata["text_limit_error"] = str(exc)
+                proposal.new_texts.clear()
         return proposal, self

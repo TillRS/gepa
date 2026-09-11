@@ -32,6 +32,7 @@ from gepa.adapters.terminal_bench_adapter.documents import COMPONENT_KINDS
 from gepa.core.adapter import EvaluationBatch
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
+from gepa.strategies.text_limits import TextLimits
 
 MANIFEST_PATH = Path(__file__).parents[1] / "examples" / "terminalbench" / "terminalbench-v4-manifest.json"
 
@@ -176,7 +177,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 19
+    assert contract["schema_version"] == 20
     assert contract["max_proposer_model_calls"] is None
     assert contract["react_execution"]["completion"] == "explicit_finish"
     assert contract["react_execution"]["max_iterations"] is None
@@ -187,7 +188,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     assert contract["failure_policy"]["accepted_trial_exceptions"] == ["AgentTimeoutError"]
     assert contract["failure_policy"]["harbor_max_retries"] == 0
     assert contract["reflection_feedback"]["reflection_split"] == "train"
-    assert contract["reflection_feedback"]["max_bytes_per_verifier_log"] == 8192
+    assert contract["reflection_feedback"]["max_chars_per_verifier_log"] is None
     assert contract["component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
@@ -228,10 +229,33 @@ def test_deepseek_run_contract_uses_the_separate_same_model_condition(tmp_path: 
 @pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
 @pytest.mark.parametrize("condition,budget", list(terminalbench_main.CAMPAIGN_CELLS.values()))
 @pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+@pytest.mark.parametrize("configured", [False, True])
 def test_provider_settings_reach_all_runtime_roles(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, condition: str, budget: str, model: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    experiment: str,
+    condition: str,
+    budget: str,
+    model: str,
+    configured: bool,
 ) -> None:
     """Forward each provider's sampling and thinking settings through every campaign cell."""
+    limits = (
+        TextLimits(
+            max_component_chars=25000,
+            max_candidate_chars=250000,
+            selector_target_chars=20000,
+            max_prompt_chars=200000,
+            controller_feedback_chars=17000,
+            stateless_feedback_chars=15000,
+            manifestor_trace_chars=80000,
+            manifestor_steering_chars=3000,
+            history_text_chars=7000,
+            verifier_log_chars=5000,
+        )
+        if configured
+        else TextLimits()
+    )
     requirements = Mock()
     monkeypatch.setattr(terminalbench_main.HarborCLI, "check_requirements", requirements)
     harbor_factory = Mock(wraps=terminalbench_main.HarborCLI)
@@ -243,6 +267,7 @@ def test_provider_settings_reach_all_runtime_roles(
         "argv",
         [
             "terminalbench",
+            *(["--text-limits", json.dumps(limits.to_dict())] if configured else []),
             "--experiment",
             experiment,
             "--condition",
@@ -275,6 +300,10 @@ def test_provider_settings_reach_all_runtime_roles(
     requirements.assert_called_once_with()
     harbor_kwargs = harbor_factory.call_args.kwargs
     optimize_kwargs = optimizer.call_args.kwargs
+    assert harbor_kwargs["text_limits"] == optimize_kwargs["text_limits"] == limits
+    saved = json.loads((tmp_path / "run" / terminalbench_main.RUN_CONTRACT_FILENAME).read_text())
+    assert saved["text_limits"] == limits.to_dict()
+    assert saved["reflection_feedback"]["max_chars_per_verifier_log"] == limits.verifier_log_chars
     student_kwargs = harbor_kwargs["student_agent_kwargs"]
     expected_body = experiment_request_overrides(model, explicit_reasoning=True)["extra_body"]
     general = terminalbench_decoding(model, agentic=False)
@@ -302,7 +331,8 @@ def test_provider_settings_reach_all_runtime_roles(
     clients = [optimize_kwargs["reflection_lm"]]
     if condition in terminalbench_main.FOREST_CONDITIONS:
         assert strategy.controller_selection == ("uniform_random" if condition == "react_v2_random" else "verbalized")
-        assert strategy.max_chars is None
+        assert strategy.max_chars == limits.max_component_chars
+        assert strategy.text_limits == limits
         clients.extend([strategy.base_lm, strategy.manifestor_lm])
         if condition == "react_v2":
             clients.append(strategy.controller_lm)
@@ -322,6 +352,7 @@ def test_provider_settings_reach_all_runtime_roles(
     elif condition == "action":
         assert isinstance(strategy, terminalbench_main.ComponentActionReflectionLM)
         for reflector in strategy.reflectors.values():
+            assert reflector.text_limits == reflector.action_selector.text_limits == limits
             clients.extend([reflector.lm, reflector.action_selector.lm])
             assert reflector.lm.model == reflector.action_selector.lm.model == model
             assert (
@@ -528,10 +559,12 @@ def test_six_cell_matrix_pins_methods_budgets_and_resume_identity(tmp_path: Path
         assert contract["module_selector"] == "all"
         assert contract["max_proposer_model_calls"] is None
         assert contract["document_length"] == {
-            "version": 1,
+            "version": 2,
             "max_component_chars": None,
+            "max_candidate_chars": None,
             "selector_target_chars": None,
         }
+        assert contract["text_limits"] == TextLimits().to_dict()
         if condition in terminalbench_main.FOREST_CONDITIONS:
             assert contract["react_execution"]["completion"] == "explicit_finish"
             assert contract["react_execution"]["max_iterations"] is None

@@ -55,7 +55,7 @@ from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import (
 )
 from gepa.lm import LM
 from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT
-from gepa.strategies.action_space import DOCUMENT_LENGTH_CONTRACT, stateless_selector_policy_contract
+from gepa.strategies.action_space import stateless_selector_policy_contract
 from gepa.strategies.intervention import (
     CONTROLLER_POLICY_CONTRACT,
     SEMANTIC_ACTION_CATALOGS,
@@ -63,6 +63,7 @@ from gepa.strategies.intervention import (
 )
 from gepa.strategies.proposal_sampling import SingleMutationSampling
 from gepa.strategies.reflection_context import REFLECTION_CONTEXT_CONTRACT
+from gepa.strategies.text_limits import parse_text_limits, resolve_text_limits
 from gepa.utils.stop_condition import MaxCandidateProposalsStopper
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -147,6 +148,12 @@ def build_parser() -> argparse.ArgumentParser:
         Configured argument parser.
     """
     parser = argparse.ArgumentParser(description="GEPA on pinned Terminal-Bench 2 or 4 through Harbor")
+    parser.add_argument(
+        "--text-limits",
+        type=parse_text_limits,
+        default=None,
+        help="JSON object of optional character limits; omitted or null fields are unlimited",
+    )
     parser.add_argument(
         "--experiment",
         choices=tuple(EXPERIMENT_MANIFESTS),
@@ -268,6 +275,7 @@ def build_run_contract(
     controller_policy = (
         UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT if condition == "react_v2_random" else CONTROLLER_POLICY_CONTRACT
     )
+    text_limits = resolve_text_limits(getattr(args, "text_limits", None))
     proposer_decoding = terminalbench_decoding(args.proposer_model, agentic=False)
     react_decoding = terminalbench_decoding(args.proposer_model, agentic=True)
     reflection_role_decoding = None
@@ -284,7 +292,7 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 19,
+        "schema_version": 20,
         "token_limits": terminalbench_limits(args.student_model),
         "token_usage_policy": deepcopy(TOKEN_USAGE_POLICY),
         "experiment": manifest.experiment,
@@ -305,10 +313,14 @@ def build_run_contract(
         "manifest": str(manifest.path),
         "max_metric_calls": args.max_metric_calls,
         "evaluation_protocol": dict(EVALUATION_PROTOCOL),
-        "reflection_feedback": deepcopy(REFLECTION_FEEDBACK_CONTRACT),
+        "reflection_feedback": {
+            **deepcopy(REFLECTION_FEEDBACK_CONTRACT),
+            "max_chars_per_verifier_log": text_limits.verifier_log_chars,
+        },
         "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
-        "manifestor_traces_chars": None,
-        "document_length": deepcopy(DOCUMENT_LENGTH_CONTRACT),
+        "manifestor_traces_chars": text_limits.manifestor_trace_chars,
+        "document_length": text_limits.document_contract(),
+        "text_limits": text_limits.to_dict(),
         "manifestor_temperature": float(proposer_decoding["temperature"]),
         "failure_policy": deepcopy(FAILURE_POLICY_CONTRACT),
         "optimization_budget": {
@@ -341,7 +353,10 @@ def build_run_contract(
         ),
         "semantic_controller_policy": deepcopy(controller_policy) if reflection_level == 2 else None,
         "stateless_selector_policy": (
-            {**stateless_selector_policy_contract("verbalized"), "component_schedule": "per_component"}
+            {
+                **stateless_selector_policy_contract("verbalized", text_limits=text_limits),
+                "component_schedule": "per_component",
+            }
             if condition == "action"
             else None
         ),
@@ -387,6 +402,7 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
     ensure_run_contract(args.run_dir, contract)
+    text_limits = resolve_text_limits(contract["text_limits"])
 
     student_agent_kwargs: dict[str, Any] = {
         "token_limits": contract["token_limits"],
@@ -409,6 +425,7 @@ def main() -> None:
         docker_executable=args.docker_executable,
         student_agent_kwargs=student_agent_kwargs,
         process_timeout_sec=args.harbor_process_timeout_sec,
+        text_limits=text_limits,
     )
     harbor.check_requirements()
     adapter = TerminalBenchAdapter(manifest, harbor)
@@ -437,7 +454,7 @@ def main() -> None:
             component_kinds=manifest.component_kinds,
             controller_selection=contract["controller_selection"],
             rng=random.Random(args.seed),
-            manifestor_traces_chars=None,
+            text_limits=text_limits,
             manifestor_temperature=contract["manifestor_temperature"],
             react_top_p=float(contract["reflection_role_decoding"]["react_v2_proposer"]["requested"]["top_p"]),
         )
@@ -460,6 +477,7 @@ def main() -> None:
             component_kinds=manifest.component_kinds,
             template_family=resolved_family,
             rng=random.Random(args.seed),
+            text_limits=text_limits,
         )
     optimize(
         seed_candidate=candidate,
@@ -484,6 +502,7 @@ def main() -> None:
         component_kinds=manifest.component_kinds,
         template_family=resolved_family,
         template_model=args.student_model,
+        text_limits=text_limits,
     )
 
 

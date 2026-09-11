@@ -29,6 +29,7 @@ from gepa.adapters.terminal_bench_adapter.documents import (
 )
 from gepa.proposer.reflective_mutation.reflection_lm import StatelessReflectionLM
 from gepa.strategies.intervention import summarize_feedback
+from gepa.strategies.text_limits import TextLimits, clip_text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "examples" / "terminalbench" / "terminalbench-v4-manifest.json"
@@ -773,18 +774,26 @@ def test_timeout_policy_rejects_unverified_infrastructure_and_extra_attempts(
 
 @pytest.mark.parametrize("manifest_path", [TB2_MANIFEST_PATH, MANIFEST_PATH], ids=["tb2", "tb4"])
 @pytest.mark.parametrize("reward", [0.0, 1.0])
+@pytest.mark.parametrize("maximum", [None, 128])
 def test_verifier_console_output_is_textual_feedback_for_every_component(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manifest_path: Path, reward: float
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manifest_path: Path, reward: float, maximum: int | None
 ) -> None:
     """Carry actual verifier text through Harbor parsing and reflection without changing the score."""
     manifest = load_terminalbench_manifest(manifest_path)
-    runner = HarborCLI(work_dir=tmp_path, **{**_RUNNER_OPTIONS, "manifest": manifest})
+    runner = HarborCLI(
+        work_dir=tmp_path,
+        text_limits=TextLimits(verifier_log_chars=maximum),
+        **{**_RUNNER_OPTIONS, "manifest": manifest},
+    )
     monkeypatch.setattr(runner, "check_requirements", Mock(return_value=("/mock/harbor", "/mock/docker")))
     task = manifest.tasks("train", 1)[0]
     diagnostics = {
-        "verifier/test-stdout.txt": "FAILED test_output: expected result.json to contain all records. שלום\n",
+        "verifier/test-stdout.txt": (
+            "FAILED test_output: expected result.json to contain all records.\n" + "x" * 300 + "\nשלום\n"  # noqa: RUF001
+        ),
         "verifier/test-stderr.txt": "Warning: optional diagnostic message\n",
     }
+    expected_logs = {path: clip_text(content, maximum, head_and_tail=True) for path, content in diagnostics.items()}
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         """Materialize the pinned Harbor layout with verifier log-file contents."""
@@ -809,14 +818,14 @@ def test_verifier_console_output_is_textual_feedback_for_every_component(
     assert evaluated.scores == [reward]
     assert evaluated.num_metric_calls == 1
     assert evaluated.trajectories is not None
-    assert evaluated.trajectories[0]["verifier_logs"] == diagnostics
+    assert evaluated.trajectories[0]["verifier_logs"] == expected_logs
     rows = adapter.make_reflective_dataset(candidate, evaluated, list(candidate))
     feedback = {entries[0]["Feedback"] for entries in rows.values()}
     assert len(feedback) == 1
     actual = json.loads(feedback.pop())
     assert actual["reward"] == reward
     assert actual["verifier_log_status"] == "available"
-    assert actual["verifier_logs"] == diagnostics
+    assert actual["verifier_logs"] == expected_logs
     assert "private verifier implementation" not in json.dumps(rows)
     assert "שלום" in rows["instruction_prompt"][0]["Feedback"]
     reflection_lm = Mock(return_value="```Revised instruction```")
@@ -836,25 +845,29 @@ def test_verifier_console_output_is_textual_feedback_for_every_component(
             adapter.make_reflective_dataset(candidate, evaluated, ["instruction_prompt"])
 
 
-def test_verifier_log_reader_preserves_ends_step_identity_and_original_files(tmp_path: Path) -> None:
-    """Bound large logs, include step output, and decode invalid bytes without losing the whole log."""
-    maximum = terminalbench_module.MAX_VERIFIER_LOG_BYTES
+@pytest.mark.parametrize("maximum", [None, 8192])
+def test_verifier_log_reader_preserves_ends_step_identity_and_original_files(tmp_path: Path, maximum: int | None) -> None:
+    """Preserve full logs by default, or marked excerpts under an explicit cap."""
     verifier = tmp_path / "verifier"
     verifier.mkdir()
     stdout = verifier / "test-stdout.txt"
-    content = b"TEST HEADER\n" + b"x" * maximum + b"\nFAILED final assertion"
+    content = b"TEST HEADER\r\n" + ("\u00e9" * 10000).encode() + b"\r\nFAILED final assertion"
     stdout.write_bytes(content)
     (verifier / "test-stderr.txt").write_bytes(b"diagnostic: \xff")
     step_dir = tmp_path / "steps" / "verify-output" / "verifier"
     step_dir.mkdir(parents=True)
     (step_dir / "test-stdout.txt").write_text("Step-specific failure", encoding="utf-8")
 
-    logs = terminalbench_module._read_verifier_logs(tmp_path)
+    logs = terminalbench_module._read_verifier_logs(tmp_path, max_chars=maximum)
     shortened = logs["verifier/test-stdout.txt"]
-    assert shortened.startswith("TEST HEADER\n")
+    assert shortened.startswith("TEST HEADER\r\n")
     assert shortened.endswith("FAILED final assertion")
-    assert f"{len(content) - maximum} bytes omitted" in shortened
-    assert len(shortened.encode()) < maximum + 100
+    if maximum is None:
+        assert shortened == content.decode()
+    else:
+        assert f"{len(content.decode()) - maximum} characters omitted" in shortened
+        assert len(shortened) < maximum + 100
+        assert "\ufffd" not in shortened
     assert logs["verifier/test-stderr.txt"] == "diagnostic: \ufffd"
     assert logs["steps/verify-output/verifier/test-stdout.txt"] == "Step-specific failure"
     assert stdout.read_bytes() == content

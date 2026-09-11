@@ -44,12 +44,14 @@ before another operation or submission. Run contracts record this policy and
 reject earlier checkpoints. This changes the optimizer editor's stopping rule;
 the approved per-call token budgets and benchmark task timeouts are unchanged.
 
-Evolved prompts and skills have no fixed character limit. The former
-10,000-character FOREST cap and 8,000-character selector target are removed,
-including the stateless action baseline's size instruction. Selectors retain
-the current length as information and encourage useful detail without
-unnecessary repetition. Model context and per-call output limits still apply.
-Run contracts record the length policy and require fresh state when it changes.
+All optimizer character limits default to unlimited and are independently
+configurable through the shared [text-limit settings](../../../../examples/common/text_limits.md).
+Pass `--text-limits` as a JSON object to configure complete prompts and skills,
+total candidate size, complete optimizer requests, selector targets, feedback,
+Manifestor traces and steering, saved diagnostic text, or verifier logs. Every
+method receives the same settings. Model context and per-call output limits
+still apply. Run contracts record all limits, reject changed settings on resume,
+and require matching settings across the final comparison.
 
 HotPotQA's budget levels are 6,871 and 13,742 metric calls. Terminal-Bench retains
 the approved epoch-based rule: four and eight training epochs. Thus the method
@@ -111,13 +113,14 @@ verifier run, not the verifier implementation or benchmark solution files.
 All 16 selected components receive the same feedback. Each optimizer retains
 its existing reflection procedure.
 
-Both Terminal-Bench experiments and HotPotQA remove the additional
-8,000-character Manifestor trace cap and rely on the configured model's context
-window. Exact repeated long strings and paragraphs are shown once per request
-with references for later occurrences. Long identical-line runs retain one line
-and their repetition count. Distinct text is not shortened. FOREST's Manifestor
-and editor read feedback once in the per-example traces. Context overflow stops
-the run through the provider error path instead of silently truncating evidence.
+Both Terminal-Bench experiments and HotPotQA default to unlimited Manifestor
+traces within the configured model's context window; `manifestor_trace_chars`
+can set an explicit allowance. Exact repeated long strings and paragraphs are
+shown once per request with references for later occurrences. Long identical-line
+runs retain one line and their repetition count. Distinct text is not shortened
+by default. FOREST's Manifestor and editor read feedback once in the per-example
+traces. Context overflow stops the run through the provider error path instead
+of silently truncating evidence.
 
 Harbor's copied-context steps refer to identical original steps when those
 originals are present in the same reflection input. Unmatched copied context and
@@ -127,16 +130,18 @@ and it no longer repeats the editable document body in every example's metadata.
 Context formatting and the Manifestor limit are pinned for resume and final
 comparison alongside the feedback policy.
 
-Each log contributes up to 8,192 source bytes. Longer logs retain equal portions
-from the beginning and end, separated by an explicit omitted-byte count. Full
-logs stay unchanged in the Harbor artifacts. Text uses UTF-8 with replacement
+Each log contributes its full text by default. Configure `verifier_log_chars`
+to retain source characters from the beginning and end with an omission marker.
+The limit counts Unicode characters, including for multibyte logs. Full logs
+stay unchanged in the Harbor artifacts. Text uses UTF-8 with replacement
 for invalid bytes. Missing logs are reported as unavailable and do not change a
 valid reward; a present but unreadable log raises an evidence error.
 
 Only training tasks may enter reflection. Validation still selects candidates,
 and held-out test feedback cannot enter optimization. The run contract pins the
-feedback version, log locations, byte limit, decoding, and missing-log policy.
-Earlier runs without this feedback contract require fresh directories.
+feedback version, log locations, optional character limit, decoding, and
+missing-log policy. Earlier runs without this feedback contract require fresh
+directories.
 
 #### Task failures, timeouts, and recovery
 

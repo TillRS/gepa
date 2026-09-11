@@ -30,10 +30,16 @@ from gepa.adapters.terminal_bench_adapter import (
     load_terminalbench_manifest,
 )
 from gepa.core.state import GEPAState, ValsetEvaluation
+from gepa.strategies.text_limits import TextLimits
 
 
 def _write_run(
-    root: Path, experiment: str, condition: str, model: str = QWEN3_8_27B_MODEL, budget: str = "standard"
+    root: Path,
+    experiment: str,
+    condition: str,
+    model: str = QWEN3_8_27B_MODEL,
+    budget: str = "standard",
+    text_limits: TextLimits | None = None,
 ) -> Path:
     """Create a real checkpoint whose validation winner is not the last candidate."""
     label = f"{condition}{'_2x' if budget == 'double' else ''}"
@@ -58,6 +64,8 @@ def _write_run(
             str(run_dir),
             "--harbor-work-dir",
             str(run_dir / "harbor"),
+            "--text-limits",
+            json.dumps(text_limits.to_dict() if text_limits else None),
         ]
     )
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
@@ -84,10 +92,12 @@ def _write_run(
     return run_dir
 
 
-def _write_comparison(root: Path, experiment: str, model: str = QWEN3_8_27B_MODEL) -> dict[str, Path]:
+def _write_comparison(
+    root: Path, experiment: str, model: str = QWEN3_8_27B_MODEL, text_limits: TextLimits | None = None
+) -> dict[str, Path]:
     """Create all six distinct standard/double-budget source checkpoints."""
     return {
-        label: _write_run(root, experiment, condition, model, budget)
+        label: _write_run(root, experiment, condition, model, budget, text_limits)
         for label, (condition, budget) in CAMPAIGN_CELLS.items()
     }
 
@@ -138,11 +148,13 @@ def _fake_runner(manifest, comparison, output_dir: Path, *, fail_on_call: int | 
 
 @pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
 @pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+@pytest.mark.parametrize("configured", [False, True])
 def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, model: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, model: str, configured: bool
 ) -> None:
     """Test all benchmark/model arms through the CLI without any optimization or model call."""
-    run_dirs = _write_comparison(tmp_path, experiment, model)
+    text_limits = TextLimits(verifier_log_chars=5000, manifestor_steering_chars=3000) if configured else TextLimits()
+    run_dirs = _write_comparison(tmp_path, experiment, model, text_limits)
     manifest, comparison = evaluate.freeze_comparison(run_dirs)
     for condition in CAMPAIGN_CELLS:
         assert comparison["source_runs"][condition]["selected_candidate_index"] == 1
@@ -176,6 +188,8 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
         assert scores["task_attempts"] == (120 if experiment == "tb2" else 60)
     kwargs = factory.call_args.kwargs
     contract = comparison["shared_configuration"]
+    assert contract["text_limits"] == text_limits.to_dict()
+    assert kwargs["text_limits"] == text_limits
     assert kwargs["student_model"] == model
     assert kwargs["student_api_base"] == contract["student_api_base"]
     assert kwargs["student_agent_kwargs"]["model_info"] == contract["student_model_info"]
@@ -339,7 +353,7 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
         elif damage == "different_policy":
             contract["controller_selection"] = "uniform_random"
         elif damage == "different_feedback":
-            contract["reflection_feedback"]["max_bytes_per_verifier_log"] = 2048
+            contract["reflection_feedback"]["max_chars_per_verifier_log"] = 2048
         elif damage == "different_failure_policy":
             contract["failure_policy"]["harbor_max_retries"] = 1
         elif damage == "different_context_policy":
@@ -423,6 +437,25 @@ def test_old_editor_limits_or_scope_cannot_enter_final_comparison(
     contract = json.loads(path.read_text())
     contract[policy][field] = value
     path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError):
+        evaluate.freeze_comparison(run_dirs)
+
+
+@pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
+@pytest.mark.parametrize("field", TextLimits.__dataclass_fields__)
+def test_changed_character_limits_cannot_resume_or_enter_final_comparison(
+    tmp_path: Path, experiment: str, field: str
+) -> None:
+    """Reject changes to any character setting before using a saved run."""
+    run_dirs = _write_comparison(tmp_path, experiment)
+    forest = run_dirs["react_v2"]
+    path = forest / RUN_CONTRACT_FILENAME
+    original = json.loads(path.read_text())
+    changed = json.loads(path.read_text())
+    changed["text_limits"][field] = 1234
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+        ensure_run_contract(forest, original)
     with pytest.raises(ValueError):
         evaluate.freeze_comparison(run_dirs)
 

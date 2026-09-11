@@ -23,6 +23,7 @@ from examples.terminalbench.main import (
 from gepa.adapters.terminal_bench_adapter import HarborCLI, TerminalBenchManifest, load_terminalbench_manifest
 from gepa.core.result import GEPAResult
 from gepa.core.state import GEPAState
+from gepa.strategies.text_limits import resolve_text_limits
 
 FROZEN_COMPARISON_FILENAME = "frozen-comparison.json"
 METHOD_SPECIFIC_FIELDS = {
@@ -289,6 +290,7 @@ def main() -> None:
         harbor_executable=args.harbor_executable,
         docker_executable=args.docker_executable,
         process_timeout_sec=contract["harbor_process_timeout_sec"],
+        text_limits=resolve_text_limits(contract["text_limits"]),
         student_agent_kwargs={
             "token_limits": contract["token_limits"],
             "model_info": contract["student_model_info"],

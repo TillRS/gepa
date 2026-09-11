@@ -28,6 +28,7 @@ from gepa.adapters.terminal_bench_adapter.documents import (
     write_document_bundle,
 )
 from gepa.core.adapter import EvaluationBatch, GEPAAdapter
+from gepa.strategies.text_limits import TextLimits, clip_text, resolve_text_limits, validate_char_limit
 
 PINNED_HARBOR_VERSION = "0.22.0"
 EXPERIMENT_DATASETS = {
@@ -65,9 +66,8 @@ SPLIT_NAMES = ("train", "val", "test")
 SPLIT_WEIGHTS = {"train": 0.40, "val": 0.30, "test": 0.30}
 SUPPORTED_ATIF_SCHEMA_VERSIONS = {f"ATIF-v1.{minor}" for minor in range(8)}
 VERIFIER_LOG_FILENAMES = ("test-stdout.txt", "test-stderr.txt")
-MAX_VERIFIER_LOG_BYTES = 8192
 REFLECTION_FEEDBACK_CONTRACT = {
-    "version": 3,
+    "version": 4,
     "score": "official_verifier_reward",
     "reflection_split": "train",
     "trajectory_directories": ["agent", "steps/*/agent"],
@@ -75,8 +75,8 @@ REFLECTION_FEEDBACK_CONTRACT = {
     "raw_trial_and_process_metadata": "artifacts_only",
     "verifier_log_filenames": list(VERIFIER_LOG_FILENAMES),
     "verifier_log_directories": ["verifier", "steps/*/verifier"],
-    "max_bytes_per_verifier_log": MAX_VERIFIER_LOG_BYTES,
-    "log_truncation": "equal_head_and_tail_with_omitted_byte_marker",
+    "max_chars_per_verifier_log": None,
+    "log_truncation": "optional_equal_head_and_tail_with_omitted_character_marker",
     "log_decoding": "utf-8-replace",
     "missing_verifier_logs": "explicitly_unavailable",
 }
@@ -233,20 +233,22 @@ class HarborExecutionError(RuntimeError):
     """Raised when a Harbor job fails before producing complete task results."""
 
 
-def _read_verifier_logs(trial_dir: Path) -> dict[str, str]:
-    """Read bounded verifier console output while preserving full files on disk.
+def _read_verifier_logs(trial_dir: Path, max_chars: int | None = None) -> dict[str, str]:
+    """Read complete verifier logs unless a character cutoff is configured.
 
     Args:
         trial_dir: One completed Harbor trial's artifact directory.
+        max_chars: Source-character allowance per log, or ``None`` for unlimited.
 
     Returns:
         Relative log paths mapped to UTF-8 text. Oversized files retain their
-        beginning and end with an explicit omitted-byte count between them.
+        beginning and end with an explicit omitted-character count between them.
 
     Raises:
         HarborExecutionError: A present log is unreadable or resolves outside
             this trial's directory.
     """
+    validate_char_limit("verifier_log_chars", max_chars)
     logs = {}
     directories = [trial_dir / "verifier", *sorted((trial_dir / "steps").glob("*/verifier"))]
     for directory in directories:
@@ -255,18 +257,7 @@ def _read_verifier_logs(trial_dir: Path) -> dict[str, str]:
             if not path.resolve().is_relative_to(trial_dir.resolve()):
                 raise HarborExecutionError(f"Verifier log {path} resolves outside its trial directory")
             try:
-                with path.open("rb") as stream:
-                    prefix = stream.read(MAX_VERIFIER_LOG_BYTES + 1)
-                    if len(prefix) <= MAX_VERIFIER_LOG_BYTES:
-                        text = prefix.decode("utf-8", errors="replace")
-                    else:
-                        size = stream.seek(0, os.SEEK_END)
-                        half = MAX_VERIFIER_LOG_BYTES // 2
-                        stream.seek(-half, os.SEEK_END)
-                        head = prefix[:half].decode("utf-8", errors="replace")
-                        tail = stream.read(half).decode("utf-8", errors="replace")
-                        omitted = size - MAX_VERIFIER_LOG_BYTES
-                        text = f"{head}\n[... {omitted} bytes omitted; full log retained on disk ...]\n{tail}"
+                text = clip_text(path.read_bytes().decode("utf-8", errors="replace"), max_chars, head_and_tail=True)
             except FileNotFoundError:
                 continue
             except OSError as exc:
@@ -588,6 +579,7 @@ class HarborCLI:
         student_api_base: str | None = None,
         student_agent_kwargs: Mapping[str, Any] | None = None,
         process_timeout_sec: float | None = None,
+        text_limits: TextLimits | None = None,
     ) -> None:
         """Configure the pinned Harbor subprocess boundary.
 
@@ -604,6 +596,7 @@ class HarborCLI:
             student_agent_kwargs: Additional Terminus settings that do not
                 override fixed harness behavior.
             process_timeout_sec: Optional whole-job subprocess timeout.
+            text_limits: Optional verifier-log character allowance.
 
         Raises:
             ValueError: Model or numeric settings are invalid, or extra agent
@@ -645,6 +638,7 @@ class HarborCLI:
         self.student_api_base = student_api_base
         self.student_agent_kwargs = extra_kwargs
         self.process_timeout_sec = process_timeout_sec
+        self.text_limits = resolve_text_limits(text_limits)
 
     @staticmethod
     def _resolve_executable(executable: str, label: str) -> str:
@@ -924,7 +918,7 @@ class HarborCLI:
                 atif_trajectories=atif_trajectories,
                 raw_result=raw_result,
                 trial_dir=result_path.parent,
-                verifier_logs=_read_verifier_logs(result_path.parent),
+                verifier_logs=_read_verifier_logs(result_path.parent, self.text_limits.verifier_log_chars),
             )
 
         missing = [task_id for task_id in task_ids if task_id not in trials]

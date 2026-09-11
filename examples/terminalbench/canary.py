@@ -19,6 +19,7 @@ from examples.terminalbench.model_settings import (
 )
 from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, summarize_usage
 from gepa.adapters.terminal_bench_adapter import HarborCLI, TerminalBenchAdapter, load_terminalbench_manifest
+from gepa.strategies.text_limits import parse_text_limits, resolve_text_limits
 
 
 def main() -> None:
@@ -31,7 +32,9 @@ def main() -> None:
     parser.add_argument("--train-limit", type=int, default=3)
     parser.add_argument("--harbor-executable", default="harbor")
     parser.add_argument("--docker-executable", default="docker")
+    parser.add_argument("--text-limits", type=parse_text_limits, default=None)
     args = parser.parse_args()
+    text_limits = resolve_text_limits(args.text_limits)
     if args.train_limit <= 0:
         parser.error("--train-limit must be positive")
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[args.experiment])
@@ -57,13 +60,14 @@ def main() -> None:
         harbor_executable=args.harbor_executable,
         docker_executable=args.docker_executable,
         student_agent_kwargs=agent_kwargs,
+        text_limits=text_limits,
     )
     harbor.check_requirements()
     args.output_dir.mkdir(parents=True, exist_ok=False)
     (args.output_dir / "canary-config.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "experiment": args.experiment,
                 "split": "train",
                 "task_ids": [task.task_id for task in tasks],
@@ -75,6 +79,7 @@ def main() -> None:
                 "candidate_digest": manifest.candidate_digest(candidate),
                 "student_agent_kwargs": agent_kwargs,
                 "token_usage_policy": TOKEN_USAGE_POLICY,
+                "text_limits": text_limits.to_dict(),
             },
             indent=2,
         )
