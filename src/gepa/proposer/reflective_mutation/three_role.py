@@ -33,7 +33,7 @@ from gepa.proposer.reflective_mutation.reflection_lm import (
     StatelessReflectionLM,
 )
 from gepa.response_journal import stable_api_base_identity
-from gepa.strategies.action_space import MAX_PROPOSAL_CHARS, IncompleteActionDistributionError
+from gepa.strategies.action_space import DOCUMENT_LENGTH_CONTRACT, IncompleteActionDistributionError
 from gepa.strategies.document_template import TEMPLATE_FAMILIES, DocumentTemplate, MalformedDocumentError
 from gepa.strategies.edit_tools import EDIT_TOOL_SETS
 from gepa.strategies.intervention import (
@@ -423,7 +423,7 @@ class ThreeRoleReflectionLM:
         reflection_prompt_template: Vanilla level-0 prompt template.
         max_menu: Optional level-1 region bound. Level 2 requires it to retain
             every cataloged region/action pair; semantic choices are never subsampled.
-        max_chars: Maximum completed component size.
+        max_chars: Optional maximum completed component size; no limit by default.
         controller_lm: Optional separate LM for verbalized Controller selection.
         manifestor_lm: LM used to manifest level-2 actions.
         base_lm_run_identity: Optional stable, non-secret configuration identity
@@ -459,7 +459,7 @@ class ThreeRoleReflectionLM:
         logger: Any | None = None,
         reflection_prompt_template: str | dict[str, str] | None = None,
         max_menu: int | None = None,
-        max_chars: int = MAX_PROPOSAL_CHARS,
+        max_chars: int | None = None,
         controller_lm: LanguageModel | None = None,
         manifestor_lm: LanguageModel | None = None,
         base_lm_run_identity: Mapping[str, Any] | None = None,
@@ -489,7 +489,7 @@ class ThreeRoleReflectionLM:
             logger: Optional run logger shared by all roles.
             reflection_prompt_template: Vanilla level-0 reflection template.
             max_menu: Optional level-1 region-menu bound.
-            max_chars: Maximum reconstructed component length.
+            max_chars: Maximum reconstructed component length, or ``None`` for no limit.
             controller_lm: Separate Controller model, or ``None`` to share the
                 base model.
             manifestor_lm: Separate Manifestor model, or ``None`` to share the
@@ -664,7 +664,7 @@ class ThreeRoleReflectionLM:
                 "when constructing ThreeRoleReflectionLM with custom callables."
             )
         return {
-            "schema_version": 7,
+            "schema_version": 8,
             "strategy": "three_role_reflection",
             "reflection_level": self.level,
             "edit_tool_set": self.edit_tool_set,
@@ -680,6 +680,7 @@ class ThreeRoleReflectionLM:
                 else None
             ),
             "max_chars": self.max_chars,
+            "document_length": {**DOCUMENT_LENGTH_CONTRACT, "max_component_chars": self.max_chars},
             "manifestor_traces_chars": self.manifestor_traces_chars,
             "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
             "manifestor_delivery": "user_message",

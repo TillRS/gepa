@@ -415,7 +415,13 @@ def test_three_role_run_contract_blocks_catalog_or_policy_drift(tmp_path: Path) 
     """
     strat, _ = strategy(2)
     contract = strat.run_contract({"sys": PROMPT})
-    assert contract["schema_version"] == 7
+    assert contract["schema_version"] == 8
+    assert contract["max_chars"] is None
+    assert contract["document_length"] == {
+        "version": 1,
+        "max_component_chars": None,
+        "selector_target_chars": None,
+    }
     assert contract["max_proposer_model_calls"] is None
     assert contract["react_max_iterations"] is None
     assert contract["react_max_tool_calls"] is None
@@ -451,6 +457,8 @@ def test_three_role_run_contract_blocks_catalog_or_policy_drift(tmp_path: Path) 
         ensure_reflection_run_contract(str(tmp_path), {**contract, "schema_version": 2})
     with pytest.raises(ValueError, match="different reflection strategy contract"):
         ensure_reflection_run_contract(str(tmp_path), {**contract, "react_max_iterations": 8})
+    with pytest.raises(ValueError, match="different reflection strategy contract"):
+        ensure_reflection_run_contract(str(tmp_path), {**contract, "max_chars": 10000})
 
     legacy_dir = tmp_path / "legacy"
     legacy_dir.mkdir()
@@ -916,7 +924,61 @@ def test_long_context_roles_receive_late_evidence_and_feedback_once() -> None:
         assert prompt.count("TASK_ERROR") == 1
 
 
-def test_reconstructed_component_enforces_the_full_length_cap() -> None:
+@pytest.mark.parametrize(
+    "kind,section",
+    [
+        ("system_prompt", "Rules"),
+        ("user_prompt", "Task"),
+        ("skill", "Instructions"),
+    ],
+)
+@pytest.mark.parametrize("selection", ["verbalized", "uniform_random"])
+@pytest.mark.parametrize("initial_chars", [9500, 12500])
+def test_default_strategy_accepts_large_components_without_shortening(
+    kind: str, section: str, selection: str, initial_chars: int
+) -> None:
+    """Edit existing large sections or grow past the old cap without losing siblings.
+
+    Args:
+        kind: System prompt, user prompt, or skill document.
+        section: Selected editable section in that document.
+        selection: FOREST Controller policy.
+        initial_chars: Selected body length before its editable ending.
+    """
+    template = TEMPLATES[kind]
+    sibling = next(name for name in template.sections if name != section)
+    original_body = "x" * initial_chars + "\nOriginal ending."
+    replacement = "Clearer wording. " * 120
+    candidate = template.render({sibling: "Keep exactly.", section: original_body})
+    lm = ThreeRoleLM(
+        [
+            tool_call(EditTool.REPLACE_TEXT, target="Original ending.", text=replacement),
+            "<finish>Done.</finish>",
+        ],
+        region=section,
+    )
+    strat, _ = strategy(2, lm=lm, component_kinds={"sys": kind}, controller_selection=selection)
+    if selection == "uniform_random":
+        strat.rng.choice = lambda menu: next(
+            action for action in menu if action.menu_id == f"reexpress@{section}/REPLACE_TEXT"
+        )
+
+    proposal, _ = strat.reflect({"sys": candidate}, deepcopy(SYS_REFLECTIVE_DATASET), ["sys"])
+
+    revised = proposal.new_texts["sys"]
+    bodies = template.parse(revised)
+    assert len(revised) > 10000
+    assert bodies[section] == original_body.replace("Original ending.", replacement).strip()
+    assert bodies[sibling] == "Keep exactly."
+    assert strat.max_chars is None
+    assert proposal.metadata["three_role_actions"][0]["react_steps"][-1]["action"] == "FINISH"
+    if selection == "verbalized":
+        controller_prompt = next(prompt for prompt in lm.string_calls if "Choose edit actions" in prompt)
+        assert original_body in controller_prompt
+        assert "length budget" not in controller_prompt
+
+
+def test_reconstructed_component_enforces_an_explicit_length_cap() -> None:
     """Reject a section body that fits alone but overflows its parent document."""
     lm = ThreeRoleLM(
         [

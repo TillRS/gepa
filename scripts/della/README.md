@@ -51,6 +51,13 @@ pair before another operation or finish. The protocol is recorded in run
 contracts; older checkpoints require a fresh run. The runtime canary retains
 its small diagnostic budget to verify one literal edit followed by finish.
 
+Evolved prompt and skill components have no fixed character limit. The former
+10,000-character FOREST cap and 8,000-character selector target are removed,
+including the size instruction in the stateless action baseline. Selectors
+retain the current length as information and encourage useful detail without
+unnecessary repetition. Model context and per-call output limits still apply;
+the document-length policy is recorded in run contracts for resume validation.
+
 After configuring `scripts/della/.env` from `.env.example`, prepare and submit:
 
 ```bash
