@@ -1314,6 +1314,11 @@ def test_hotpotqa_sbatch_limits_nested_cpu_threads_after_vllm_starts() -> None:
         "scripts/della/fetch_hotpotqa_results.sh",
         "scripts/della/submit_hover.sh",
         "scripts/della/build_env.sh",
+        "scripts/della/remote/setup_env.sh",
+        "scripts/della/remote/download_dataset.sh",
+        "scripts/della/remote/download_model.sh",
+        "scripts/della/submit_deepseek_smoke.sh",
+        "scripts/della/smoke_deepseek_serving.sbatch",
         "scripts/della/preflight_hotpotqa.sh",
         "scripts/della/verify_deepseek_serving.sh",
         "examples/hotpotqa/run_hotpotqa.sbatch",
@@ -1338,7 +1343,15 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     """Pin methodology while retaining only quality-neutral throughput knobs."""
     submit = (REPO_ROOT / "scripts" / "della" / "submit_hotpotqa.sh").read_text()
     sbatch = (REPO_ROOT / "examples" / "hotpotqa" / "run_hotpotqa.sbatch").read_text()
-    build = (REPO_ROOT / "scripts" / "della" / "build_env.sh").read_text()
+    build = "\n".join(
+        (REPO_ROOT / "scripts" / "della" / path).read_text()
+        for path in (
+            "build_env.sh",
+            "remote/setup_env.sh",
+            "remote/download_dataset.sh",
+            "remote/download_model.sh",
+        )
+    )
     sync = (REPO_ROOT / "scripts" / "della" / "sync_to_della.sh").read_text()
     fetch = (REPO_ROOT / "scripts" / "della" / "fetch_hotpotqa_results.sh").read_text()
 
@@ -1562,10 +1575,7 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert 'Version("0.17.0")' not in sbatch
     assert "from vllm import ModelRegistry" in sbatch
     assert 'SERVING_LOCK="examples/hotpotqa/serving/requirements-x86_64-linux-py312.txt"' in sbatch
-    assert (
-        'SERVING_LOCK="examples/hotpotqa/serving/requirements-deepseek-v4.1-flash-x86_64-linux-py312.txt"'
-        in sbatch
-    )
+    assert 'SERVING_LOCK="examples/hotpotqa/serving/requirements-deepseek-v4.1-flash-x86_64-linux-py312.txt"' in sbatch
     assert '"${VLLM_BIN}" serve --help=all' in sbatch
     assert '"${VLLM_BIN}" serve --help 2>&1' not in sbatch
     assert 'echo "==> checking native tool-call compatibility"' in sbatch
@@ -1714,39 +1724,46 @@ def test_hotpotqa_della_launchers_enforce_the_scientific_matrix() -> None:
     assert "sshpass" not in sync
     assert "REMOTE_PASSWORD" not in sync
     assert sync.count("-o BatchMode=yes -o StrictHostKeyChecking=yes") == 2
-    assert 'HOTPOTQA_PYTHON_VERSION="3.11.13"' in build
-    assert 'HOTPOTQA_UV_VERSION="0.9.13"' in build
+    assert 'PYTHON_VERSION="3.11.13"' in build
+    assert 'UV_VERSION="0.9.13"' in build
     assert "UV_UNMANAGED_INSTALL" in build
     assert "--frozen --no-install-project" in build
-    assert "--frozen --check --no-install-project" in build
-    assert 'if ! flock -n "\\${ARTIFACT_LOCK_FD}"' in build
+    assert '"${UV}" sync "${SYNC_ARGS[@]}" --check' in build
+    assert build.count('flock -n "${ARTIFACT_LOCK_FD}"') == 2
     assert "validate_hotpotqa_dspy_runtime" in build
-    assert 'examples.common.python_environment prepare --path "\\${SERVING_ENV_MANIFEST}"' in build
-    assert 'examples.common.python_environment prepare --path "\\${GEPA_ENV_MANIFEST}"' in build
-    assert 'pip check --python "\\${SERVING_PY}"' in build
-    assert 'pip sync --python "\\${SERVING_PY}" --require-hashes "\\${SERVING_LOCK}"' in build
+    assert 'prepare \\\n        --path "${MANIFESTS}/serving-environments/${LOCK_SHA}.json"' in build
+    assert 'prepare \\\n    --path "${MANIFESTS}/python-environments/gepa-${ENV_SPEC}.json"' in build
+    assert '"${UV}" pip check --python "${VENV}/bin/python"' in build
+    assert '"${UV}" pip sync --python "${VENV}/bin/python" --require-hashes "${REQUIREMENTS}"' in build
     assert "sglang" not in build.lower()
     assert "apptainer" not in build.lower()
-    assert 'HOTPOTQA_ENV_SPEC_SHA256="\\$(' in build
+    # Must hash the same bytes submit_hotpotqa.sh and the sbatch hash for the env spec.
+    assert "sha256sum pyproject.toml uv.lock; printf 'python=%s\\nuv=%s\\n'" in build
     assert ".venv/.gepa-env-spec.sha256" in build
     assert ".venv/.gepa-python-version" in build
     assert ".venv/.gepa-uv-version" in build
     assert ".venv/.gepa-uv-sha256" in build
     assert "examples.common.model_snapshot prepare" in build
     assert "examples.common.model_snapshot verify" in build
-    assert '--model-profile qwen3.8-27b --root "${QWEN_MODEL_DIR}"' in build
-    assert '--model-profile deepseek-v4.1-flash --root "${DEEPSEEK_MODEL_DIR}"' in build
-    assert 'DEEPSEEK_MODEL_DIR="${MODEL_STORAGE}/DeepSeek-V4.1-Flash"' in build
+    assert 'qwen3.8-27b) MODEL_DIR="${MODEL_STORAGE}/Qwen3.8-27B"' in build
+    assert 'deepseek-v4.1-flash) MODEL_DIR="${MODEL_STORAGE}/DeepSeek-V4.1-Flash"' in build
+    assert '--model-profile "${MODEL}" --root "${MODEL_DIR}"' in build
     assert "GLM" not in build
     assert "zai-org" not in build
     assert "canary" not in build.lower()
-    assert 'exec {MODEL_LOCK_FD}<"${QWEN_MODEL_DIR}"' in build
-    assert 'if ! flock -n "\\${MODEL_LOCK_FD}"' in build
+    assert 'exec {MODEL_LOCK_FD}<"${MODEL_DIR}"' in build
+    assert 'flock -n "${MODEL_LOCK_FD}"' in build
     assert 'examples.common.wiki17_bm25 verify --deep --root "${WIKI17_DIR}"' in build
-    assert "load_hotpotqa_dataset(seed=0)" in build
+    assert "load_hotpotqa_dataset as load" in build
+    assert "load(seed=0)" in build
+    # Hours-long checkpoint downloads must not depend on the laptop's ssh session.
+    assert "nohup setsid bash -c" in build
+    assert "scripts/della/remote/download_model.sh" in build
+    assert "set -- qwen3.8-27b deepseek-v4.1-flash" in build
     assert "load_hover_dataset" not in build
     assert "--exclude '.cache/'" in sync
     assert "--exclude '.serving-venv/'" in sync
+    assert "--exclude '.serving-venv-*/'" in sync
     assert "--exclude '.tools/'" in sync
     assert "--exclude 'logs/'" in sync
     assert "--exclude 'sources/'" in sync

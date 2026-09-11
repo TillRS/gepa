@@ -27,14 +27,17 @@ Local launchers (laptop, repo root):
 - `scripts/della/preflight_hotpotqa.sh`: runbook steps 1-4 (prereqs, exact
   commit + clean tree, `.env`, BatchMode SSH, `cudatoolkit/13.0`,
   writable `MODEL_STORAGE`, home quota, each serving venv vs. its lock). Read-only.
-- `scripts/della/build_env.sh`: one-time on `della-vis1` (internet). Builds
-  the frozen GEPA venv at `$REMOTE_DIR/.venv`, builds one hash-locked vLLM
-  serving venv per arm (`$REMOTE_DIR/.serving-venv` for Qwen,
-  `$REMOTE_DIR/.serving-venv-deepseek-v4.1-flash` for DeepSeek),
-  builds/verifies the Wiki-2017 BM25 index, caches the HotPotQA split, and
-  **downloads and byte-verifies both pinned checkpoints into
-  `$MODEL_STORAGE`** (DeepSeek-V4.1-Flash alone is 510.3 GB / 475.3 GiB in
-  48 shards; have ~600 GB free there first). Hours.
+- `scripts/della/build_env.sh [model ...]`: syncs, then on `della-vis1`
+  (internet) runs `scripts/della/remote/setup_env.sh` (GEPA venv at
+  `$REMOTE_DIR/.venv` plus one hash-locked vLLM serving venv per model:
+  `.serving-venv` for Qwen, `.serving-venv-deepseek-v4.1-flash`),
+  `remote/download_dataset.sh` (Wiki-2017 BM25 index, HotpotQA split), and,
+  **detached**, `remote/download_model.sh <model>` for each model: downloads and
+  byte-verifies the pinned checkpoint into `$MODEL_STORAGE`
+  (DeepSeek-V4.1-Flash is 510.3 GB / 475.3 GiB in 48 shards; have ~600 GB free).
+  Each remote script also runs alone from the synced checkout with
+  `SCRATCH_BASE`/`MODEL_STORAGE` exported. Never run hours-long steps attached to
+  a laptop ssh session.
 - `scripts/della/submit_deepseek_smoke.sh submit|fetch <job-id>`: one-time
   DeepSeek serving smoke test as a batch job
   (`scripts/della/smoke_deepseek_serving.sbatch`, which execs
@@ -118,7 +121,7 @@ Full text: `examples/hotpotqa/DELLA_CAMPAIGN.md`. Essentials:
   `XDG_CACHE_HOME`, `HF_HOME`, `UV_CACHE_DIR`, `DSPY_CACHEDIR` under scratch.
 - Checkpoints live in the shared, group-writable
   `/projects/BSTEWART/model_storage` (`MODEL_STORAGE`); reference them as
-  `${MODEL_STORAGE}/<name>`. Only `build_env.sh` may populate it (it writes the
+  `${MODEL_STORAGE}/<name>`. Only `remote/download_model.sh` may populate it (it writes the
   `.gepa-model-integrity.json` manifests the launcher demands).
 - Scratch is not backed up and is purged periodically.
 
@@ -130,7 +133,7 @@ and its lock `requirements-x86_64-linux-py312.txt` into `$REMOTE_DIR/.serving-ve
 DeepSeek from `requirements-deepseek-v4.1-flash.in` and its lock
 `requirements-deepseek-v4.1-flash-x86_64-linux-py312.txt` into
 `$REMOTE_DIR/.serving-venv-deepseek-v4.1-flash`. Regenerate a lock with
-`MODEL_PROFILE=<arm> scripts/della/lock_serving_env.sh`. `build_env.sh` installs
+`MODEL_PROFILE=<arm> scripts/della/lock_serving_env.sh`. `remote/setup_env.sh` installs
 each with `uv pip sync --require-hashes` (Python 3.12.7), applies the cutlass-DSL
 reinstall-order fix, and freezes a manifest under
 `$SCRATCH_BASE/.cache/gepa/serving-environments/<lock-sha256>.json`. The launcher

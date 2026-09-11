@@ -179,13 +179,17 @@ Run this once from the repository on your laptop:
 scripts/della/build_env.sh
 ```
 
-`build_env.sh` runs the downloads on `della-vis1`. It also:
+`build_env.sh` syncs the checkout and runs three steps on `della-vis1`, each a script under
+`scripts/della/remote/` that also runs on its own from the synced checkout:
 
-- builds the frozen Python 3.11.13 and uv 0.9.13 GEPA environment;
-- builds each arm's hash-locked vLLM serving venv (table above) and freezes its manifest;
-- builds and verifies the frozen Wiki-2017 BM25 index;
-- caches the exact HotPotQA 150/300/300 split; and
-- downloads and byte-verifies both pinned model checkpoints.
+- `setup_env.sh` builds the frozen Python 3.11.13 / uv 0.9.13 GEPA environment and each
+  model's hash-locked vLLM serving venv (table above), and freezes their manifests;
+- `download_dataset.sh` builds and verifies the frozen Wiki-2017 BM25 index and caches the
+  exact HotPotQA 150/300/300 split; and
+- `download_model.sh <model>` downloads and byte-verifies one pinned checkpoint. It runs
+  detached for both models (`build_env.sh [model ...]` to choose), so a dropped laptop
+  connection cannot stop the 510 GB DeepSeek download; the script prints the log path,
+  which ends with `MODELS_DONE`.
 
 Disk prerequisite: the DeepSeek-V4.1-Flash checkpoint is 48 safetensors shards
 totalling 510.3 GB (475.3 GiB) at the pinned revision, on top of Qwen3.8-27B. Check
@@ -223,7 +227,7 @@ ssh "${REMOTE_USER}@${REMOTE_VIS_HOST}" \
    echo 'All pinned model artifacts are present.'"
 ```
 
-The byte-level verification runs inside `build_env.sh`.
+The byte-level verification runs inside `download_model.sh`.
 
 ### Smoke-test the DeepSeek serving stack once
 
