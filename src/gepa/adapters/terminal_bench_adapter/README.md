@@ -54,6 +54,14 @@ before another operation or submission. Run contracts record this policy and
 reject earlier checkpoints. This changes the optimizer editor's stopping rule;
 the approved per-call token budgets and benchmark task timeouts are unchanged.
 
+Invalid editor calls return the specific protocol or edit error to the next
+model turn without changing the selected section. The model can correct its
+arguments using the latest section text already in the conversation. Recovery
+attempts have no separate retry limit; the unlimited assistant-turn policy
+includes failed calls. These attempts consume model calls and context, but do
+not count as valid edits. Provider or infrastructure failures are separate from
+this tool-error recovery loop.
+
 All optimizer character limits default to unlimited and are independently
 configurable through the shared [text-limit settings](../../../../examples/common/text_limits.md).
 Pass `--text-limits` as a JSON object to configure complete prompts and skills,
@@ -113,6 +121,20 @@ limits, including the standard and double optimization budgets. The double
 budget increases optimization opportunities while keeping per-task limits fixed.
 An optional `--harbor-process-timeout-sec` is a whole-job operational limit
 recorded in the run contract.
+
+#### Task-agent completion
+
+TB2.1 retains Harbor 0.22.0's completion confirmation mechanism across all
+methods and both budgets. The first `task_complete: true` response returns
+the editable `completion` prompt with the current terminal state. The agent
+can confirm completion or continue working; continuing without the completion
+flag resets the pending confirmation. Confirming ends the task-agent loop,
+after which Harbor runs the official verifier to determine the score.
+
+The confirmation prompt remains an optimization target, while the parser and
+confirmation mechanism stay fixed. Confirmation calls count toward recorded
+model usage and the task's existing timeout. The FOREST optimizer editor uses
+its separate explicit `<finish>` operation described above.
 
 #### Task-agent context summarization
 
