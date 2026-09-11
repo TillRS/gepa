@@ -74,10 +74,13 @@ components or change their stable file identities. All component text remains
 editable, including each skill's name, description, instructions, and examples.
 
 Prompts use the selected provider's `user_prompt` template. Skills use the `skill`
-template: Name, Description, Instructions, and Examples. Their metadata appears
-in the initial context, and the agent reads each full `SKILL.md` through the
-terminal when needed. All methods can rewrite skill metadata and bodies.
-Command-format guidance and completion instructions are editable text too.
+template: Name, Description, Instructions, and Examples. The approved loading
+policy for TB2 and TB4 is on demand: the task agent initially sees each skill's
+name, description, and file path, then reads its full `SKILL.md` through the
+terminal when relevant. This policy applies to all methods and both budgets.
+All methods can rewrite both skills' metadata and bodies, regardless of whether
+a particular task uses them. Command-format guidance and completion instructions
+are editable text too.
 
 All methods explicitly use `module_selector="all"`: each proposal selects all
 16 documents, revises them separately using the same minibatch evidence, and
