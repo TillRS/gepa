@@ -42,6 +42,15 @@ chosen setting for QA and optimizer roles, as explained in the source review.
 The same policy applies to TB2 and TB4. The per-call output ceiling remains
 16,384 tokens, independently of the effort setting.
 
+The FOREST ReAct editor has no assistant-turn or tool-call limit in HotPotQA,
+TB2, or TB4. It may make multiple edits within the Controller-selected section,
+all serving the same semantic action and Manifestor steering, then explicitly
+emit `<finish>`. Each successful edit returns the latest section text. With the
+minimal tool basis, each replacement or move must complete its delete/insert
+pair before another operation or finish. The protocol is recorded in run
+contracts; older checkpoints require a fresh run. The runtime canary retains
+its small diagnostic budget to verify one literal edit followed by finish.
+
 After configuring `scripts/della/.env` from `.env.example`, prepare and submit:
 
 ```bash

@@ -262,7 +262,7 @@ def _edit_probe(lm: LM, tool: EditTool, attempt: int) -> None:
         edit_target=EditTarget("final_answer", "Task"),
         preferred_tool=tool,
         steering_message=(
-            "The Controller selected a bounded semantic revision. Apply only this literal operation: "
+            "This compatibility probe requires one literal operation followed by <finish>: "
             f"{_EDIT_STEERING[tool]}"
         ),
         feedback_summary=(
@@ -283,7 +283,9 @@ def _edit_probe(lm: LM, tool: EditTool, attempt: int) -> None:
         raise RuntimeCanaryError(
             f"ReAct V2 {tool.value} attempt {attempt} did not complete exactly one edit: {result!r}"
         )
-    if len(result.steps) != 1 or result.steps[0].error is not None or result.steps[0].action != tool.value:
+    if [step.action for step in result.steps] != [tool.value, "FINISH"] or any(
+        step.error is not None for step in result.steps
+    ):
         raise RuntimeCanaryError(
             f"ReAct V2 {tool.value} attempt {attempt} contained a malformed or retried action: {result.steps!r}"
         )

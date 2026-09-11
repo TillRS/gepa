@@ -1,5 +1,6 @@
 """Tests for the fail-closed local HotPotQA runtime canary."""
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import Mock, call
@@ -9,7 +10,37 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from examples.hotpotqa import runtime_canary
-from gepa.strategies.edit_tools import EDIT_TOOL_SETS
+from gepa.lm import LM, NativeToolCall, ToolCompletion
+from gepa.strategies.edit_tools import EDIT_TOOL_SETS, EditTool
+
+
+@pytest.mark.parametrize("finish", ["<finish>Done.</finish>", "Done."])
+def test_edit_probe_requires_a_successful_edit_and_explicit_finish(finish: str) -> None:
+    """Exercise the real editor so the runtime gate follows its new protocol.
+
+    Args:
+        finish: Correct finish action or plain text that must fail the gate.
+    """
+    lm = Mock(spec=LM)
+    lm.complete_with_tools.side_effect = [
+        ToolCompletion(
+            "",
+            (
+                NativeToolCall(
+                    "replace-1",
+                    "REPLACE_TEXT",
+                    json.dumps({"target": "Cite primary sources.", "text": "Cite primary sources inline."}),
+                ),
+            ),
+        ),
+        ToolCompletion(finish, ()),
+    ]
+    if finish.startswith("<finish>"):
+        runtime_canary._edit_probe(lm, EditTool.REPLACE_TEXT, 1)
+    else:
+        with pytest.raises(runtime_canary.RuntimeCanaryError, match="did not complete"):
+            runtime_canary._edit_probe(lm, EditTool.REPLACE_TEXT, 1)
+    assert lm.complete_with_tools.call_count == 2
 
 
 @pytest.mark.parametrize(

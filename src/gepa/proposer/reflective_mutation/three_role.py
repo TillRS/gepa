@@ -26,7 +26,7 @@ from gepa.proposer.reflective_mutation.manifestor import (
     ManifestationError,
     Manifestor,
 )
-from gepa.proposer.reflective_mutation.react_v2_proposer import ReActV2Proposer
+from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT, ReActV2Proposer
 from gepa.proposer.reflective_mutation.reflection_lm import (
     ReflectionJob,
     ReflectionProposal,
@@ -436,8 +436,8 @@ class ThreeRoleReflectionLM:
         proposer_model: Provider/model identifier recorded in the run contract.
             When omitted, ``base_lm.model`` is inspected. Manifestor steering is
             delivered as a user message for every ReAct provider.
-        react_max_iterations: Maximum ReAct assistant turns per component.
-        react_max_tool_calls: Maximum valid calls in an atomic-basis proposal.
+        react_max_iterations: Optional ReAct assistant-turn limit per component.
+        react_max_tool_calls: Optional valid tool-call limit per proposal.
 
     Raises:
         ValueError: Configuration names or reflection level are invalid.
@@ -467,8 +467,8 @@ class ThreeRoleReflectionLM:
         manifestor_lm_run_identity: Mapping[str, Any] | None = None,
         manifestor_traces_chars: int | None = MAX_TRACES_CHARS,
         proposer_model: str | None = None,
-        react_max_iterations: int = 8,
-        react_max_tool_calls: int = 4,
+        react_max_iterations: int | None = None,
+        react_max_tool_calls: int | None = None,
     ):
         """Validate and store the complete three-role strategy configuration.
 
@@ -502,8 +502,8 @@ class ThreeRoleReflectionLM:
             manifestor_traces_chars: Maximum trace characters shown to the
                 Manifestor.
             proposer_model: Model identifier persisted in the run contract.
-            react_max_iterations: Maximum ReAct assistant turns per proposal.
-            react_max_tool_calls: Maximum valid calls in an atomic ReAct path.
+            react_max_iterations: Maximum ReAct turns, or ``None`` for no limit.
+            react_max_tool_calls: Maximum valid calls, or ``None`` for no limit.
 
         Raises:
             ValueError: A level, tool set, Controller selection, template
@@ -664,7 +664,7 @@ class ThreeRoleReflectionLM:
                 "when constructing ThreeRoleReflectionLM with custom callables."
             )
         return {
-            "schema_version": 6,
+            "schema_version": 7,
             "strategy": "three_role_reflection",
             "reflection_level": self.level,
             "edit_tool_set": self.edit_tool_set,
@@ -696,6 +696,11 @@ class ThreeRoleReflectionLM:
             "max_proposer_model_calls": self.react_max_iterations,
             "react_max_iterations": self.react_max_iterations,
             "react_max_tool_calls": self.react_max_tool_calls,
+            "react_execution": {
+                **REACT_V2_EXECUTION_CONTRACT,
+                "max_iterations": self.react_max_iterations,
+                "max_tool_calls": self.react_max_tool_calls,
+            },
         }
 
     def validate_candidate(self, candidate: dict[str, str]) -> None:

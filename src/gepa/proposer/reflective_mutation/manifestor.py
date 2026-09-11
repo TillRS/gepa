@@ -34,6 +34,8 @@ Requirements:
   reject it, or substitute another action. Any applicability language in the action instruction is a Controller
   selection rule, not a Manifestor decision.
 - Follow the action instruction without adding, skipping, or anticipating steps.
+- The editor may make multiple calls within the selected region to realize this same action, then explicitly finish.
+  Apply the action's semantic constraints to the completed revision relative to the original selected region.
 - Ground every claim, failure, and quoted passage in the state.
 - Do not write the edit or emit an <edit> or <python> block.
 - Return only the steering text, with no header, label, quotation marks, role tag, or process commentary.
