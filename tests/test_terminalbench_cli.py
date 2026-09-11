@@ -35,6 +35,7 @@ from gepa.adapters.terminal_bench_adapter import (
     load_terminalbench_manifest,
 )
 from gepa.adapters.terminal_bench_adapter.documents import COMPONENT_KINDS
+from gepa.adapters.terminal_bench_adapter.text_scope import OPTIMIZATION_SCOPES, TerminalBenchTextScope
 from gepa.core.adapter import EvaluationBatch
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
@@ -183,7 +184,9 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 27
+    assert contract["schema_version"] == 28
+    assert contract["skip_perfect_score"] is True
+    assert contract["perfect_score"] == 1.0
     assert contract["adapter"] == TERMINUS_ADAPTER_CONTRACT
     assert contract["task_context_settings"] == {
         "enable_summarize": True,
@@ -241,6 +244,7 @@ def test_deepseek_run_contract_uses_the_separate_same_model_condition(tmp_path: 
 @pytest.mark.parametrize("condition,budget", list(terminalbench_main.CAMPAIGN_CELLS.values()))
 @pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
 @pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("optimization_scope", OPTIMIZATION_SCOPES)
 def test_provider_settings_reach_all_runtime_roles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -249,6 +253,7 @@ def test_provider_settings_reach_all_runtime_roles(
     budget: str,
     model: str,
     configured: bool,
+    optimization_scope: str,
 ) -> None:
     """Forward each provider's sampling and thinking settings through every campaign cell."""
     limits = (
@@ -278,6 +283,8 @@ def test_provider_settings_reach_all_runtime_roles(
         "argv",
         [
             "terminalbench",
+            "--optimization-scope",
+            optimization_scope,
             *(["--text-limits", json.dumps(limits.to_dict())] if configured else []),
             "--experiment",
             experiment,
@@ -312,6 +319,8 @@ def test_provider_settings_reach_all_runtime_roles(
     harbor_kwargs = harbor_factory.call_args.kwargs
     optimize_kwargs = optimizer.call_args.kwargs
     assert type(optimize_kwargs["adapter"]) is TerminusAdapter
+    assert optimize_kwargs["skip_perfect_score"] is True
+    assert optimize_kwargs["perfect_score"] == 1.0
     assert harbor_kwargs["text_limits"] == optimize_kwargs["text_limits"] == limits
     saved = json.loads((tmp_path / "run" / terminalbench_main.RUN_CONTRACT_FILENAME).read_text())
     assert saved["adapter"] == TERMINUS_ADAPTER_CONTRACT
@@ -338,7 +347,12 @@ def test_provider_settings_reach_all_runtime_roles(
     assert harbor_kwargs["student_api_base"] == optimize_kwargs["reflection_lm_kwargs"]["api_base"]
     assert len(optimize_kwargs["trainset"]) == len(optimize_kwargs["valset"]) == 1
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
-    assert set(optimize_kwargs["seed_candidate"]) == set(manifest.component_kinds)
+    scope = TerminalBenchTextScope(optimization_scope, saved["template_family"])
+    assert optimize_kwargs["seed_candidate"] == scope.seed_candidate()
+    assert optimize_kwargs["component_kinds"] == scope.component_kinds
+    assert optimize_kwargs["adapter"].text_scope == scope
+    assert saved["text_scope"] == scope.contract()
+    assert saved["runtime_component_kinds"] == manifest.component_kinds
     assert optimize_kwargs["reflection_level"] == (2 if condition in terminalbench_main.FOREST_CONDITIONS else 0)
     strategy = optimize_kwargs["reflection_strategy"]
     clients = [optimize_kwargs["reflection_lm"]]
@@ -431,6 +445,7 @@ def test_provider_settings_reach_all_runtime_roles(
 @pytest.mark.parametrize("experiment,iterations,padding", [("tb2.1", 40, 0)])
 @pytest.mark.parametrize("outcome", ["accepted", "tied", "worse", "perfect"])
 @pytest.mark.parametrize("budget_name,epochs", [("standard", 4), ("double", 8)])
+@pytest.mark.parametrize("optimization_scope", OPTIMIZATION_SCOPES)
 def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -440,6 +455,7 @@ def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
     outcome: str,
     budget_name: str,
     epochs: int,
+    optimization_scope: str,
 ) -> None:
     """Complete either budget across resume regardless of proposal success."""
     iterations *= epochs // 4
@@ -496,13 +512,15 @@ def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
         results.append(optimize(**kwargs, display_progress_bar=False))
 
     monkeypatch.setattr(terminalbench_main.HarborCLI, "check_requirements", Mock())
-    monkeypatch.setattr(terminalbench_main, "TerminusAdapter", lambda *args: BudgetAdapter())
+    monkeypatch.setattr(terminalbench_main, "TerminusAdapter", lambda *args, **kwargs: BudgetAdapter())
     monkeypatch.setattr(terminalbench_main, "optimize", optimize_offline)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "terminalbench",
+            "--optimization-scope",
+            optimization_scope,
             "--experiment",
             experiment,
             "--condition",

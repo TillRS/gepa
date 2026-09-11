@@ -28,7 +28,11 @@ from harbor.models.trajectories import Step
 from examples.terminalbench.terminus_agent import PromptedTerminus
 from gepa.adapters.terminal_bench_adapter import HarborCLI, load_terminalbench_manifest
 from gepa.adapters.terminal_bench_adapter.context import reflection_trajectories
-from gepa.adapters.terminal_bench_adapter.documents import seed_documents, write_document_bundle
+from gepa.adapters.terminal_bench_adapter.documents import (
+    render_initial_instructions,
+    seed_documents,
+    write_document_bundle,
+)
 
 
 @pytest.fixture
@@ -294,8 +298,7 @@ def test_real_agent_loop_discovers_then_reads_skills_and_repairs_json(
     ]
     asyncio.run(agent.run("TASK_INPUT", environment, AgentContext()))
     prompts = [call.kwargs["prompt"] for call in model.call.call_args_list]
-    for name in ("instruction_prompt", "terminal_tool", "skill_discovery", "command_format"):
-        assert candidate[name] in prompts[0]
+    assert render_initial_instructions(candidate) in prompts[0]
     assert "terminal-debugging" in prompts[0] and "terminal-verification" in prompts[0]
     assert "SENTINEL_skill_debugging" not in prompts[0]
     assert "SENTINEL_parse_error" in prompts[1]

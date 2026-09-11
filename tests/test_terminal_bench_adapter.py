@@ -26,6 +26,7 @@ from gepa.adapters.terminal_bench_adapter.documents import (
     COMMAND_FORMAT_SEED,
     COMPONENT_KINDS,
     TASK_FIELDS,
+    render_initial_instructions,
     seed_documents,
 )
 from gepa.proposer.reflective_mutation.reflection_lm import StatelessReflectionLM
@@ -402,7 +403,7 @@ def test_tb21_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
             .format(instruction="REAL_TASK", terminal_state="REAL_STATE")
         )
         assert candidate["instruction_prompt"] in prompt
-        assert candidate["command_format"] in prompt
+        assert render_initial_instructions(candidate) in prompt
         assert "Task Description:\nREAL_TASK" in prompt
         assert "Current terminal state:\nREAL_STATE" in prompt
         assert (config_path.parent / "skills/skill_debugging/SKILL.md").exists()

@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from examples.terminalbench.main import (
-    CAMPAIGN_CELLS,
     EVALUATION_PROTOCOL,
     EXPERIMENT_MANIFESTS,
     FOREST_CONDITIONS,
     REPO_ROOT,
     RUN_CONTRACT_FILENAME,
+    SCOPE_CAMPAIGN_CELLS,
     TEST_REPETITIONS,
     build_run_contract,
 )
@@ -26,6 +26,8 @@ from gepa.adapters.terminal_bench_adapter import (
     TerminusAdapter,
     load_terminalbench_manifest,
 )
+from gepa.adapters.terminal_bench_adapter.documents import seed_documents
+from gepa.adapters.terminal_bench_adapter.text_scope import TerminalBenchTextScope
 from gepa.core.result import GEPAResult
 from gepa.core.state import GEPAState
 from gepa.strategies.text_limits import resolve_text_limits
@@ -45,6 +47,10 @@ METHOD_SPECIFIC_FIELDS = {
     "semantic_controller_policy",
     "stateless_selector_policy",
     "manifest",
+    "optimization_scope",
+    "text_scope",
+    "component_kinds",
+    "seed_document_digest",
 }
 
 
@@ -55,13 +61,16 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def load_completed_run(run_dir: Path, condition: str, budget: str) -> tuple[TerminalBenchManifest, dict[str, Any]]:
+def load_completed_run(
+    run_dir: Path, condition: str, budget: str, optimization_scope: str = "all_text"
+) -> tuple[TerminalBenchManifest, dict[str, Any]]:
     """Select the validation winner from one completed, trusted local checkpoint.
 
     Args:
         run_dir: Directory produced by the Terminal-Bench optimization CLI.
         condition: Required method from the six-configuration campaign.
         budget: Required standard or double training budget for this cell.
+        optimization_scope: Required text scope for the labeled campaign cell.
 
     Returns:
         Pinned manifest and the initial/selected harnesses with run provenance.
@@ -71,6 +80,8 @@ def load_completed_run(run_dir: Path, condition: str, budget: str) -> tuple[Term
             from its recorded protocol, model settings, or seed candidate.
     """
     contract = json.loads((run_dir / RUN_CONTRACT_FILENAME).read_text())
+    if contract.get("optimization_scope") != optimization_scope:
+        raise ValueError(f"{run_dir}: expected the {optimization_scope} optimization scope")
     if contract.get("budget") != budget:
         raise ValueError(f"{run_dir}: expected the {budget} budget for {condition}")
     if contract.get("reflection_level") != (2 if condition in FOREST_CONDITIONS else 0):
@@ -96,15 +107,15 @@ def load_completed_run(run_dir: Path, condition: str, budget: str) -> tuple[Term
         epochs = contract["optimization_budget"]["training_epochs"]
         raise ValueError(f"{run_dir}: optimization has not completed its {epochs}-epoch budget")
     result = GEPAResult.from_state(state)
-    if manifest.candidate_digest(result.candidates[0]) != contract["seed_document_digest"]:
+    scope = TerminalBenchTextScope(optimization_scope, contract["template_family"])
+    if result.candidates[0] != scope.seed_candidate():
         raise ValueError(f"{run_dir}: checkpoint seed differs from the run contract")
     expected_val_ids = set(range(len(manifest.splits["val"])))
     if any(set(scores) != expected_val_ids for scores in result.val_subscores):
         raise ValueError(f"{run_dir}: candidate validation coverage is incomplete")
     if not all(math.isfinite(score) for score in result.val_aggregate_scores):
         raise ValueError(f"{run_dir}: validation scores must be finite")
-    selected = result.candidates[result.best_idx]
-    manifest.validate_candidate(selected)
+    selected = scope.materialize(result.candidates[result.best_idx])
     return manifest, {
         "run_dir": str(run_dir.resolve()),
         "contract": contract,
@@ -112,38 +123,40 @@ def load_completed_run(run_dir: Path, condition: str, budget: str) -> tuple[Term
         "optimization_metric_calls": result.total_metric_calls,
         "selected_candidate_index": result.best_idx,
         "validation_scores": result.val_aggregate_scores,
-        "initial": result.candidates[0],
+        "initial": seed_documents(contract["template_family"]),
         "selected": selected,
     }
 
 
 def freeze_comparison(run_dirs: dict[str, Path]) -> tuple[TerminalBenchManifest, dict[str, Any]]:
-    """Freeze all six validation winners before any test result can influence selection.
+    """Freeze both scopes' twelve validation winners before any held-out testing.
 
     Args:
-        run_dirs: One completed directory per campaign cell for one benchmark/model.
+        run_dirs: One completed directory per scope/method/budget for one model.
 
     Returns:
-        Manifest and a comparison containing all seven immutable harness texts.
+        Manifest and thirteen immutable harnesses, including the common initial one.
 
     Raises:
         ValueError: A campaign cell is missing or shared experimental settings differ.
     """
-    if set(run_dirs) != set(CAMPAIGN_CELLS):
-        raise ValueError(f"Final testing requires exactly these six campaign cells: {', '.join(CAMPAIGN_CELLS)}")
+    if set(run_dirs) != set(SCOPE_CAMPAIGN_CELLS):
+        raise ValueError(
+            f"Final testing requires exactly these twelve campaign cells: {', '.join(SCOPE_CAMPAIGN_CELLS)}"
+        )
     runs = {}
-    for label, (condition, budget) in CAMPAIGN_CELLS.items():
-        manifest, runs[label] = load_completed_run(run_dirs[label], condition, budget)
-    vanilla = runs["vanilla"]
+    for label, (scope_name, condition, budget) in SCOPE_CAMPAIGN_CELLS.items():
+        manifest, runs[label] = load_completed_run(run_dirs[label], condition, budget, scope_name)
+    vanilla = runs["all_text__vanilla"]
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[vanilla["contract"]["experiment"]])
     shared = {key: value for key, value in vanilla["contract"].items() if key not in METHOD_SPECIFIC_FIELDS}
     for label, run in runs.items():
         other = {key: value for key, value in run["contract"].items() if key not in METHOD_SPECIFIC_FIELDS}
         if shared != other or vanilla["initial"] != run["initial"]:
-            raise ValueError(f"{label}: all six runs must share benchmark, model settings, seed, and splits")
+            raise ValueError(f"{label}: all twelve runs must share benchmark, model settings, seed, and splits")
     candidates = {"initial": vanilla["initial"], **{label: run["selected"] for label, run in runs.items()}}
     return manifest, {
-        "schema_version": 2,
+        "schema_version": 3,
         "protocol": dict(EVALUATION_PROTOCOL),
         "shared_configuration": shared,
         "source_runs": {
@@ -151,7 +164,11 @@ def freeze_comparison(run_dirs: dict[str, Path]) -> tuple[TerminalBenchManifest,
             for label, run in runs.items()
         },
         "harnesses": {
-            label: {"documents": candidate, "candidate_digest": manifest.candidate_digest(candidate)}
+            label: {
+                "documents": candidate,
+                "candidate_digest": manifest.candidate_digest(candidate),
+                "optimization_scope": "reference" if label == "initial" else SCOPE_CAMPAIGN_CELLS[label][0],
+            }
             for label, candidate in candidates.items()
         },
     }
@@ -176,8 +193,8 @@ def evaluate_comparison(
     """Resume three fresh test repetitions per frozen harness and summarize Pass@1.
 
     Args:
-        manifest: Pinned benchmark shared by all six optimization runs.
-        comparison: Frozen initial harness and six validation-selected winners.
+        manifest: Pinned benchmark shared by all twelve optimization runs.
+        comparison: Frozen initial harness and twelve validation-selected winners.
         output_dir: Dedicated comparison directory; use one writer at a time.
         harbor: Runner with the recorded student model and runtime settings.
 
@@ -257,6 +274,7 @@ def evaluate_comparison(
             for repetition in range(1, TEST_REPETITIONS + 1)
         ]
         summary["harnesses"][label] = {
+            "optimization_scope": harness["optimization_scope"],
             "candidate_digest": harness["candidate_digest"],
             "repetition_pass_at_1": scores,
             "mean_pass_at_1": statistics.mean(scores),
@@ -275,7 +293,7 @@ def main() -> None:
         action="append",
         required=True,
         metavar="CELL=PATH",
-        help=f"Repeat once for each of: {', '.join(CAMPAIGN_CELLS)}",
+        help=f"Repeat once for each of: {', '.join(SCOPE_CAMPAIGN_CELLS)}",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--harbor-executable", default="harbor")
@@ -284,7 +302,7 @@ def main() -> None:
     run_dirs = {}
     for specification in args.run_dir:
         label, separator, path = specification.partition("=")
-        if not separator or label not in CAMPAIGN_CELLS or not path or label in run_dirs:
+        if not separator or label not in SCOPE_CAMPAIGN_CELLS or not path or label in run_dirs:
             parser.error("Each --run-dir must specify a distinct supported CELL=PATH")
         run_dirs[label] = Path(path)
     manifest, comparison = freeze_comparison(run_dirs)

@@ -29,6 +29,7 @@ from gepa.adapters.terminal_bench_adapter.documents import (
     validate_documents,
     write_document_bundle,
 )
+from gepa.adapters.terminal_bench_adapter.text_scope import TerminalBenchTextScope
 from gepa.core.adapter import EvaluationBatch, GEPAAdapter
 from gepa.strategies.text_limits import TextLimits, clip_text, resolve_text_limits, validate_char_limit
 
@@ -941,19 +942,25 @@ class TerminusAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, Te
     The upstream adapter name and GEPA evaluation/reflection interface are retained.
     Its legacy runner, result parsing, and single-prompt feedback are replaced for
     TB2.1; this is not the unmodified upstream implementation or constructor API.
+    Candidates expose all prompts and skills by default, or one unified initial
+    prompt with fixed auxiliary text when the system-prompt scope is selected.
 
     Args:
         manifest: Checked-in, validated experiment manifest.
         harbor: Pinned Harbor subprocess runner configured with the student
             model. The proposer model is supplied separately to ``gepa.optimize``.
+        text_scope: Editable candidate boundary and provider seed family.
     """
 
-    def __init__(self, manifest: TerminalBenchManifest, harbor: HarborCLI) -> None:
+    def __init__(
+        self, manifest: TerminalBenchManifest, harbor: HarborCLI, *, text_scope: TerminalBenchTextScope | None = None
+    ) -> None:
         """Bind the validated manifest to its Harbor runner.
 
         Args:
             manifest: Checked-in, validated experiment manifest.
             harbor: Pinned runner configured with the student model.
+            text_scope: Editable candidate boundary; omitted means all text.
 
         Raises:
             ValueError: The adapter and runner use different manifests.
@@ -962,6 +969,7 @@ class TerminusAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, Te
             raise ValueError("Adapter and Harbor runner must use the same Terminal-Bench manifest")
         self.manifest = manifest
         self.harbor = harbor
+        self.text_scope = text_scope or TerminalBenchTextScope()
 
     def evaluate(
         self,
@@ -983,12 +991,12 @@ class TerminusAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, Te
             ValueError: Candidate components or task IDs violate the harness
                 contract.
         """
-        self.manifest.validate_candidate(candidate)
+        documents = self.text_scope.materialize(candidate)
         task_ids = [task.task_id for task in batch]
         unknown = sorted(set(task_ids).difference(self.manifest.task_refs))
         if unknown:
             raise ValueError(f"tasks are not in pinned {self.manifest.dataset['reference']}: {unknown}")
-        evaluation = self.harbor.run(task_ids, candidate)
+        evaluation = self.harbor.run(task_ids, documents)
 
         outputs: list[TerminalBenchOutput] = []
         scores: list[float] = []
@@ -1016,7 +1024,7 @@ class TerminusAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, Te
                 trajectories.append(
                     {
                         "task_id": task_id,
-                        "candidate_documents": dict(candidate),
+                        "candidate_documents": documents,
                         "reward": trial.reward,
                         "rewards": trial.rewards,
                         "errors": errors,
@@ -1058,9 +1066,9 @@ class TerminusAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, Te
                 or feedback contains a task outside the training split.
             RuntimeError: The evaluation omitted trajectories.
         """
-        if not components_to_update or not set(components_to_update).issubset(self.manifest.component_kinds):
+        if not components_to_update or not set(components_to_update).issubset(self.text_scope.component_kinds):
             raise ValueError(f"Unknown Terminal Bench document selection: {components_to_update}")
-        self.manifest.validate_candidate(candidate)
+        self.text_scope.materialize(candidate)
         if eval_batch.trajectories is None:
             raise RuntimeError("Terminal-Bench reflection requires capture_traces=True")
         if any(trajectory["task_id"] not in self.manifest.splits["train"] for trajectory in eval_batch.trajectories):
@@ -1097,7 +1105,7 @@ class TerminusAdapter(GEPAAdapter[TerminalBenchTask, TerminalBenchTrajectory, Te
                     **row,
                     "Document": {
                         "name": component,
-                        "kind": self.manifest.component_kinds[component],
+                        "kind": self.text_scope.component_kinds[component],
                     },
                 }
                 for row in rows

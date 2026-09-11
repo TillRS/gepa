@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -50,6 +51,7 @@ SKILL_SEEDS = {
     },
 }
 COMPONENT_KINDS = {**dict.fromkeys(PROMPT_SEEDS, "user_prompt"), **dict.fromkeys(SKILL_SEEDS, "skill")}
+INITIAL_COMPONENTS = ("instruction_prompt", "terminal_tool", "skill_discovery", "command_format")
 
 TASK_FIELDS = """Task Description:
 {instruction}
@@ -136,6 +138,23 @@ def escape_document(text: str) -> str:
     return text.replace("{", "{{").replace("}", "}}")
 
 
+def render_initial_instructions(candidate: Mapping[str, str]) -> str:
+    """Compose one initial instruction block shared by both optimization scopes.
+
+    Guidance documents use nested headings so their repeated provider section
+    names do not become duplicate sections in the unified editable prompt.
+    Only heading depth changes; component bodies and literal braces are retained.
+    """
+    validate_documents(candidate)
+    return "\n\n".join(
+        candidate[name]
+        if name == "instruction_prompt"
+        else re.sub(r"^## ", "### ", candidate[name], flags=re.MULTILINE)
+        for name in INITIAL_COMPONENTS
+        if candidate[name].strip()
+    )
+
+
 def render_instruction(candidate: Mapping[str, str]) -> str:
     """Assemble editable instructions and tool documentation with runtime inputs.
 
@@ -145,13 +164,8 @@ def render_instruction(candidate: Mapping[str, str]) -> str:
     Returns:
         Terminus template with task and terminal-state fields preserved.
     """
-    validate_documents(candidate)
-    documents = [
-        escape_document(candidate[name])
-        for name in ("instruction_prompt", "terminal_tool", "skill_discovery", "command_format")
-        if candidate[name].strip()
-    ]
-    return "\n\n".join([*documents, TASK_FIELDS])
+    initial = render_initial_instructions(candidate)
+    return "\n\n".join(part for part in (escape_document(initial), TASK_FIELDS) if part)
 
 
 def write_document_bundle(directory: Path, candidate: Mapping[str, str]) -> Path:

@@ -22,6 +22,7 @@ from examples.terminalbench.model_settings import (
 )
 from examples.terminalbench.token_usage import observe_optimizer, record_usage, summarize_usage
 from gepa.adapters.terminal_bench_adapter import TERMINUS_ADAPTER_CONTRACT
+from gepa.adapters.terminal_bench_adapter.text_scope import OPTIMIZATION_SCOPES
 from gepa.core.adapter import EvaluationBatch
 from gepa.lm import LM
 from gepa.response_journal import response_journal_scope
@@ -122,6 +123,7 @@ def test_optimizer_usage_records_live_responses_once_and_excludes_journal_replay
 @pytest.mark.parametrize("model", EXPERIMENT_MODELS)
 @pytest.mark.parametrize("fails", [False, True])
 @pytest.mark.parametrize("n_concurrent", [None, 2])
+@pytest.mark.parametrize("optimization_scope", OPTIMIZATION_SCOPES)
 def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -129,6 +131,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     model: str,
     fails: bool,
     n_concurrent: int | None,
+    optimization_scope: str,
 ) -> None:
     """Retain pilot evidence while excluding validation and held-out test tasks."""
     factory = Mock(wraps=canary.HarborCLI)
@@ -141,6 +144,8 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
         assert [task.task_id for task in tasks] == adapter.manifest.splits["train"][:3]
         assert not {task.task_id for task in tasks}.intersection(adapter.manifest.splits["val"])
         assert not {task.task_id for task in tasks}.intersection(adapter.manifest.splits["test"])
+        assert adapter.text_scope.name == optimization_scope
+        assert set(candidate) == set(adapter.text_scope.component_kinds)
         record_usage(
             output_dir / "harbor" / "token-usage.jsonl",
             "task_agent",
@@ -158,6 +163,8 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
         "argv",
         [
             "canary",
+            "--optimization-scope",
+            optimization_scope,
             *(["--experiment", experiment] if experiment is not None else []),
             "--model",
             model,
@@ -174,7 +181,8 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     else:
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
-    assert config["schema_version"] == 6
+    assert config["schema_version"] == 7
+    assert config["optimization_scope"] == optimization_scope
     assert config["adapter"] == TERMINUS_ADAPTER_CONTRACT
     assert config["experiment"] == "tb2.1"
     assert config["task_context_settings"] == {

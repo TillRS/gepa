@@ -1,12 +1,15 @@
 ### Terminal-Bench 2.1
 
 Terminal-Bench 2.1 is the sole Terminal-Bench target. The optimization and training
-pilot commands default to `--experiment tb2.1`. All methods receive identical
-initial documents, editable components, task splits, and task/proposer models
-within each model arm.
+pilot commands default to `--experiment tb2.1`. Each model arm compares two
+editable scopes with identical initial model input, skill files, task splits,
+and task/proposer models. Methods within a scope receive the same editable
+components.
 
 The pinned dataset has **89 tasks**, split into **30 training, 19 validation,
-and 40 test tasks**. Optimizers can revise all 14 prompts and two skill files.
+and 40 test tasks**. `--optimization-scope all_text` (the default) exposes all
+14 prompts and two skill files. `--optimization-scope system_prompt` exposes
+the whole initial instruction block as one editable prompt.
 
 #### GEPA adapter provenance and TB2.1 compatibility
 
@@ -21,12 +24,12 @@ This fork maintains a **Harbor port of that adapter**, in the same GEPA module.
 It is not the unmodified upstream implementation or constructor API. The
 upstream runner targets legacy `tb run`, `terminal-bench-core@head`, and one
 `instruction_prompt`; replacing our port with that implementation would not
-support the approved TB2.1 dataset and full prompt-and-skill scope.
+support the approved TB2.1 dataset and both editable scopes.
 
 | Adapter responsibility | Published upstream | This TB2.1 port |
 | --- | --- | --- |
 | Agent execution | Legacy `tb run` and Terminus wrapper | Pinned Harbor CLI and `PromptedTerminus` |
-| Editable text | One instruction prompt | All 14 prompts and two skills |
+| Editable text | One instruction prompt | One unified initial prompt, or all 14 prompts and two skills |
 | Scores and feedback | Passed parser checks, episode messages, success/failure text | Official verifier reward, ATIF traces, verifier diagnostics |
 | Execution errors | Result-reading errors become zero scores | Infrastructure or missing-evidence errors stop the run |
 
@@ -34,14 +37,14 @@ Optimization, training pilots, and final evaluation all instantiate
 `gepa.adapters.terminal_bench_adapter.TerminusAdapter`; `TerminalBenchAdapter`
 remains an alias for existing callers. Final evaluation uses the adapter's
 evaluation path without constructing reflection feedback. There is no fallback
-to the legacy runner. Run contract version 27 and pilot configuration version 6
+to the legacy runner. Run contract version 28 and pilot configuration version 7
 record the adapter entry point, the explicit `harbor_port` implementation, and
 upstream provenance. Missing or changed adapter identity prevents optimization
 resume and final comparison; use fresh run directories for older contracts.
 
 #### Methods and campaign matrix
 
-Each model arm follows HotPotQA's six-configuration comparison:
+Each scope in each model arm follows HotPotQA's six-configuration comparison:
 
 | Condition | Method | Standard budget | Double budget |
 | --- | --- | --- | --- |
@@ -50,9 +53,9 @@ Each model arm follows HotPotQA's six-configuration comparison:
 | `react_v2_random` | FOREST with a uniformly random Controller | 4 epochs | — |
 | `action` | Action-conditioned stateless GEPA | 4 epochs | — |
 
-This gives **12 optimization runs**: six configurations for each of two models.
-There is one optimization run per configuration. The shared initial
-harness is an additional evaluation reference, not an optimization run.
+This gives **24 optimization runs**: six configurations × two scopes × two
+models. There is one optimization run per scope/method/budget configuration.
+Each model's common initial harness is an additional evaluation reference.
 
 Full FOREST retains the same Verbalized Sampling-based Controller as HotPotQA.
 The model scores every section/action pair; the sampler combines 90% of the
@@ -106,7 +109,29 @@ HotPotQA's budget levels are 6,871 and 13,742 metric calls. Terminal-Bench retai
 the approved epoch-based rule: four and eight training epochs. Thus the method
 matrix and 2× budget multiplier match HotPotQA; the budget unit differs.
 
-#### Editable agent text and skills
+#### Editable scopes, agent text, and skills
+
+| `--optimization-scope` | Editable candidate | Fixed auxiliary text |
+| --- | --- | --- |
+| `all_text` (default) | 14 prompts and two skills, edited as 16 separate components | None |
+| `system_prompt` | One `instruction_prompt` containing the whole initial instruction block | Ten later prompts and both skills, including skill metadata |
+
+The smaller scope combines `instruction_prompt`, `terminal_tool`,
+`skill_discovery`, and `command_format` into one editable component. It is not
+limited to the original main instructions and does not propose four separate
+edits. The `system_prompt` label selects this initial instruction block; Harbor's
+message roles remain fixed. When materializing this candidate, the other three initial components
+are empty because their guidance already resides in the unified prompt.
+Later prompts and skill files are restored from the selected provider's seed;
+extra candidate keys are rejected before Harbor executes anything.
+
+Both scopes render the initial guidance documents with nested `###` headings.
+This prevents repeated provider `##` section names from creating invalid
+sections in the unified prompt. Component bodies and literal braces are
+preserved. Initial model input and skill files are identical between scopes,
+even though their candidate dictionaries differ. This rendering policy and
+the edit boundary are recorded in run contracts; older runs need fresh
+directories. Final testing shares one common initial reference.
 
 `PromptedTerminus` runs the same 16-component document bundle for TB2.1:
 
@@ -117,29 +142,31 @@ matrix and 2× budget multiplier match HotPotQA; the budget unit differs.
 | Completion and recovery | `completion`, `timeout`, `parse_error`, `output_limit` |
 | Reusable skills | `skill_debugging`, `skill_verification` |
 
-The approved component set stays fixed at 14 prompts and two skill files for
-all methods and both budgets. Optimizers cannot add or remove
-components or change their stable file identities. All component text remains
-editable, including each skill's name, description, instructions, and examples.
+The runtime component set stays fixed at 14 prompts and two skill files for
+all methods, scopes, and budgets. Optimizers cannot add or remove editable
+components or change stable file identities. In `all_text`, all component text
+is editable, including each skill's name, description, instructions, and examples.
 
 Prompts use the selected provider's `user_prompt` template. Skills use the `skill`
 template: Name, Description, Instructions, and Examples. The approved loading
 policy for TB2.1 is on demand: the task agent initially sees each skill's
 name, description, and file path, then reads its full `SKILL.md` through the
-terminal when relevant. This policy applies to all methods and both budgets.
-All methods can rewrite both skills' metadata and bodies, regardless of whether
-a particular task uses them. Command-format guidance and completion instructions
-are editable text too.
+terminal when relevant. This policy applies to all methods, scopes, and budgets.
+In `all_text`, every method can rewrite both skills' metadata and bodies,
+regardless of whether a particular task uses them. In `system_prompt`, skills
+remain available to the task agent but their metadata and bodies stay fixed.
 
-All methods explicitly use `module_selector="all"`: each proposal selects all
-16 documents, revises them separately using the same minibatch evidence, and
-evaluates the combined harness as one child candidate. This applies the
+All methods explicitly use `module_selector="all"`: in `all_text`, each proposal
+selects all 16 documents, revises them separately using the same minibatch
+evidence, and evaluates the combined harness as one child candidate. This applies the
 [GEPA FAQ's multi-module efficiency guidance](https://gepa-ai.github.io/gepa/guides/faq/#how-do-i-optimize-multi-module-dspy-programs-efficiently)
 to TB2.1. Optimizer-side editing work is measured separately; selecting
 all documents does not require a separate task evaluation for each document.
-The selected epoch budget stays fixed, and perfectly scored minibatches still skip
-mutation. Run contracts pin the full component set, document bundle version,
-and selection policy for resume and final-test comparisons.
+In `system_prompt`, the same selection policy selects the single unified prompt.
+The selected epoch budget stays fixed across scopes, and perfectly scored
+minibatches skip reflection and editing. Run contracts pin editable and runtime
+component sets, fixed text, document bundle version, and selection policy for
+resume and final-test comparisons.
 
 The optimization target is **model-facing text and skills**. Python agent logic,
 tool implementations, the actual JSON parser/command interface, task inputs,
@@ -147,7 +174,7 @@ runtime observations, and the official verifier stay fixed. Rewriting the text
 that describes a tool does not change its implementation. Task and terminal-state
 fields are appended separately, and candidate braces remain literal. TB2.1
 retains their official task resource limits and agent timeouts, without
-local overrides. All six configurations use the same task
+local overrides. All configurations in both scopes use the same task
 limits, including the standard and double optimization budgets. The double
 budget increases optimization opportunities while keeping per-task limits fixed.
 An optional `--harbor-process-timeout-sec` is a whole-job operational limit
@@ -202,7 +229,8 @@ evidence for reflection without changing that score.
 and `verifier/test-stderr.txt` when present, plus corresponding logs under
 `steps/*/verifier/` for multi-step trials. These are console outputs from the
 verifier run, not the verifier implementation or benchmark solution files.
-All 16 selected components receive the same feedback. Each optimizer retains
+Every editable component receives the same feedback: 16 components in
+`all_text`, or one unified prompt in `system_prompt`. Each optimizer retains
 its existing reflection procedure.
 
 TB2.1 and HotPotQA default to unlimited Manifestor
@@ -276,16 +304,19 @@ separate policies above.
 Every physical attempt is recorded in `provider-attempts.jsonl` and in the
 existing `token-usage.jsonl` files, including failures with unknown usage.
 The two files describe the same requests, so their totals must not be added.
-The policy is pinned in run contract version 27 and pilot configuration version
-6; older or changed policies cannot resume or enter final evaluation.
+The policy is pinned in run contract version 28 and pilot configuration version
+7; older or changed policies cannot resume or enter final evaluation.
 
 #### Reference protocol and pending confirmation
 
-The working decision is to optimize the full text surface on TB2.1. The
+The working decision is to compare unified-initial-prompt optimization with
+full text-and-skill optimization on TB2.1. The
 [AutoSaddler GEPA baseline](https://arxiv.org/html/2608.23041v1#A2) optimized one
 unified prompt on Terminal-Bench 2.0, while AutoSaddler itself could also change
-executable harness code. Our GEPA and FOREST comparison shares the broader
-text-and-skill scope, with execution code fixed for both methods.
+executable harness code. Our GEPA and FOREST methods have identical editable
+components within each scope, with execution code fixed throughout. The smaller
+scope matches the single editable prompt unit; it does not restore the paper's
+runtime, exact seed, or model settings.
 
 TB2.1 retains the approved 30/19/40 split sizes and task-name assignments,
 four-epoch standard budget, and three repeated final evaluations. The dataset
@@ -295,10 +326,11 @@ were not established from released artifacts. Dataset version, editable surface,
 seed documents, and model arms differ from the paper. This is our controlled
 comparison, not a reproduction of its GEPA setup or reported scores.
 
-- [ ] Ask Lakshya to confirm the full model-facing text and skill scope for
-  TB2.1, with identical editable components for GEPA and FOREST and fixed
-  execution code. This is a research follow-up; the current implementation uses
-  the user's approved working decision.
+- [ ] Ask Lakshya to confirm the TB2.1 scope ablation: one unified initial
+  instruction block versus all model-facing text and skills, with identical
+  editable components for GEPA and FOREST within each scope and fixed execution
+  code. This is a research follow-up; the implementation uses the user's
+  approved working decision.
 - [ ] Ask Lakshya to confirm the TB2.1 train/validation/test split (30/19/40),
   including the preserved task-name assignments.
 - [ ] Gilad: review all implemented deduplication and redundant-context removal
@@ -332,7 +364,8 @@ its candidate, experiment identity, Harbor job configuration, verifier results,
 and ATIF trajectories. Reflection identifies the pinned dataset.
 
 The resume contract records the experiment, dataset, complete task refs and
-splits, target, seed digest, models, decoding, and budget. Only `tb2.1` is
+splits, target, editable scope, materialized and common reference seed digests,
+models, decoding, and budget. Only `tb2.1` is
 accepted. Earlier benchmark contracts and checkpoints require fresh run
 directories; they cannot silently resume or enter final comparisons as TB2.1.
 The held-out test split is never evaluated automatically.
@@ -365,7 +398,7 @@ token, or wall-time costs. The run contract records the epoch rule, iteration
 limit, sampler, and padding. Resuming continues the original budget rather than
 granting additional epochs. Doubling the budget doubles proposal opportunities;
 it does not guarantee twice as many accepted candidates or total metric calls.
-The two larger-budget runs start independently from the shared initial harness.
+The two larger-budget runs in each scope start independently from the shared initial harness.
 They cannot extend a standard-budget checkpoint in place.
 
 `--max-metric-calls` is an optional additional early-stop cap for pilot or
@@ -386,12 +419,12 @@ counted for these fresh executions.
 Completed checkpoint records and optimizer response journals remain available
 for recovery of the same logical work. They do not supply results for unrelated
 new evaluations, and completed held-out repetitions remain resumable. Run
-contract version 27 records `cache_evaluation=false`, forwards it to GEPA, and
+contract version 28 records `cache_evaluation=false`, forwards it to GEPA, and
 rejects missing or changed policies on resume and before final comparison.
 
 #### Parent selection
 
-All six configurations use GEPA's existing Pareto parent selector with one
+All six configurations in each scope use GEPA's existing Pareto parent selector with one
 frontier key per validation task, matching HotPotQA. Track which previously
 evaluated harnesses tie for the best score on each task, prune redundant
 best-task coverage, then sample one remaining harness with probability
@@ -406,17 +439,17 @@ The final winner remains the harness with the highest mean validation score.
 
 `candidate_selection_strategy="pareto"` and `frontier_type="instance"` are
 explicit run contract fields forwarded to the optimizer for every method and
-budget. Run contract version 27 rejects missing or changed parent-selection
+budget. Run contract version 28 rejects missing or changed parent-selection
 policies on resume and before final comparison.
 
 #### Proposal acceptance and validation
 
-All six campaign configurations use the same strict-improvement rule as
+All six campaign configurations in both scopes use the same strict-improvement rule as
 HotPotQA. Evaluate the parent and proposed harness on the same training
 minibatch (three tasks by default). Advance the proposal only if its summed
 reward is strictly higher; reject ties and regressions. A parent with a perfect
-minibatch score skips mutation. Every iteration still consumes its approved
-training-pass budget.
+minibatch score (3/3 by default) skips reflection and editing. This matches
+HotPotQA. Every iteration still consumes its approved training-pass budget.
 
 Evaluate the initial harness on all 19 validation tasks. Every proposal that
 passes the training comparison also receives full validation; rejected edits
@@ -424,29 +457,29 @@ receive no validation run. Validation scores govern the candidate frontier and
 final winner selection. A training improvement does not guarantee a validation
 improvement or automatically replace the existing best harness.
 
-`acceptance_criterion="strict_improvement"` and
-`validation_evaluation="full_eval"` are explicit run contract fields and are
-forwarded to the optimizer. Run contract version 27 rejects missing or changed
-policies on resume and before final comparison. This preserves the prior
-runtime defaults while making them part of the recorded experiment identity.
+`acceptance_criterion="strict_improvement"`, `validation_evaluation="full_eval"`,
+`skip_perfect_score=true`, and `perfect_score=1.0` are explicit run contract
+fields forwarded to the optimizer. Run contract version 28 rejects missing or
+changed policies on resume and before final comparison. This preserves the
+prior runtime defaults while recording the approved experiment identity.
 
 #### Repetitions and final testing
 
-Each model arm uses one optimization run per method/budget configuration, followed by
+Each model arm uses one optimization run per scope/method/budget configuration, followed by
 three test repetitions of each frozen harness. This follows
 [AutoSaddler, section 5.1 and Table 3](https://arxiv.org/html/2608.23041v1): one
 evolution run and three test executions, reporting mean and standard deviation
 of Pass@1.
 
-The final evaluation command requires all six completed runs with matching
+The final evaluation command requires all twelve completed runs with matching
 benchmark, model, decoding, optimization seed, and splits. Each must have the
-correct method and budget for its campaign cell. It rejects partial
+correct scope, method, and budget for its campaign cell. It rejects partial
 training/validation selections and runs that stopped before completing their
 four or eight epochs. It selects each winner independently by mean validation
-reward, with GEPA's earliest-candidate tie break, and freezes all six winners
+reward, with GEPA's earliest-candidate tie break, and freezes all twelve winners
 and their common initial harness before running any test task. Standard and
-double-budget results retain separate labels; no selection across budgets
-uses test results.
+double-budget results retain separate labels within each scope; no selection
+across budgets or scopes uses test results.
 
 Each repetition starts a distinct Harbor job over the entire test split with
 `n_attempts=1` and fresh task environments. Training and validation evaluations
@@ -456,24 +489,31 @@ The output records sample standard deviation (`ddof=1`) explicitly. Test repeats
 measure execution variability for the fixed harness, not optimization-seed
 variability.
 
-For each model, the seven harnesses are the initial harness and the six
+For each model, the thirteen harnesses are the initial harness and the twelve
 validation-selected winners:
 
-| Experiment | Test tasks | Repetitions per harness | Attempts per harness | Attempts across all seven harnesses |
+| Experiment | Test tasks | Repetitions per harness | Attempts per harness | Attempts across all thirteen harnesses |
 | --- | --- | --- | --- | --- |
-| TB2.1 | 40 | 3 | 120 | 840 |
+| TB2.1 | 40 | 3 | 120 | 1,560 |
 
-Run final testing only after all six matching optimization runs have completed:
+That is 39 Harbor jobs per model, or 3,120 task attempts across both models.
+Run final testing only after all twelve matching optimization runs have completed:
 
 ```bash
 uv run python -m examples.terminalbench.evaluate \
-  --run-dir vanilla=runs/tb2.1/vanilla \
-  --run-dir react_v2=runs/tb2.1/react_v2 \
-  --run-dir react_v2_random=runs/tb2.1/react_v2_random \
-  --run-dir action=runs/tb2.1/action \
-  --run-dir vanilla_2x=runs/tb2.1/vanilla_2x \
-  --run-dir react_v2_2x=runs/tb2.1/react_v2_2x \
-  --output-dir runs/tb2.1/test
+  --run-dir all_text__vanilla=runs/tb2.1/qwen/all_text/vanilla \
+  --run-dir all_text__react_v2=runs/tb2.1/qwen/all_text/react_v2 \
+  --run-dir all_text__react_v2_random=runs/tb2.1/qwen/all_text/react_v2_random \
+  --run-dir all_text__action=runs/tb2.1/qwen/all_text/action \
+  --run-dir all_text__vanilla_2x=runs/tb2.1/qwen/all_text/vanilla_2x \
+  --run-dir all_text__react_v2_2x=runs/tb2.1/qwen/all_text/react_v2_2x \
+  --run-dir system_prompt__vanilla=runs/tb2.1/qwen/system_prompt/vanilla \
+  --run-dir system_prompt__react_v2=runs/tb2.1/qwen/system_prompt/react_v2 \
+  --run-dir system_prompt__react_v2_random=runs/tb2.1/qwen/system_prompt/react_v2_random \
+  --run-dir system_prompt__action=runs/tb2.1/qwen/system_prompt/action \
+  --run-dir system_prompt__vanilla_2x=runs/tb2.1/qwen/system_prompt/vanilla_2x \
+  --run-dir system_prompt__react_v2_2x=runs/tb2.1/qwen/system_prompt/react_v2_2x \
+  --output-dir runs/tb2.1/qwen/test
 ```
 
 Use separate corresponding directories for the DeepSeek arm.
@@ -482,14 +522,15 @@ optimization contracts. `--harbor-executable` and `--docker-executable` optional
 select installed binaries. Checkpoints must be trusted local optimization
 artifacts because GEPA's checkpoint format uses Python pickle.
 
-`frozen-comparison.json` contains all seven harnesses and their source contracts.
+`frozen-comparison.json` version 3 contains all thirteen harnesses and their
+source contracts, including each winner's editable scope.
 Each completed repetition gets a JSON file with per-task verifier rewards and
 its distinct Harbor job identity. Rerunning the same command reuses completed
 repetitions and runs only missing ones; an interrupted, unrecorded repetition
 starts again in fresh environments. Frozen harness or configuration changes
 are rejected. The CLI locks the output directory against concurrent writers.
-`summary.json` is written only after all 21 repetitions finish and contains
-the three Pass@1 values, their mean and sample standard deviation, and the
+`summary.json` is written only after all 39 repetitions finish and contains
+the scope, three Pass@1 values, their mean and sample standard deviation, and the
 completed task-attempt count for each harness. Scores are fractions in JSON
 and percentages in console output. Failed or incomplete Harbor jobs stop the
 evaluation instead of becoming fabricated zero scores.
@@ -507,9 +548,10 @@ uv tool install --python 3.12 harbor==0.22.0
 
 uv run python -m examples.terminalbench.main \
   --experiment tb2.1 \
+  --optimization-scope all_text \
   --condition vanilla \
-  --run-dir runs/tb2.1/vanilla \
-  --harbor-work-dir runs/tb2.1/vanilla/harbor
+  --run-dir runs/tb2.1/qwen/all_text/vanilla \
+  --harbor-work-dir runs/tb2.1/qwen/all_text/vanilla/harbor
 ```
 
 Use `--condition react_v2`, `--condition react_v2_random`, and `--condition action`
@@ -520,13 +562,17 @@ Launch each larger-budget run in its own fresh directory, for example:
 ```bash
 uv run python -m examples.terminalbench.main \
   --experiment tb2.1 \
+  --optimization-scope all_text \
   --condition vanilla --budget double \
-  --run-dir runs/tb2.1/vanilla_2x \
-  --harbor-work-dir runs/tb2.1/vanilla_2x/harbor
+  --run-dir runs/tb2.1/qwen/all_text/vanilla_2x \
+  --harbor-work-dir runs/tb2.1/qwen/all_text/vanilla_2x/harbor
 ```
 
-Use `--condition react_v2 --budget double` and `runs/tb2.1/react_v2_2x` for the
-larger-budget FOREST run. Use the same six configurations in both model arms.
+Use `--condition react_v2 --budget double` and
+`runs/tb2.1/qwen/all_text/react_v2_2x` for the larger-budget FOREST run. Repeat
+all six configurations with `--optimization-scope system_prompt` and paths
+under `runs/tb2.1/qwen/system_prompt/`. Use the same twelve configurations for
+the DeepSeek model arm, with separate paths under `runs/tb2.1/deepseek/`.
 The CLI rejects double-budget ablations outside the approved pair.
 An optional `--manifest` must match the pinned TB2.1 experiment.
 
@@ -597,7 +643,7 @@ tested. Record throughput, response latency, and task timeouts; compare Harbor
 timing and exception artifacts alongside the model server's latency metrics.
 The pilot records its concurrency in `canary-config.json`.
 
-Once selected, pass the same `--n-concurrent` value to every method and budget
+Once selected, pass the same `--n-concurrent` value to every scope, method, and budget
 within that benchmark/model comparison. The run contract already records it,
 resume rejects changes, and final evaluation requires matching source runs and
 reuses their concurrency. Calibration does not use validation or test results.
@@ -611,11 +657,12 @@ tasks only**, separately for both model arms:
 ```bash
 uv run python -m examples.terminalbench.canary \
   --experiment tb2.1 \
+  --optimization-scope all_text \
   --model hosted_vllm/Qwen/Qwen3.8-27B \
   --api-base http://localhost:8000/v1 \
   --train-limit 3 \
   --n-concurrent 1 \
-  --output-dir runs/canaries/tb2.1/qwen
+  --output-dir runs/canaries/tb2.1/qwen/all_text
 ```
 
 Repeat with
@@ -624,7 +671,10 @@ directory. The default three tasks are a smoke pilot, not proof that the cap
 suits the entire benchmark; increase `--train-limit` to cover more training
 tasks. The command evaluates the initial harness without optimization and
 cannot select validation or test tasks. It saves exact configuration/task
-identities, official task results, and `token-usage-summary.json`. Failed jobs
+identities, editable scope, official task results, and `token-usage-summary.json`.
+It also supports `--optimization-scope system_prompt`; the initial runtime text
+is identical, so changing scope alone does not require another budget pilot.
+Use separate output directories when checking either materialization path. Failed jobs
 retain available usage too. Inspect usage and cutoffs before deciding whether
 to keep 32,768 or revise it for a new campaign; no automatic cap escalation or
 additional retry is introduced. The pilot does not freeze or approve a budget.

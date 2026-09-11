@@ -1,4 +1,4 @@
-"""Configure full agent-text experiments on Terminal-Bench 2.1.
+"""Configure system-prompt and full-text experiments on Terminal-Bench 2.1.
 
 The held-out test split is not evaluated automatically.
 
@@ -7,9 +7,10 @@ The held-out test split is not evaluated automatically.
 * ``react_v2_random`` replaces only the Controller with uniform selection.
 * ``action`` uses semantic action selection and a stateless section rewrite.
 
-Within each model arm, all conditions use the same official Harbor rewards,
-manifest, student/proposer model, task splits, and editable documents. All four
-methods run for four epochs; vanilla and full FOREST also run for eight epochs.
+Within each model arm, both scopes use the same official Harbor rewards,
+manifest, student/proposer model, task splits, and initial runtime text. Methods
+within a scope share editable components. All four methods run for four epochs;
+vanilla and full FOREST also run for eight epochs.
 Terminal-Bench 2.1 is the sole supported benchmark for this campaign.
 """
 
@@ -56,6 +57,7 @@ from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import (
     REFLECTION_FEEDBACK_CONTRACT,
     TASK_CONTEXT_SETTINGS,
 )
+from gepa.adapters.terminal_bench_adapter.text_scope import OPTIMIZATION_SCOPES, TerminalBenchTextScope
 from gepa.lm import LM
 from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT
 from gepa.strategies.action_space import stateless_selector_policy_contract
@@ -84,6 +86,11 @@ CAMPAIGN_CELLS = {
     for budget, conditions in CONDITIONS_BY_BUDGET.items()
     for condition in conditions
 }
+SCOPE_CAMPAIGN_CELLS = {
+    f"{scope}__{cell}": (scope, condition, budget)
+    for scope in OPTIMIZATION_SCOPES
+    for cell, (condition, budget) in CAMPAIGN_CELLS.items()
+}
 FOREST_CONDITIONS = {"react_v2", "react_v2_random"}
 TEST_REPETITIONS = 3
 EVALUATION_PROTOCOL = {
@@ -97,13 +104,16 @@ EVALUATION_PROTOCOL = {
 TemplateFamily = Literal["generic", "openai", "anthropic", "google", "alibaba"]
 
 
-def seed_candidate(student_model: str, template_family: str, experiment: str) -> tuple[dict[str, str], TemplateFamily]:
+def seed_candidate(
+    student_model: str, template_family: str, experiment: str, optimization_scope: str = "all_text"
+) -> tuple[dict[str, str], TemplateFamily]:
     """Build the experiment's seed with the selected provider template.
 
     Args:
         student_model: Task model used for automatic provider inference.
         template_family: Explicit provider family or ``"auto"``.
         experiment: Benchmark receiving the shared full agent text and skills.
+        optimization_scope: Full text or the unified initial instruction block.
 
     Returns:
         Editable components and their resolved template family.
@@ -111,7 +121,7 @@ def seed_candidate(student_model: str, template_family: str, experiment: str) ->
     resolved_family = cast(TemplateFamily, resolve_template_family(template_family, student_model))
     if experiment not in EXPERIMENT_MANIFESTS:
         raise ValueError(f"Unknown Terminal-Bench experiment: {experiment!r}")
-    return seed_documents(resolved_family), resolved_family
+    return TerminalBenchTextScope(optimization_scope, resolved_family).seed_candidate(), resolved_family
 
 
 def ensure_run_contract(run_dir: Path, contract: dict[str, Any]) -> Path:
@@ -160,7 +170,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--experiment",
         choices=tuple(EXPERIMENT_MANIFESTS),
         default="tb2.1",
-        help="Terminal-Bench 2.1 optimizes the full prompt, tool-description, and skill text",
+        help="Pinned Terminal-Bench 2.1 dataset",
+    )
+    parser.add_argument(
+        "--optimization-scope",
+        choices=OPTIMIZATION_SCOPES,
+        default="all_text",
+        help="Edit all 16 text artifacts, or only the unified initial system prompt",
     )
     parser.add_argument(
         "--condition",
@@ -264,7 +280,8 @@ def build_run_contract(
     training_epochs = TRAINING_EPOCHS_BY_BUDGET[args.budget]
     iterations_per_epoch = (len(trainset) + args.reflection_minibatch_size - 1) // args.reflection_minibatch_size
     sampled_tasks_per_epoch = iterations_per_epoch * args.reflection_minibatch_size
-    candidate, _ = seed_candidate(args.student_model, resolved_family, args.experiment)
+    scope = TerminalBenchTextScope(getattr(args, "optimization_scope", "all_text"), resolved_family)
+    candidate = scope.seed_candidate()
     operated = condition in FOREST_CONDITIONS
     reflection_level = args.reflection_level if operated else 0
     controller_selection = (
@@ -294,7 +311,7 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 27,
+        "schema_version": 28,
         "adapter": deepcopy(TERMINUS_ADAPTER_CONTRACT),
         "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
@@ -302,18 +319,24 @@ def build_run_contract(
         "token_usage_policy": deepcopy(TOKEN_USAGE_POLICY),
         "experiment": manifest.experiment,
         "optimization_target": "agent_text",
+        "optimization_scope": scope.name,
+        "text_scope": scope.contract(),
         "condition": condition,
         "budget": args.budget,
         "controller_selection": controller_selection,
-        "component_kinds": manifest.component_kinds,
+        "component_kinds": scope.component_kinds,
+        "runtime_component_kinds": manifest.component_kinds,
         "module_selector": "all",
         "cache_evaluation": False,
         "candidate_selection_strategy": "pareto",
         "frontier_type": "instance",
         "acceptance_criterion": "strict_improvement",
+        "skip_perfect_score": True,
+        "perfect_score": 1.0,
         "validation_evaluation": "full_eval",
         "document_bundle_version": BUNDLE_VERSION,
-        "seed_document_digest": manifest.candidate_digest(candidate),
+        "seed_document_digest": manifest.candidate_digest(scope.materialize(candidate)),
+        "reference_seed_digest": manifest.candidate_digest(seed_documents(resolved_family)),
         "dataset": manifest.dataset,
         "split_policy": manifest.split_policy,
         "task_refs": manifest.task_refs,
@@ -405,7 +428,10 @@ def main() -> None:
     if not trainset or not valset:
         raise ValueError("train and validation selections must both be non-empty")
 
-    candidate, resolved_family = seed_candidate(args.student_model, args.template_family, args.experiment)
+    candidate, resolved_family = seed_candidate(
+        args.student_model, args.template_family, args.experiment, args.optimization_scope
+    )
+    scope = TerminalBenchTextScope(args.optimization_scope, resolved_family)
     condition = args.condition
     try:
         contract = build_run_contract(args, manifest, trainset, valset, condition, resolved_family)
@@ -438,7 +464,7 @@ def main() -> None:
         text_limits=text_limits,
     )
     harbor.check_requirements()
-    adapter = TerminusAdapter(manifest, harbor)
+    adapter = TerminusAdapter(manifest, harbor, text_scope=scope)
 
     reflection_lm_kwargs: dict[str, Any] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
@@ -462,7 +488,7 @@ def main() -> None:
             level=args.reflection_level,
             edit_tool_set=args.edit_tool_set,
             template_family=resolved_family,
-            component_kinds=manifest.component_kinds,
+            component_kinds=scope.component_kinds,
             controller_selection=contract["controller_selection"],
             rng=random.Random(args.seed),
             text_limits=text_limits,
@@ -485,7 +511,7 @@ def main() -> None:
             selector_lm=observe_optimizer(
                 LM(args.proposer_model, **reflection_lm_kwargs), usage_path, "action_selector", contract["token_limits"]
             ),
-            component_kinds=manifest.component_kinds,
+            component_kinds=scope.component_kinds,
             template_family=resolved_family,
             rng=random.Random(args.seed),
             text_limits=text_limits,
@@ -508,6 +534,8 @@ def main() -> None:
         candidate_selection_strategy=contract["candidate_selection_strategy"],
         frontier_type=contract["frontier_type"],
         acceptance_criterion=contract["acceptance_criterion"],
+        skip_perfect_score=contract["skip_perfect_score"],
+        perfect_score=contract["perfect_score"],
         val_evaluation_policy=contract["validation_evaluation"],
         use_merge=False,
         raise_on_exception=True,
@@ -515,7 +543,7 @@ def main() -> None:
         seed=args.seed,
         reflection_level=contract["reflection_level"],
         edit_tool_set=args.edit_tool_set,
-        component_kinds=manifest.component_kinds,
+        component_kinds=scope.component_kinds,
         template_family=resolved_family,
         template_model=args.student_model,
         text_limits=text_limits,
