@@ -24,13 +24,14 @@ SelectableItemT = TypeVar("SelectableItemT")
 
 logger = logging.getLogger(__name__)
 
-# Length pressure for evolved prompts. The selector communicates this soft
-# budget while the proposer paths enforce their configured hard caps.
-SOFT_PROMPT_CHAR_BUDGET = 8000
-MAX_PROPOSAL_CHARS = 10000
+DOCUMENT_LENGTH_CONTRACT: dict[str, Any] = {
+    "version": 1,
+    "max_component_chars": None,
+    "selector_target_chars": None,
+}
 FULL_SUPPORT_EXPLORATION_EPSILON = 0.1
 DEFAULT_VERBALIZED_ACTION_K = 5
-STATELESS_SELECTOR_POLICY_VERSION = 1
+STATELESS_SELECTOR_POLICY_VERSION = 2
 
 
 def stateless_selector_policy_contract(
@@ -185,7 +186,7 @@ Choose edit actions that address the document's observed failures.
 ```
 {current_prompt}
 ```
-Current component length: {prompt_chars} characters (budget: ~{char_budget}).
+Current component length: {prompt_chars} characters.
 
 ## Recent feedback summary
 {feedback_summary}
@@ -197,9 +198,8 @@ Score {k} candidate actions by how likely each is to improve the document given 
 the feedback. Probabilities must sum to 1.0.
 {support_rule}
 
-Consider less obvious actions when the feedback supports them. If the component \
-is near or over its length budget, favor actions that shorten or replace existing \
-text over actions that add content.
+Consider less obvious actions when the feedback supports them. Preserve useful \
+detail and avoid unnecessary repetition.
 
 Return:
 <response>
@@ -509,7 +509,6 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
         prompt = VERBALIZED_ACTION_PROMPT.format(
             current_prompt=candidate,
             prompt_chars=len(candidate),
-            char_budget=SOFT_PROMPT_CHAR_BUDGET,
             feedback_summary=feedback_summary,
             action_menu=action_menu,
             k=self.k,

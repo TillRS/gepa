@@ -245,6 +245,7 @@ def test_experiment_model_pairs_build_without_running_an_experiment(model: str, 
     assert strategy.proposer_model == model
     assert strategy.component_kinds == {"summarize1": "system_prompt"}
     assert strategy.rng is strategy_rng
+    assert strategy.max_chars is None
     assert {tool.value for tool in strategy.edit_tools} == {
         "INSERT_TEXT",
         "DELETE_TEXT",
@@ -271,6 +272,11 @@ def test_hotpot_provider_sampling_reaches_every_model_role(model: str, budget: i
     request_overrides = experiment_request_overrides(model, explicit_reasoning=True)
     config, selector = build_hotpotqa_config(condition, args, reflection_kwargs)
     contract = build_hotpotqa_run_contract(condition, args)
+    assert contract["optimizer"]["document_length"] == {
+        "version": 1,
+        "max_component_chars": None,
+        "selector_target_chars": None,
+    }
     expected = general["temperature"]
 
     assert expected == 1.0
@@ -1028,7 +1034,7 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
     assert hover["models"]["solver_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
     assert hover["models"]["reflection_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
 
-    assert hotpot["schema_version"] == 19
+    assert hotpot["schema_version"] == 20
     assert hotpot["optimizer"]["react_execution"]["completion"] == "explicit_finish"
     assert hotpot["optimizer"]["react_execution"]["max_iterations"] is None
     assert hotpot["optimizer"]["react_execution"]["max_tool_calls"] is None
@@ -1438,7 +1444,7 @@ def test_stateless_action_menu_contract_matches_between_wikipedia_benchmarks() -
     expected = build_hotpotqa_run_contract("random", args)["optimizer"]["stateless_action_menu"]
 
     for build_contract, schema_version in (
-        (build_hotpotqa_run_contract, 19),
+        (build_hotpotqa_run_contract, 20),
         (build_hover_run_contract, 4),
     ):
         contract = build_contract("random", args)

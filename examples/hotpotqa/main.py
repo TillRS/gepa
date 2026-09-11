@@ -84,6 +84,7 @@ from gepa.optimize_anything import (
 from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT
 from gepa.response_journal import RESPONSE_JOURNAL_SCHEMA_VERSION, RESPONSE_JOURNAL_SCOPE_POLICY
 from gepa.strategies.action_space import (
+    DOCUMENT_LENGTH_CONTRACT,
     RandomActionSelector,
     VerbalizedActionSelector,
     stateless_selector_policy_contract,
@@ -554,7 +555,7 @@ def build_run_contract(condition: str, args) -> dict:
         else:
             semantic_controller_policy = deepcopy(CONTROLLER_POLICY_CONTRACT)
     return {
-        "schema_version": 19,
+        "schema_version": 20,
         "benchmark": "hotpotqa-fullwiki-wiki17",
         "reference_artifact_commit": GEPA_ARTIFACT_COMMIT,
         "scientific_contract_enforced": scientific_contract,
@@ -595,6 +596,7 @@ def build_run_contract(condition: str, args) -> dict:
             "component_selector": "round_robin",
             "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
             "manifestor_traces_chars": None,
+            "document_length": deepcopy(DOCUMENT_LENGTH_CONTRACT),
             "react_execution": deepcopy(REACT_V2_EXECUTION_CONTRACT) if condition in _REACT_V2_CONDITIONS else None,
             "skip_perfect_score": True,
             "perfect_score": 1.0,

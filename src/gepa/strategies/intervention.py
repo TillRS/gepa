@@ -19,13 +19,13 @@ from typing import Any
 
 from gepa.strategies.action_space import (
     FULL_SUPPORT_EXPLORATION_EPSILON,
-    SOFT_PROMPT_CHAR_BUDGET,
     VerbalizedActionSelector,
 )
 from gepa.strategies.document_template import DocumentTemplate, EditTarget
 from gepa.strategies.edit_tools import EditTool
 
 logger = logging.getLogger(__name__)
+MAX_FEEDBACK_SUMMARY_CHARS = 8000
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,7 @@ class ControllerChoice:
 
 SEMANTIC_ACTION_CATALOG_VERSION = 3
 CONTROLLER_POLICY_VERSION = 4
-STATELESS_ACTION_MENU_VERSION = 1
+STATELESS_ACTION_MENU_VERSION = 2
 
 CONTROLLER_POLICY_CONTRACT: dict[str, Any] = {
     "version": CONTROLLER_POLICY_VERSION,
@@ -402,8 +402,6 @@ def format_stateless_action_constraint(action: StatelessActionConstraint) -> str
         f"Coupled text operator: {action.edit_tool.value}\n"
         f"{section_scope}\n"
         f"Guidance: {manifestation}\n\n"
-        f"Length budget: the revised section body must stay under {SOFT_PROMPT_CHAR_BUDGET} characters. "
-        "If this edit would exceed the budget, replace or remove existing content instead of adding.\n\n"
         "Make no other changes."
     )
 
@@ -492,7 +490,7 @@ class Controller(VerbalizedActionSelector[ControllerChoice]):
             exploration among positive-probability choices.
     """
 
-def summarize_feedback(reflective_entries: Any, max_chars: int = SOFT_PROMPT_CHAR_BUDGET) -> str:
+def summarize_feedback(reflective_entries: Any, max_chars: int = MAX_FEEDBACK_SUMMARY_CHARS) -> str:
     """Join feedback and truncate its raw prefix before adding an ellipsis.
 
     Args:
