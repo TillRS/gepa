@@ -263,8 +263,23 @@ def build_run_contract(
     controller_policy = (
         UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT if condition == "react_v2_random" else CONTROLLER_POLICY_CONTRACT
     )
+    proposer_decoding = experiment_decoding(args.proposer_model, agentic=False)
+    react_decoding = experiment_decoding(args.proposer_model, agentic=True)
+    reflection_role_decoding = None
+    if operated:
+        reflection_role_decoding = {
+            "controller": (
+                {"requested": dict(proposer_decoding), "provider_ignored_fields": []}
+                if controller_selection == "verbalized"
+                else None
+            ),
+            "manifestor": (
+                {"requested": dict(proposer_decoding), "provider_ignored_fields": []} if reflection_level >= 2 else None
+            ),
+            "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
+        }
     return {
-        "schema_version": 15,
+        "schema_version": 16,
         "experiment": manifest.experiment,
         "optimization_target": "agent_text",
         "condition": condition,
@@ -286,7 +301,7 @@ def build_run_contract(
         "reflection_feedback": deepcopy(REFLECTION_FEEDBACK_CONTRACT),
         "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
         "manifestor_traces_chars": None,
-        "manifestor_temperature": float(experiment_decoding(args.proposer_model)["temperature"]),
+        "manifestor_temperature": float(proposer_decoding["temperature"]),
         "failure_policy": deepcopy(FAILURE_POLICY_CONTRACT),
         "optimization_budget": {
             "unit": "training_epochs",
@@ -303,7 +318,8 @@ def build_run_contract(
         "n_concurrent": args.n_concurrent,
         "proposer_api_base": args.proposer_api_base,
         "proposer_backend": "react_v2" if operated else "stateless",
-        "proposer_decoding": experiment_decoding(args.proposer_model),
+        "proposer_decoding": proposer_decoding,
+        "reflection_role_decoding": reflection_role_decoding,
         "proposer_model": args.proposer_model,
         "proposer_model_version": experiment_model_version(args.proposer_model),
         "proposer_request_overrides": experiment_request_overrides(args.proposer_model),
@@ -322,7 +338,7 @@ def build_run_contract(
         ),
         "seed": args.seed,
         "student_api_base": args.student_api_base,
-        "student_decoding": experiment_decoding(args.student_model),
+        "student_decoding": experiment_decoding(args.student_model, agentic=True),
         "student_model": args.student_model,
         "student_model_version": experiment_model_version(args.student_model),
         "student_request_overrides": experiment_request_overrides(args.student_model),
@@ -366,7 +382,7 @@ def main() -> None:
     student_agent_kwargs: dict[str, Any] = {
         "llm_kwargs": {
             "num_retries": EXPERIMENT_NUM_RETRIES,
-            **experiment_decoding(args.student_model),
+            **experiment_decoding(args.student_model, agentic=True),
             **experiment_request_overrides(args.student_model),
         }
     }
@@ -389,7 +405,7 @@ def main() -> None:
 
     reflection_lm_kwargs: dict[str, Any] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
-        **experiment_decoding(args.proposer_model),
+        **experiment_decoding(args.proposer_model, agentic=False),
         **experiment_request_overrides(args.proposer_model),
     }
     if args.proposer_api_base is not None:
@@ -409,6 +425,7 @@ def main() -> None:
             rng=random.Random(args.seed),
             manifestor_traces_chars=None,
             manifestor_temperature=contract["manifestor_temperature"],
+            react_top_p=float(contract["reflection_role_decoding"]["react_v2_proposer"]["requested"]["top_p"]),
         )
     elif condition == "action":
         reflection_strategy = ComponentActionReflectionLM(

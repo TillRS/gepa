@@ -398,7 +398,12 @@ the current recommendation is 1.0 for task execution and every optimizer role,
 including the Manifestor. The [provider source review](../../../../examples/common/temperature_policy.md)
 records the HotPotQA, TB2, TB4, Controller, Manifestor, and proposer mappings.
 The previous Manifestor-0.0 policy cannot resume or enter a final comparison
-under the new contract. These values apply at both optimization budgets.
+under the new contract. Qwen uses top-p 0.95 for every role. DeepSeek uses 0.95
+for the terminal agent and ReAct editor, and 1.0 for single-call rewriting,
+action selection, and Manifestor guidance. Separate Controller and editor
+clients preserve these settings. Role-specific decoding is recorded and
+validated before resume or final comparison. These values apply at both
+optimization budgets and during final task evaluation.
 
 Offline tests in `tests/harbor/` exercise the shared actual agent loop for both benchmarks and Harbor job
 schemas with simulated model and terminal boundaries. They make no paid model

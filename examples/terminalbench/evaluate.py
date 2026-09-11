@@ -32,6 +32,7 @@ METHOD_SPECIFIC_FIELDS = {
     "controller_selection",
     "proposer_backend",
     "reflection_level",
+    "reflection_role_decoding",
     "max_proposer_model_calls",
     "semantic_action_space",
     "semantic_controller_policy",

@@ -179,7 +179,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 15
+    assert contract["schema_version"] == 16
     assert contract["manifestor_traces_chars"] is None
     assert contract["manifestor_temperature"] == 1.0
     assert contract["reflection_context"]["version"] == 1
@@ -192,7 +192,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
     assert contract["student_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
     assert contract["student_model_info"] == QWEN3_8_27B_MODEL_INFO
-    assert contract["proposer_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
+    assert contract["proposer_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL, agentic=False)
     assert contract["student_num_retries"] == EXPERIMENT_NUM_RETRIES
     assert contract["proposer_num_retries"] == EXPERIMENT_NUM_RETRIES
     assert contract["semantic_action_space"] == SEMANTIC_ACTION_CATALOGS
@@ -221,7 +221,7 @@ def test_deepseek_run_contract_uses_the_separate_same_model_condition(tmp_path: 
     assert contract["proposer_model"] == DEEPSEEK_V4_FLASH_MODEL
     assert contract["student_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL)
     assert contract["student_model_info"] == DEEPSEEK_V4_FLASH_MODEL_INFO
-    assert contract["proposer_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL)
+    assert contract["proposer_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL, agentic=False)
 
 
 @pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
@@ -276,7 +276,9 @@ def test_provider_settings_reach_all_runtime_roles(
     optimize_kwargs = optimizer.call_args.kwargs
     student_kwargs = harbor_kwargs["student_agent_kwargs"]
     expected_body = experiment_request_overrides(model).get("extra_body")
-    temperature = experiment_decoding(model)["temperature"]
+    general = experiment_decoding(model, agentic=False)
+    agentic = experiment_decoding(model, agentic=True)
+    temperature = general["temperature"]
     assert temperature == 1.0
     assert harbor_kwargs["student_model"] == optimize_kwargs["reflection_lm"] == model
     assert student_kwargs["model_info"] == experiment_model_info(model)
@@ -284,6 +286,8 @@ def test_provider_settings_reach_all_runtime_roles(
     assert optimize_kwargs["reflection_lm_kwargs"].get("extra_body") == expected_body
     assert student_kwargs["llm_kwargs"]["temperature"] == temperature
     assert optimize_kwargs["reflection_lm_kwargs"]["temperature"] == temperature
+    assert student_kwargs["llm_kwargs"]["top_p"] == agentic["top_p"]
+    assert optimize_kwargs["reflection_lm_kwargs"]["top_p"] == general["top_p"]
     assert harbor_kwargs["student_api_base"] == optimize_kwargs["reflection_lm_kwargs"]["api_base"]
     assert len(optimize_kwargs["trainset"]) == len(optimize_kwargs["valset"]) == 1
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
@@ -297,6 +301,12 @@ def test_provider_settings_reach_all_runtime_roles(
         assert strategy.base_lm.completion_kwargs["api_base"] == "http://localhost:8000/v1"
         assert strategy.base_lm.completion_kwargs["temperature"] == temperature
         assert strategy.manifestor_lm.completion_kwargs["temperature"] == temperature
+        assert strategy.base_lm.completion_kwargs["top_p"] == agentic["top_p"]
+        assert strategy.manifestor_lm.completion_kwargs["top_p"] == general["top_p"]
+        if condition == "react_v2":
+            assert strategy.controller_lm.model == model
+            assert strategy.controller_lm.completion_kwargs["temperature"] == temperature
+            assert strategy.controller_lm.completion_kwargs["top_p"] == general["top_p"]
     elif condition == "action":
         assert isinstance(strategy, terminalbench_main.ComponentActionReflectionLM)
         for reflector in strategy.reflectors.values():
@@ -308,6 +318,8 @@ def test_provider_settings_reach_all_runtime_roles(
             )
             assert reflector.lm.completion_kwargs["temperature"] == temperature
             assert reflector.action_selector.lm.completion_kwargs["temperature"] == temperature
+            assert reflector.lm.completion_kwargs["top_p"] == general["top_p"]
+            assert reflector.action_selector.lm.completion_kwargs["top_p"] == general["top_p"]
             assert (
                 reflector.lm.completion_kwargs["api_base"] == reflector.action_selector.lm.completion_kwargs["api_base"]
             )
@@ -328,6 +340,16 @@ def test_provider_settings_reach_all_runtime_roles(
         == experiment_request_overrides(model)
     )
     assert contract["manifestor_temperature"] == temperature
+    assert contract["student_decoding"] == agentic
+    assert contract["proposer_decoding"] == general
+    if condition in terminalbench_main.FOREST_CONDITIONS:
+        assert contract["reflection_role_decoding"] == {
+            "controller": ({"requested": general, "provider_ignored_fields": []} if condition == "react_v2" else None),
+            "manifestor": {"requested": general, "provider_ignored_fields": []},
+            "react_v2_proposer": {"requested": agentic, "provider_ignored_fields": []},
+        }
+    else:
+        assert contract["reflection_role_decoding"] is None
 
 
 @pytest.mark.parametrize("experiment,iterations,padding", [("tb2", 40, 0), ("tb4", 32, 1)])

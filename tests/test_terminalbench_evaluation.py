@@ -277,6 +277,9 @@ def test_unchanged_winners_still_receive_separate_test_repetitions(tmp_path: Pat
         "different_context_policy",
         "manifestor_trace_cap",
         "manifestor_temperature",
+        "controller_top_p",
+        "manifestor_top_p",
+        "react_v2_proposer_top_p",
         "missing_failure_policy",
     ],
 )
@@ -313,6 +316,9 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
         "different_context_policy",
         "manifestor_trace_cap",
         "manifestor_temperature",
+        "controller_top_p",
+        "manifestor_top_p",
+        "react_v2_proposer_top_p",
         "missing_failure_policy",
     }:
         path = forest / RUN_CONTRACT_FILENAME
@@ -335,6 +341,8 @@ def test_invalid_source_runs_are_rejected_before_test_execution(tmp_path: Path, 
             contract["manifestor_traces_chars"] = 8000
         elif damage == "manifestor_temperature":
             contract["manifestor_temperature"] = 0.0
+        elif damage.endswith("_top_p"):
+            contract["reflection_role_decoding"][damage.removesuffix("_top_p")]["requested"]["top_p"] = 0.5
         elif damage == "missing_failure_policy":
             del contract["failure_policy"]
         else:
