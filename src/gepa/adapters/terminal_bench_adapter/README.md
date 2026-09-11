@@ -25,6 +25,18 @@ This gives **24 optimization runs**: six configurations, two models, and two
 benchmarks. There is one optimization run per configuration. The shared initial
 harness is an additional evaluation reference, not an optimization run.
 
+Full FOREST retains the same Verbalized Sampling-based Controller as HotPotQA.
+The model scores every section/action pair; the sampler combines 90% of the
+normalized model distribution with 10% uniform exploration among pairs assigned
+positive probability. Pairs assigned zero stay excluded. This policy applies to
+both Terminal-Bench experiments and both full-FOREST budgets.
+
+This is our adaptation of [Verbalized Sampling](https://arxiv.org/html/2510.01171v3#S4):
+we elicit probabilities over a fixed action catalog, then add uniform exploration.
+The 10% mixture is our setting. The authors' [`tau=0.10` example](https://github.com/CHATS-lab/verbalized-sampling#quickstart)
+instead requests responses from the low-probability tail; it does not specify a
+90/10 exploration mixture. We retain that distinction in describing the method.
+
 Random-Controller FOREST preserves Manifestor steering, the ReAct V2 editor,
 and branch-local edit history. Only Controller selection changes. The `action`
 condition uses HotPotQA's `VerbalizedActionSelector` and `StatelessReflectionLM`:
