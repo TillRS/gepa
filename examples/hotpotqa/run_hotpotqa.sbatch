@@ -563,13 +563,15 @@ elif [[ "$(tr -d '\n' < "${CAMPAIGN_LOCK_PATH}")" != "${CAMPAIGN_IDENTITY_SHA256
     exit 1
 fi
 rm -f -- "${CAMPAIGN_LOCK_TEMP}"
+# DSPy initializes storage on import even though task LMs disable response
+# caching. Keep that initialization off the home filesystem.
 RUNTIME_IDENTITY_SHA256="$(printf '%s' "${RUNTIME_IDENTITY}" | sha256sum | cut -d' ' -f1)"
 CACHE_IDENTITY="source=${HOTPOTQA_SOURCE_COMMIT};source_manifest=${HOTPOTQA_SOURCE_MANIFEST_SHA256};python=${HOTPOTQA_PYTHON_VERSION};uv=${HOTPOTQA_UV_VERSION};uv_sha=${HOTPOTQA_UV_SHA256};env_spec=${HOTPOTQA_ENV_SPEC_SHA256};gepa_env=${HOTPOTQA_GEPA_ENV_SHA256};model=${HOTPOTQA_MODEL_REVISION};model_manifest=${HOTPOTQA_MODEL_INTEGRITY_SHA256};budget_profile=${BUDGET_PROFILE};runtime=${RUNTIME_IDENTITY_SHA256};litellm=${HOTPOTQA_LITELLM_VERSION};dspy=${HOTPOTQA_DSPY_COMMIT};hotpot=${HOTPOTQA_DATA_REVISION};wiki17=${WIKI17_REVISION};index=${WIKI17_INTEGRITY_SHA256}"
 CACHE_IDENTITY_SHA256="$(printf '%s' "${CACHE_IDENTITY}" | sha256sum | cut -d' ' -f1)"
 RUNTIME_CACHE_KEY="${MODEL_PROFILE}-${CACHE_IDENTITY_SHA256}"
 export DSPY_CACHEDIR="${SCRATCH_BASE}/.cache/dspy/hotpotqa/${RUNTIME_CACHE_KEY}"
 mkdir -p "${DSPY_CACHEDIR}"
-echo "==> DSPy cache identity: ${CACHE_IDENTITY_SHA256}"
+echo "==> HotPotQA evaluation and model-response caching: disabled"
 # The serving process is already running, so these limits apply only to the
 # evaluator and prevent its per-example threads from spawning nested CPU pools.
 export OMP_NUM_THREADS=1

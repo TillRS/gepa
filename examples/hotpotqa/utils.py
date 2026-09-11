@@ -205,6 +205,7 @@ def build_hotpotqa_task_lm(
     else:
         kwargs = deepcopy(lm_kwargs)
     dspy.settings.configure(disable_history=True)
+    kwargs["cache"] = False
     kwargs["cache_in_memory"] = False
     return dspy.LM(model=model, **kwargs)
 
@@ -341,6 +342,7 @@ def _call_lm(
         kwargs = deepcopy(lm_kwargs)
     kwargs["model"] = model
     kwargs["messages"] = messages
+    kwargs["cache"] = {"no-cache": True, "no-store": True}
     response = None
     max_token_fallbacks = dict.fromkeys((kwargs["max_tokens"], 4096, 1024, 256))
     for max_tokens in max_token_fallbacks:

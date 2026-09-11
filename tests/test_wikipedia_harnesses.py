@@ -97,6 +97,8 @@ def test_hotpot_lm_uses_local_campaign_decoding(monkeypatch, model: str) -> None
     monkeypatch.setattr(hotpot_utils.litellm, "completion", completion)
 
     assert hotpot_utils._call_lm("", "question", model, None) == "answer"
+    assert hotpot_utils._call_lm("", "question", model, None) == "answer"
+    assert len(calls) == 2
     assert calls[0]["messages"] == [{"role": "user", "content": "question"}]
     expected_request = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
@@ -105,7 +107,9 @@ def test_hotpot_lm_uses_local_campaign_decoding(monkeypatch, model: str) -> None
     }
     expected_request["seed"] = hotpot_utils.HOTPOTQA_SCIENTIFIC_REQUEST_SEED
     assert {key: value for key, value in calls[0].items() if key not in {"model", "messages"}} == {
-        **expected_request, "max_retries": 0,
+        **expected_request,
+        "max_retries": 0,
+        "cache": {"no-cache": True, "no-store": True},
     }
     assert calls[0].get("extra_body") == experiment_request_overrides(model, explicit_reasoning=True).get("extra_body")
 
@@ -460,11 +464,44 @@ def test_real_dspy_provider_requests_use_three_attempts(tmp_path, monkeypatch, m
     settings = hotpot_utils.resolve_hotpotqa_lm_kwargs(model, "http://localhost:8000/v1")
     settings.update(provider_retries.provider_retry_kwargs(path, "solver"))
     lm = hotpot_utils.build_hotpotqa_task_lm(model, None, settings)
-    result = asyncio.run(lm.aforward(prompt="test", cache=False)) if asynchronous else lm.forward(prompt="test", cache=False)
+    result = asyncio.run(lm.aforward(prompt="test")) if asynchronous else lm.forward(prompt="test")
     assert result.choices[0].message.content == "done"
     assert provider.call_count == 3
     assert all(call.kwargs["num_retries"] == call.kwargs["max_retries"] == 0 for call in provider.call_args_list)
     assert len(path.read_text().splitlines()) == 3
+
+
+@pytest.mark.skipif(hotpot_utils.dspy is None, reason="HotPotQA's locked DSPy group is not installed")
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_repeated_hotpot_dspy_requests_are_fresh(tmp_path, monkeypatch, model, asynchronous):
+    """Bypass both DSPy caches and call the provider for identical new requests."""
+    responses = [
+        litellm.ModelResponse(
+            model=model,
+            choices=[{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+        )
+        for text in ("first result", "second result")
+    ]
+    provider = AsyncMock(side_effect=responses) if asynchronous else Mock(side_effect=responses)
+    monkeypatch.setattr(litellm, "acompletion" if asynchronous else "completion", provider)
+    monkeypatch.setattr(hotpot_utils.dspy.cache, "get", Mock(side_effect=AssertionError("cache read")))
+    monkeypatch.setattr(hotpot_utils.dspy.cache, "put", Mock(side_effect=AssertionError("cache write")))
+    path = tmp_path / "provider-attempts.jsonl"
+    settings = hotpot_utils.resolve_hotpotqa_lm_kwargs(model, "http://localhost:8000/v1")
+    settings.update(provider_retries.provider_retry_kwargs(path, "solver"))
+    settings.update(cache=True, cache_in_memory=True)
+    lm = hotpot_utils.build_hotpotqa_task_lm(model, None, settings)
+    assert lm.cache is False and lm.cache_in_memory is False
+    outputs = []
+    for _ in range(2):
+        response = asyncio.run(lm.aforward(prompt="same input")) if asynchronous else lm.forward(prompt="same input")
+        outputs.append(response.choices[0].message.content)
+    assert outputs == ["first result", "second result"]
+    assert provider.call_count == 2
+    assert all(call.kwargs["cache"] == {"no-cache": True, "no-store": True} for call in provider.call_args_list)
+    assert len(path.read_text().splitlines()) == 2
 
 
 @pytest.mark.skipif(hotpot_utils.dspy is None, reason="HotPotQA's locked DSPy group is not installed")
@@ -617,6 +654,7 @@ def test_hotpot_dspy_lm_uses_the_selected_experiment_profile(monkeypatch, model:
     settings.configure.assert_called_once_with(disable_history=True)
     expected_kwargs = {
         "model": model,
+        "cache": False,
         "cache_in_memory": False,
         **hotpot_utils.resolve_hotpotqa_lm_kwargs(model, "http://solver.example/v1"),
     }

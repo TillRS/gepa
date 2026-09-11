@@ -557,7 +557,7 @@ def build_run_contract(condition: str, args) -> dict:
         else:
             semantic_controller_policy = deepcopy(CONTROLLER_POLICY_CONTRACT)
     return {
-        "schema_version": 22,
+        "schema_version": 23,
         "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "benchmark": "hotpotqa-fullwiki-wiki17",
         "reference_artifact_commit": GEPA_ARTIFACT_COMMIT,
@@ -648,8 +648,8 @@ def build_run_contract(condition: str, args) -> dict:
             "dspy_runtime_commit": HOTPOTQA_DSPY_COMMIT if args.program == "2stage" else None,
             "retrieval_k": args.retrieval_k,
             "parallel_workers": args.max_workers,
-            "cache_evaluation": True,
-            "dspy_disk_cache": True,
+            "cache_evaluation": False,
+            "dspy_disk_cache": False,
             "dspy_memory_cache": False,
             "dspy_history": False,
             "primary_metric": "normalized_exact_match",
@@ -1223,7 +1223,7 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
             raise_on_exception=True,
             parallel=True,
             max_workers=args.max_workers,
-            cache_evaluation=True,
+            cache_evaluation=False,
         ),
         reflection=ReflectionConfig(
             skip_perfect_score=True,
