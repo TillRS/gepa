@@ -245,7 +245,7 @@ separate policies above.
 Every physical attempt is recorded in `provider-attempts.jsonl` and in the
 existing `token-usage.jsonl` files, including failures with unknown usage.
 The two files describe the same requests, so their totals must not be added.
-The policy is pinned in run contract version 25 and pilot configuration version
+The policy is pinned in run contract version 26 and pilot configuration version
 5; older or changed policies cannot resume or enter final evaluation.
 
 #### Reference protocol and pending confirmation
@@ -343,6 +343,21 @@ the final iteration's evaluations. A run stopped by that cap before its selected
 epoch budget does not complete the protocol. The normal commands omit this cap.
 Final held-out test evaluation remains separate.
 
+#### Evaluation caching
+
+Evaluation-result caching is explicitly disabled for TB2.1 and HotPotQA across
+all methods and both budgets. A new request to evaluate the same harness on
+the same task executes it again. TB2.1 creates a fresh Harbor job and task
+environment; HotPotQA also disables DSPy's disk and memory response caches.
+The approved budgets remain unchanged, and actual evaluation/model usage is
+counted for these fresh executions.
+
+Completed checkpoint records and optimizer response journals remain available
+for recovery of the same logical work. They do not supply results for unrelated
+new evaluations, and completed held-out repetitions remain resumable. Run
+contract version 26 records `cache_evaluation=false`, forwards it to GEPA, and
+rejects missing or changed policies on resume and before final comparison.
+
 #### Parent selection
 
 All six configurations use GEPA's existing Pareto parent selector with one
@@ -360,7 +375,7 @@ The final winner remains the harness with the highest mean validation score.
 
 `candidate_selection_strategy="pareto"` and `frontier_type="instance"` are
 explicit run contract fields forwarded to the optimizer for every method and
-budget. Run contract version 25 rejects missing or changed parent-selection
+budget. Run contract version 26 rejects missing or changed parent-selection
 policies on resume and before final comparison.
 
 #### Proposal acceptance and validation
@@ -380,7 +395,7 @@ improvement or automatically replace the existing best harness.
 
 `acceptance_criterion="strict_improvement"` and
 `validation_evaluation="full_eval"` are explicit run contract fields and are
-forwarded to the optimizer. Run contract version 25 rejects missing or changed
+forwarded to the optimizer. Run contract version 26 rejects missing or changed
 policies on resume and before final comparison. This preserves the prior
 runtime defaults while making them part of the recorded experiment identity.
 

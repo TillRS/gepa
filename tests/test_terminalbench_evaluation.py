@@ -429,6 +429,7 @@ def test_provider_retry_drift_cannot_resume_or_enter_final_test(tmp_path: Path, 
 @pytest.mark.parametrize(
     "field,value",
     [
+        ("cache_evaluation", True),
         ("candidate_selection_strategy", "current_best"),
         ("frontier_type", "objective"),
         ("acceptance_criterion", "improvement_or_equal"),
@@ -436,10 +437,10 @@ def test_provider_retry_drift_cannot_resume_or_enter_final_test(tmp_path: Path, 
     ],
 )
 @pytest.mark.parametrize("missing", [False, True])
-def test_selection_policy_drift_cannot_resume_or_enter_final_test(
-    tmp_path: Path, field: str, value: str, missing: bool
+def test_optimizer_policy_drift_cannot_resume_or_enter_final_test(
+    tmp_path: Path, field: str, value: str | bool, missing: bool
 ) -> None:
-    """Reject changed parent selection, acceptance, or validation before held-out work."""
+    """Reject changed caching, parent selection, acceptance, or validation before held-out work."""
     run_dirs = _write_comparison(tmp_path, "tb2.1")
     forest = run_dirs["react_v2"]
     path = forest / RUN_CONTRACT_FILENAME
