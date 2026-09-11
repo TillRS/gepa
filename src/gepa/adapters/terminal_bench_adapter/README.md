@@ -464,6 +464,23 @@ runtime registers the checkpoint basename there and retains the full original
 `hosted_vllm/organization/model` identifier for requests, trajectories, and usage.
 Both model arms use the same compatibility handling.
 
+#### Concurrency review
+
+Choose task concurrency using training-only measurements before freezing each
+benchmark/model comparison. Start the pilot with `--n-concurrent 1`, then test
+higher values on the actual hardware with the same tasks, initial harness,
+model settings, and serving configuration. Use a fresh output directory for
+each pilot and a `--train-limit` at least as large as the concurrency being
+tested. Record throughput, response latency, and task timeouts; compare Harbor
+timing and exception artifacts alongside the model server's latency metrics.
+The pilot records its concurrency in `canary-config.json`.
+
+Once selected, pass the same `--n-concurrent` value to every method and budget
+within that benchmark/model comparison. The run contract already records it,
+resume rejects changes, and final evaluation requires matching source runs and
+reuses their concurrency. Calibration does not use validation or test results.
+The default remains one until the training measurements justify another value.
+
 #### Output budget review
 
 Before freezing experiment settings, run the initial harness on **training
@@ -475,6 +492,7 @@ uv run python -m examples.terminalbench.canary \
   --model hosted_vllm/Qwen/Qwen3.8-27B \
   --api-base http://localhost:8000/v1 \
   --train-limit 3 \
+  --n-concurrent 1 \
   --output-dir runs/canaries/tb2/qwen
 ```
 

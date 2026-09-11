@@ -40,6 +40,7 @@ def _write_run(
     model: str = QWEN3_8_27B_MODEL,
     budget: str = "standard",
     text_limits: TextLimits | None = None,
+    n_concurrent: int = 1,
 ) -> Path:
     """Create a real checkpoint whose validation winner is not the last candidate."""
     label = f"{condition}{'_2x' if budget == 'double' else ''}"
@@ -66,6 +67,8 @@ def _write_run(
             str(run_dir / "harbor"),
             "--text-limits",
             json.dumps(text_limits.to_dict() if text_limits else None),
+            "--n-concurrent",
+            str(n_concurrent),
         ]
     )
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
@@ -93,11 +96,15 @@ def _write_run(
 
 
 def _write_comparison(
-    root: Path, experiment: str, model: str = QWEN3_8_27B_MODEL, text_limits: TextLimits | None = None
+    root: Path,
+    experiment: str,
+    model: str = QWEN3_8_27B_MODEL,
+    text_limits: TextLimits | None = None,
+    n_concurrent: int = 1,
 ) -> dict[str, Path]:
     """Create all six distinct standard/double-budget source checkpoints."""
     return {
-        label: _write_run(root, experiment, condition, model, budget, text_limits)
+        label: _write_run(root, experiment, condition, model, budget, text_limits, n_concurrent)
         for label, (condition, budget) in CAMPAIGN_CELLS.items()
     }
 
@@ -154,7 +161,8 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
 ) -> None:
     """Test all benchmark/model arms through the CLI without any optimization or model call."""
     text_limits = TextLimits(verifier_log_chars=5000, manifestor_steering_chars=3000) if configured else TextLimits()
-    run_dirs = _write_comparison(tmp_path, experiment, model, text_limits)
+    n_concurrent = 2 if configured else 1
+    run_dirs = _write_comparison(tmp_path, experiment, model, text_limits, n_concurrent)
     manifest, comparison = evaluate.freeze_comparison(run_dirs)
     for condition in CAMPAIGN_CELLS:
         assert comparison["source_runs"][condition]["selected_candidate_index"] == 1
@@ -190,6 +198,7 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
     contract = comparison["shared_configuration"]
     assert contract["text_limits"] == text_limits.to_dict()
     assert kwargs["text_limits"] == text_limits
+    assert kwargs["n_concurrent"] == contract["n_concurrent"] == n_concurrent
     assert kwargs["student_model"] == model
     assert kwargs["student_api_base"] == contract["student_api_base"]
     assert kwargs["student_agent_kwargs"]["model_info"] == contract["student_model_info"]
@@ -453,6 +462,21 @@ def test_changed_character_limits_cannot_resume_or_enter_final_comparison(
     original = json.loads(path.read_text())
     changed = json.loads(path.read_text())
     changed["text_limits"][field] = 1234
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+        ensure_run_contract(forest, original)
+    with pytest.raises(ValueError):
+        evaluate.freeze_comparison(run_dirs)
+
+
+@pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
+def test_changed_concurrency_cannot_resume_or_enter_final_comparison(tmp_path: Path, experiment: str) -> None:
+    """Keep task concurrency fixed within every benchmark/model comparison."""
+    run_dirs = _write_comparison(tmp_path, experiment)
+    forest = run_dirs["react_v2"]
+    path = forest / RUN_CONTRACT_FILENAME
+    original = json.loads(path.read_text())
+    changed = {**original, "n_concurrent": original["n_concurrent"] + 1}
     path.write_text(json.dumps(changed))
     with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
         ensure_run_contract(forest, original)

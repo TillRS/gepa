@@ -1,4 +1,4 @@
-"""Measure the initial harness on training tasks before freezing token budgets."""
+"""Measure the initial harness on training tasks before freezing runtime settings."""
 
 import argparse
 import json
@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--api-base", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--train-limit", type=int, default=3)
+    parser.add_argument("--n-concurrent", type=int, default=1, help="Maximum simultaneous training-task trials")
     parser.add_argument("--harbor-executable", default="harbor")
     parser.add_argument("--docker-executable", default="docker")
     parser.add_argument("--text-limits", type=parse_text_limits, default=None)
@@ -37,6 +38,8 @@ def main() -> None:
     text_limits = resolve_text_limits(args.text_limits)
     if args.train_limit <= 0:
         parser.error("--train-limit must be positive")
+    if args.n_concurrent <= 0:
+        parser.error("--n-concurrent must be positive")
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[args.experiment])
     tasks = manifest.tasks("train", args.train_limit)
     candidate, family = seed_candidate(args.model, "auto", args.experiment)
@@ -56,7 +59,7 @@ def main() -> None:
         student_api_base=args.api_base,
         work_dir=args.output_dir / "harbor",
         agent_python_path=REPO_ROOT,
-        n_concurrent=1,
+        n_concurrent=args.n_concurrent,
         harbor_executable=args.harbor_executable,
         docker_executable=args.docker_executable,
         student_agent_kwargs=agent_kwargs,
@@ -67,9 +70,10 @@ def main() -> None:
     (args.output_dir / "canary-config.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "experiment": args.experiment,
                 "split": "train",
+                "n_concurrent": args.n_concurrent,
                 "task_ids": [task.task_id for task in tasks],
                 "task_refs": {task.task_id: manifest.task_refs[task.task_id] for task in tasks},
                 "model": args.model,

@@ -118,8 +118,14 @@ def test_optimizer_usage_records_live_responses_once_and_excludes_journal_replay
 @pytest.mark.parametrize("experiment", ["tb2", "tb4"])
 @pytest.mark.parametrize("model", EXPERIMENT_MODELS)
 @pytest.mark.parametrize("fails", [False, True])
+@pytest.mark.parametrize("n_concurrent", [None, 2])
 def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str, model: str, fails: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    experiment: str,
+    model: str,
+    fails: bool,
+    n_concurrent: int | None,
 ) -> None:
     """Retain pilot evidence while excluding validation and held-out test tasks."""
     factory = Mock(wraps=canary.HarborCLI)
@@ -157,6 +163,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
             "http://localhost:8000/v1",
             "--output-dir",
             str(output_dir),
+            *(["--n-concurrent", str(n_concurrent)] if n_concurrent is not None else []),
         ],
     )
     if fails:
@@ -165,7 +172,9 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     else:
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
+    assert config["schema_version"] == 3
     assert config["split"] == "train"
+    assert config["n_concurrent"] == factory.call_args.kwargs["n_concurrent"] == (n_concurrent or 1)
     settings = factory.call_args.kwargs["student_agent_kwargs"]
     assert settings == config["student_agent_kwargs"]
     assert settings["llm_kwargs"]["max_tokens"] == settings["model_info"]["max_output_tokens"] == 32_768
@@ -175,3 +184,32 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     )
     report = json.loads((output_dir / "token-usage-summary.json").read_text())
     assert report["models"][model]["task_agent"]["length_finish"] == 1
+
+
+@pytest.mark.parametrize("n_concurrent", [0, -1])
+def test_canary_rejects_invalid_concurrency_before_starting_harbor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, n_concurrent: int
+) -> None:
+    """Reject invalid calibration settings before creating a pilot directory."""
+    harbor = Mock()
+    monkeypatch.setattr(canary, "HarborCLI", harbor)
+    output_dir = tmp_path / "pilot"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "canary",
+            "--experiment",
+            "tb2",
+            "--api-base",
+            "http://localhost:8000/v1",
+            "--output-dir",
+            str(output_dir),
+            "--n-concurrent",
+            str(n_concurrent),
+        ],
+    )
+    with pytest.raises(SystemExit):
+        canary.main()
+    harbor.assert_not_called()
+    assert not output_dir.exists()
