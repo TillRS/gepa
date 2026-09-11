@@ -179,7 +179,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 24
+    assert contract["schema_version"] == 25
     assert contract["task_context_settings"] == {
         "enable_summarize": True,
         "proactive_summarization_threshold": 8_000,
@@ -397,6 +397,8 @@ def test_provider_settings_reach_all_runtime_roles(
     contract = json.loads((tmp_path / "run" / "terminalbench-run-contract.json").read_text())
     assert contract["experiment"] == experiment
     assert contract["module_selector"] == optimize_kwargs["module_selector"]
+    assert contract["candidate_selection_strategy"] == optimize_kwargs["candidate_selection_strategy"] == "pareto"
+    assert contract["frontier_type"] == optimize_kwargs["frontier_type"] == "instance"
     assert contract["acceptance_criterion"] == optimize_kwargs["acceptance_criterion"] == "strict_improvement"
     assert contract["validation_evaluation"] == optimize_kwargs["val_evaluation_policy"] == "full_eval"
     assert contract["student_model_version"] == contract["proposer_model_version"] == experiment_model_version(model)
@@ -575,6 +577,8 @@ def test_six_cell_matrix_pins_methods_budgets_and_resume_identity(tmp_path: Path
         assert contract["condition"] == condition
         assert contract["optimization_budget"]["max_iterations"] == (80 if budget == "double" else 40)
         assert contract["module_selector"] == "all"
+        assert contract["candidate_selection_strategy"] == "pareto"
+        assert contract["frontier_type"] == "instance"
         assert contract["acceptance_criterion"] == "strict_improvement"
         assert contract["validation_evaluation"] == "full_eval"
         assert contract["max_proposer_model_calls"] is None

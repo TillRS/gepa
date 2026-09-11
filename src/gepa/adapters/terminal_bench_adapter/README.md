@@ -245,7 +245,7 @@ separate policies above.
 Every physical attempt is recorded in `provider-attempts.jsonl` and in the
 existing `token-usage.jsonl` files, including failures with unknown usage.
 The two files describe the same requests, so their totals must not be added.
-The policy is pinned in run contract version 24 and pilot configuration version
+The policy is pinned in run contract version 25 and pilot configuration version
 5; older or changed policies cannot resume or enter final evaluation.
 
 #### Reference protocol and pending confirmation
@@ -343,6 +343,26 @@ the final iteration's evaluations. A run stopped by that cap before its selected
 epoch budget does not complete the protocol. The normal commands omit this cap.
 Final held-out test evaluation remains separate.
 
+#### Parent selection
+
+All six configurations use GEPA's existing Pareto parent selector with one
+frontier key per validation task, matching HotPotQA. Track which previously
+evaluated harnesses tie for the best score on each task, prune redundant
+best-task coverage, then sample one remaining harness with probability
+proportional to the number of tasks on which it is best. This can retain a
+lower-average harness that handles tasks the higher-average harness misses.
+
+Each iteration selects one complete parent harness. FOREST's Controller then
+selects sections and actions within that parent; the random-Controller
+ablation retains the same Pareto parent-selection algorithm. The existing
+experiment-seeded optimizer RNG and checkpoint restoration govern sampling.
+The final winner remains the harness with the highest mean validation score.
+
+`candidate_selection_strategy="pareto"` and `frontier_type="instance"` are
+explicit run contract fields forwarded to the optimizer for every method and
+budget. Run contract version 25 rejects missing or changed parent-selection
+policies on resume and before final comparison.
+
 #### Proposal acceptance and validation
 
 All six campaign configurations use the same strict-improvement rule as
@@ -360,7 +380,7 @@ improvement or automatically replace the existing best harness.
 
 `acceptance_criterion="strict_improvement"` and
 `validation_evaluation="full_eval"` are explicit run contract fields and are
-forwarded to the optimizer. Run contract version 24 rejects missing or changed
+forwarded to the optimizer. Run contract version 25 rejects missing or changed
 policies on resume and before final comparison. This preserves the prior
 runtime defaults while making them part of the recorded experiment identity.
 

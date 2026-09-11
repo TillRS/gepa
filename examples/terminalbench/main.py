@@ -293,7 +293,7 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 24,
+        "schema_version": 25,
         "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
         "token_limits": terminalbench_limits(args.student_model),
@@ -305,6 +305,8 @@ def build_run_contract(
         "controller_selection": controller_selection,
         "component_kinds": manifest.component_kinds,
         "module_selector": "all",
+        "candidate_selection_strategy": "pareto",
+        "frontier_type": "instance",
         "acceptance_criterion": "strict_improvement",
         "validation_evaluation": "full_eval",
         "document_bundle_version": BUNDLE_VERSION,
@@ -499,6 +501,8 @@ def main() -> None:
         reflection_minibatch_size=args.reflection_minibatch_size,
         sampling_strategy=SingleMutationSampling(),
         module_selector=contract["module_selector"],
+        candidate_selection_strategy=contract["candidate_selection_strategy"],
+        frontier_type=contract["frontier_type"],
         acceptance_criterion=contract["acceptance_criterion"],
         val_evaluation_policy=contract["validation_evaluation"],
         use_merge=False,

@@ -427,13 +427,19 @@ def test_provider_retry_drift_cannot_resume_or_enter_final_test(tmp_path: Path, 
 
 
 @pytest.mark.parametrize(
-    "field,value", [("acceptance_criterion", "improvement_or_equal"), ("validation_evaluation", "partial")]
+    "field,value",
+    [
+        ("candidate_selection_strategy", "current_best"),
+        ("frontier_type", "objective"),
+        ("acceptance_criterion", "improvement_or_equal"),
+        ("validation_evaluation", "partial"),
+    ],
 )
 @pytest.mark.parametrize("missing", [False, True])
-def test_acceptance_policy_drift_cannot_resume_or_enter_final_test(
+def test_selection_policy_drift_cannot_resume_or_enter_final_test(
     tmp_path: Path, field: str, value: str, missing: bool
 ) -> None:
-    """Reject tied-score acceptance or partial validation before any held-out work."""
+    """Reject changed parent selection, acceptance, or validation before held-out work."""
     run_dirs = _write_comparison(tmp_path, "tb2.1")
     forest = run_dirs["react_v2"]
     path = forest / RUN_CONTRACT_FILENAME
