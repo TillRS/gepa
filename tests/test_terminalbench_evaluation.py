@@ -179,6 +179,8 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
     assert kwargs["student_model"] == model
     assert kwargs["student_api_base"] == contract["student_api_base"]
     assert kwargs["student_agent_kwargs"]["model_info"] == contract["student_model_info"]
+    assert kwargs["student_agent_kwargs"]["token_limits"] == contract["token_limits"]
+    assert kwargs["student_agent_kwargs"]["llm_kwargs"]["max_tokens"] == 32_768
     assert kwargs["student_agent_kwargs"]["llm_kwargs"] == {
         "num_retries": contract["student_num_retries"],
         **contract["student_decoding"],
@@ -373,6 +375,29 @@ def test_reasoning_changes_are_rejected_before_final_test(tmp_path: Path, role: 
         else:
             template_kwargs["enable_thinking"] = False
     path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="expected a matching react_v2 run"):
+        evaluate.freeze_comparison(run_dirs)
+
+
+@pytest.mark.parametrize(
+    "field", ["student_decoding", "proposer_decoding", "student_model_info", "token_limits", "token_usage_policy"]
+)
+def test_changed_output_budget_or_usage_policy_cannot_resume_or_enter_final_test(tmp_path: Path, field: str) -> None:
+    """Reject old caps or missing telemetry policy before any held-out evaluation."""
+    run_dirs = _write_comparison(tmp_path, "tb4")
+    forest = run_dirs["react_v2"]
+    path = forest / RUN_CONTRACT_FILENAME
+    original = json.loads(path.read_text())
+    changed = json.loads(path.read_text())
+    if field.endswith("decoding"):
+        changed[field]["max_tokens"] = 16_384
+    elif field == "token_usage_policy":
+        del changed[field]
+    else:
+        changed[field]["max_output_tokens"] = 16_384
+    path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="different Terminal-Bench configuration"):
+        ensure_run_contract(forest, original)
     with pytest.raises(ValueError, match="expected a matching react_v2 run"):
         evaluate.freeze_comparison(run_dirs)
 

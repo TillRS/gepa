@@ -15,27 +15,38 @@ import time
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from harbor.agents.terminus_2 import Terminus2
 from harbor.agents.terminus_2.tmux_session import TmuxSession
 from harbor.environments.base import BaseEnvironment
 from harbor.llms.base import ContextLengthExceededError, LLMResponse, OutputLengthExceededError
 from harbor.llms.chat import Chat
+from harbor.llms.lite_llm import LiteLLM
 from harbor.models.trajectories import Step, SubagentTrajectoryRef
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
+
+from examples.terminalbench.token_usage import observe_harbor
 
 
 class PromptedTerminus(Terminus2):
     """Run the fixed terminal agent with one candidate's reusable documents."""
 
-    def __init__(self, logs_dir: Path, prompt_template_path: str, document_bundle_path: str, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        logs_dir: Path,
+        prompt_template_path: str,
+        document_bundle_path: str,
+        token_limits: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Load the immutable prompts and skills for one candidate evaluation.
 
         Args:
             logs_dir: Harbor trial's agent log directory.
             prompt_template_path: Rendered main prompt beside the bundle.
             document_bundle_path: Candidate bundle produced by GEPA.
+            token_limits: Campaign limits to record with raw provider usage.
             **kwargs: Standard pinned Terminus model settings.
 
         Raises:
@@ -56,8 +67,17 @@ class PromptedTerminus(Terminus2):
         # Task-provided skills and MCP servers are not part of the candidate.
         kwargs.pop("skills_dir", None)
         kwargs.pop("mcp_servers", None)
+        requested_model = kwargs.get("model_name", "")
+        if requested_model.startswith("hosted_vllm/") and requested_model.count("/") > 1:
+            # Harbor 0.22 only accepts a short registry alias; LiteLLM accepts the full Hub model ID.
+            kwargs["model_name"] = "hosted_vllm/" + requested_model.rsplit("/", 1)[1]
         super().__init__(logs_dir=logs_dir, skills_dir="/opt/gepa-skills", mcp_servers=[], **kwargs)
+        if requested_model != kwargs.get("model_name", ""):
+            self._model_name = requested_model
+            cast(LiteLLM, self._llm)._model_name = requested_model
         logs_dir.mkdir(parents=True, exist_ok=True)
+        if token_limits is not None:
+            observe_harbor(self._llm, logs_dir / "token-usage.jsonl", token_limits)
         (logs_dir / "document-bundle.json").write_text(self._bundle_path.read_text(encoding="utf-8"), encoding="utf-8")
 
     def _document(self, component: str, **fields: str) -> str:

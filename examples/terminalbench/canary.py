@@ -1,0 +1,93 @@
+"""Measure the initial harness on training tasks before freezing token budgets."""
+
+import argparse
+import json
+from pathlib import Path
+
+from examples.common.experiment_models import (
+    EXPERIMENT_MODELS,
+    EXPERIMENT_NUM_RETRIES,
+    QWEN3_8_27B_MODEL,
+    experiment_model_version,
+    experiment_request_overrides,
+)
+from examples.terminalbench.main import EXPERIMENT_MANIFESTS, REPO_ROOT, seed_candidate
+from examples.terminalbench.model_settings import (
+    terminalbench_decoding,
+    terminalbench_limits,
+    terminalbench_model_info,
+)
+from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, summarize_usage
+from gepa.adapters.terminal_bench_adapter import HarborCLI, TerminalBenchAdapter, load_terminalbench_manifest
+
+
+def main() -> None:
+    """Run a separate training-only pilot and retain usage even if its job fails."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--experiment", choices=EXPERIMENT_MANIFESTS, required=True)
+    parser.add_argument("--model", choices=EXPERIMENT_MODELS, default=QWEN3_8_27B_MODEL)
+    parser.add_argument("--api-base", required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--train-limit", type=int, default=3)
+    parser.add_argument("--harbor-executable", default="harbor")
+    parser.add_argument("--docker-executable", default="docker")
+    args = parser.parse_args()
+    if args.train_limit <= 0:
+        parser.error("--train-limit must be positive")
+    manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[args.experiment])
+    tasks = manifest.tasks("train", args.train_limit)
+    candidate, family = seed_candidate(args.model, "auto", args.experiment)
+    limits = terminalbench_limits(args.model)
+    agent_kwargs = {
+        "model_info": terminalbench_model_info(args.model),
+        "token_limits": limits,
+        "llm_kwargs": {
+            "num_retries": EXPERIMENT_NUM_RETRIES,
+            **terminalbench_decoding(args.model),
+            **experiment_request_overrides(args.model, explicit_reasoning=True),
+        },
+    }
+    harbor = HarborCLI(
+        manifest=manifest,
+        student_model=args.model,
+        student_api_base=args.api_base,
+        work_dir=args.output_dir / "harbor",
+        agent_python_path=REPO_ROOT,
+        n_concurrent=1,
+        harbor_executable=args.harbor_executable,
+        docker_executable=args.docker_executable,
+        student_agent_kwargs=agent_kwargs,
+    )
+    harbor.check_requirements()
+    args.output_dir.mkdir(parents=True, exist_ok=False)
+    (args.output_dir / "canary-config.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "experiment": args.experiment,
+                "split": "train",
+                "task_ids": [task.task_id for task in tasks],
+                "task_refs": {task.task_id: manifest.task_refs[task.task_id] for task in tasks},
+                "model": args.model,
+                "model_version": experiment_model_version(args.model),
+                "api_base": args.api_base,
+                "template_family": family,
+                "candidate_digest": manifest.candidate_digest(candidate),
+                "student_agent_kwargs": agent_kwargs,
+                "token_usage_policy": TOKEN_USAGE_POLICY,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    try:
+        batch = TerminalBenchAdapter(manifest, harbor).evaluate(tasks, candidate)
+        (args.output_dir / "task-results.json").write_text(json.dumps(batch.outputs, indent=2) + "\n")
+    finally:
+        report = summarize_usage([args.output_dir / "harbor"])
+        (args.output_dir / "token-usage-summary.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(f"Review training usage before freezing the cap: {args.output_dir / 'token-usage-summary.json'}")
+
+
+if __name__ == "__main__":
+    main()

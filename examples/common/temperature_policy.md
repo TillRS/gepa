@@ -105,5 +105,28 @@ agent and GEPA baseline was not verified. This policy follows our model arms'
 provider guidance and approved choices, without claiming an exact reproduction
 of those paper settings.
 
-Reasoning effort does not increase the current 16,384-token output ceiling.
-Output limits and total context capacity remain separate decisions.
+## Output budgets and context
+
+HotPotQA keeps a **16,384-token output ceiling**. TB2 and TB4 use **32,768
+output tokens per model call**, including reasoning and final output, for both
+model arms, every optimizer role, both budgets, and final task evaluation.
+These are ceilings: natural end-of-sequence stopping stays enabled, with no
+minimum generation length. The approved reasoning efforts above are unchanged.
+
+The Terminal-Bench ceiling is our practical starting budget, subject to a
+training-only usage and cutoff review before freezing the experiment settings.
+It is not a claim to use each provider's maximum-performance output budget.
+Qwen's pinned card recommends much larger separate reasoning/final allowances
+for agentic work within a 1M context, but reports `max_tokens=32,768` and a 256K
+context for its QwenSWEBench coding evaluation. That different benchmark informs
+this starting point; it does not establish the right cap for TB2 or TB4.
+DeepSeek's pinned card recommends 384K output for `high`/`max`; our smaller cap
+deliberately departs from that recommendation.
+
+Context capacity remains separate and unchanged: the configured Qwen server
+uses 262,144 tokens and DeepSeek uses 393,216. This change does not enable Qwen
+YaRN or million-token serving. Review the pilot's actual output usage and
+provider `finish_reason=length` evidence on training tasks, then keep or revise
+the cap consistently across methods before the full comparison. Never adjust
+it using validation or test outcomes. A changed cap requires fresh run contracts.
+See the [Terminal-Bench pilot and usage commands](../../src/gepa/adapters/terminal_bench_adapter/README.md#output-budget-review).

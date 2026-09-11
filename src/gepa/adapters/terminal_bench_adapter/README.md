@@ -412,8 +412,71 @@ code-agent evaluations. Both pass the controls through
 DeepSeek uses `thinking=true`. Applying DeepSeek `max` to optimizer roles and
 HotPotQA is our approved experimental choice, documented in the provider source
 review. Contracts and final evaluation preserve these fields and reject
-missing or changed reasoning settings. The output ceiling remains 16,384
-tokens and is reviewed separately from effort.
+missing or changed reasoning settings. Every TB2/TB4 role uses a **32,768-token
+output ceiling per call**, including reasoning and final output. HotPotQA keeps
+16,384. This is the approved practical budget, not the providers' larger
+maximum-performance recommendation. Context capacities and the serving scripts
+stay unchanged; the cap does not force a model to generate that many tokens.
+
+Harbor 0.22 requires short model names for its local metadata registry. The
+runtime registers the checkpoint basename there and retains the full original
+`hosted_vllm/organization/model` identifier for requests, trajectories, and usage.
+Both model arms use the same compatibility handling.
+
+#### Output budget review
+
+Before freezing experiment settings, run the initial harness on **training
+tasks only**, separately for both model arms and both benchmarks:
+
+```bash
+uv run python -m examples.terminalbench.canary \
+  --experiment tb2 \
+  --model hosted_vllm/Qwen/Qwen3.8-27B \
+  --api-base http://localhost:8000/v1 \
+  --train-limit 3 \
+  --output-dir runs/canaries/tb2/qwen
+```
+
+Repeat with `--experiment tb4` and with
+`--model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731`, each in a fresh output
+directory. The default three tasks are a smoke pilot, not proof that the cap
+suits the entire benchmark; increase `--train-limit` to cover more training
+tasks. The command evaluates the initial harness without optimization and
+cannot select validation or test tasks. It saves exact configuration/task
+identities, official task results, and `token-usage-summary.json`. Failed jobs
+retain available usage too. Inspect usage and cutoffs before deciding whether
+to keep 32,768 or revise it for a new campaign; no automatic cap escalation or
+additional retry is introduced. The pilot does not freeze or approve a budget.
+
+Optimization writes `token-usage.jsonl` beside the run contract. Every Harbor
+trial writes another in its agent log directory, including main-agent and
+summarization calls. To aggregate optimizer and task usage, including failed jobs:
+
+```bash
+uv run python -m examples.terminalbench.token_usage \
+  runs/tb2/vanilla runs/tb2/vanilla/harbor \
+  --output runs/tb2/vanilla/token-usage-summary.json
+```
+
+Pass the actual Harbor work directory if it is outside the optimization run.
+Overlapping paths are deduplicated. The same command works on final-evaluation
+roots, but their outcomes must not inform cap selection. Reports group by model
+and role, with input/output/reasoning totals, maximum observed output, cap hits,
+and provider length finishes. A length finish is recorded separately from
+reaching the configured output or context cap; it does not by itself identify
+which limit caused the cutoff. Missing usage or finish reasons stay unknown
+and get separate unreported counts. Inspect those counts and the file list;
+an empty report is not evidence of zero usage or no cutoffs.
+
+Optimizer observation covers returned plain, tool, and batch completions;
+response-journal replay does not count as another physical call. A shared Qwen
+Controller/editor client is reported as `controller-proposer`. Harbor records
+provider responses before truncation recovery, plus provider-error types.
+Optimizer provider errors and killed requests that return no completion have
+no usage record; their consumption is unknown. This log contains no prompt or
+response text, and raw execution evidence remains in the original artifacts.
+Caps and observation policy are part of run identity, so older 16,384-token
+Terminal-Bench runs cannot resume or enter the new final comparison unchanged.
 
 Offline tests in `tests/harbor/` exercise the shared actual agent loop for both benchmarks and Harbor job
 schemas with simulated model and terminal boundaries. They make no paid model

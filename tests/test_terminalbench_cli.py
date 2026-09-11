@@ -12,12 +12,8 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from examples.common.experiment_models import (
     DEEPSEEK_V4_FLASH_MODEL,
-    DEEPSEEK_V4_FLASH_MODEL_INFO,
     EXPERIMENT_NUM_RETRIES,
     QWEN3_8_27B_MODEL,
-    QWEN3_8_27B_MODEL_INFO,
-    experiment_decoding,
-    experiment_model_info,
     experiment_model_version,
     experiment_request_overrides,
 )
@@ -29,6 +25,7 @@ from examples.terminalbench.main import (
     ensure_run_contract,
     seed_candidate,
 )
+from examples.terminalbench.model_settings import terminalbench_decoding, terminalbench_limits, terminalbench_model_info
 from gepa import optimize
 from gepa.adapters.terminal_bench_adapter import load_terminalbench_manifest
 from gepa.adapters.terminal_bench_adapter.documents import COMPONENT_KINDS
@@ -179,7 +176,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 16
+    assert contract["schema_version"] == 17
     assert contract["manifestor_traces_chars"] is None
     assert contract["manifestor_temperature"] == 1.0
     assert contract["reflection_context"]["version"] == 1
@@ -190,9 +187,9 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     assert contract["component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
-    assert contract["student_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
-    assert contract["student_model_info"] == QWEN3_8_27B_MODEL_INFO
-    assert contract["proposer_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL, agentic=False)
+    assert contract["student_decoding"] == terminalbench_decoding(QWEN3_8_27B_MODEL)
+    assert contract["student_model_info"] == terminalbench_model_info(QWEN3_8_27B_MODEL)
+    assert contract["proposer_decoding"] == terminalbench_decoding(QWEN3_8_27B_MODEL, agentic=False)
     assert contract["student_num_retries"] == EXPERIMENT_NUM_RETRIES
     assert contract["proposer_num_retries"] == EXPERIMENT_NUM_RETRIES
     assert contract["semantic_action_space"] == SEMANTIC_ACTION_CATALOGS
@@ -219,9 +216,9 @@ def test_deepseek_run_contract_uses_the_separate_same_model_condition(tmp_path: 
 
     assert contract["student_model"] == DEEPSEEK_V4_FLASH_MODEL
     assert contract["proposer_model"] == DEEPSEEK_V4_FLASH_MODEL
-    assert contract["student_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL)
-    assert contract["student_model_info"] == DEEPSEEK_V4_FLASH_MODEL_INFO
-    assert contract["proposer_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL, agentic=False)
+    assert contract["student_decoding"] == terminalbench_decoding(DEEPSEEK_V4_FLASH_MODEL)
+    assert contract["student_model_info"] == terminalbench_model_info(DEEPSEEK_V4_FLASH_MODEL)
+    assert contract["proposer_decoding"] == terminalbench_decoding(DEEPSEEK_V4_FLASH_MODEL, agentic=False)
 
 
 @pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
@@ -276,12 +273,16 @@ def test_provider_settings_reach_all_runtime_roles(
     optimize_kwargs = optimizer.call_args.kwargs
     student_kwargs = harbor_kwargs["student_agent_kwargs"]
     expected_body = experiment_request_overrides(model, explicit_reasoning=True)["extra_body"]
-    general = experiment_decoding(model, agentic=False)
-    agentic = experiment_decoding(model, agentic=True)
+    general = terminalbench_decoding(model, agentic=False)
+    agentic = terminalbench_decoding(model, agentic=True)
     temperature = general["temperature"]
     assert temperature == 1.0
-    assert harbor_kwargs["student_model"] == optimize_kwargs["reflection_lm"] == model
-    assert student_kwargs["model_info"] == experiment_model_info(model)
+    assert harbor_kwargs["student_model"] == optimize_kwargs["reflection_lm"].model == model
+    assert student_kwargs["model_info"] == terminalbench_model_info(model)
+    assert student_kwargs["token_limits"] == terminalbench_limits(model)
+    assert student_kwargs["model_info"]["max_output_tokens"] == 32_768
+    assert student_kwargs["llm_kwargs"]["max_tokens"] == 32_768
+    assert optimize_kwargs["reflection_lm"].completion_kwargs["max_tokens"] == 32_768
     assert student_kwargs["llm_kwargs"].get("extra_body") == expected_body
     assert optimize_kwargs["reflection_lm_kwargs"].get("extra_body") == expected_body
     assert student_kwargs["llm_kwargs"]["temperature"] == temperature
@@ -294,8 +295,12 @@ def test_provider_settings_reach_all_runtime_roles(
     assert set(optimize_kwargs["seed_candidate"]) == set(manifest.component_kinds)
     assert optimize_kwargs["reflection_level"] == (2 if condition in terminalbench_main.FOREST_CONDITIONS else 0)
     strategy = optimize_kwargs["reflection_strategy"]
+    clients = [optimize_kwargs["reflection_lm"]]
     if condition in terminalbench_main.FOREST_CONDITIONS:
         assert strategy.controller_selection == ("uniform_random" if condition == "react_v2_random" else "verbalized")
+        clients.extend([strategy.base_lm, strategy.manifestor_lm])
+        if condition == "react_v2":
+            clients.append(strategy.controller_lm)
         assert strategy.base_lm.model == strategy.manifestor_lm.model == model
         assert strategy.base_lm.completion_kwargs.get("extra_body") == expected_body
         assert strategy.manifestor_lm.completion_kwargs.get("extra_body") == expected_body
@@ -312,6 +317,7 @@ def test_provider_settings_reach_all_runtime_roles(
     elif condition == "action":
         assert isinstance(strategy, terminalbench_main.ComponentActionReflectionLM)
         for reflector in strategy.reflectors.values():
+            clients.extend([reflector.lm, reflector.action_selector.lm])
             assert reflector.lm.model == reflector.action_selector.lm.model == model
             assert (
                 reflector.lm.completion_kwargs.get("extra_body")
@@ -327,6 +333,19 @@ def test_provider_settings_reach_all_runtime_roles(
             )
     else:
         assert strategy is None
+    unique_clients = {id(client): client for client in clients}
+    for client in unique_clients.values():
+        assert client.completion_kwargs["max_tokens"] == 32_768
+        client._capture_and_validate_response_identity(
+            {
+                "model": model,
+                "usage": {"prompt_tokens": 10, "completion_tokens": 32_768},
+                "choices": [{"finish_reason": "length"}],
+            }
+        )
+    records = [json.loads(line) for line in (tmp_path / "run" / "token-usage.jsonl").read_text().splitlines()]
+    assert len(records) == len(unique_clients)
+    assert all(record["length_finish"] and record["output_cap_reached"] for record in records)
     assert optimize_kwargs["stop_callbacks"].max_proposals == (8 if budget == "double" else 4)
     assert optimize_kwargs["max_metric_calls"] == 4
     assert optimize_kwargs["batch_sampler"] == "epoch_shuffled"

@@ -289,6 +289,7 @@ def main() -> None:
         docker_executable=args.docker_executable,
         process_timeout_sec=contract["harbor_process_timeout_sec"],
         student_agent_kwargs={
+            "token_limits": contract["token_limits"],
             "model_info": contract["student_model_info"],
             "llm_kwargs": {
                 "num_retries": contract["student_num_retries"],

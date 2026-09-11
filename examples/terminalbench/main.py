@@ -25,14 +25,18 @@ from typing import Any, Literal, cast
 from examples.common.experiment_models import (
     EXPERIMENT_NUM_RETRIES,
     QWEN3_8_27B_MODEL,
-    experiment_decoding,
-    experiment_model_info,
     experiment_model_version,
     experiment_request_overrides,
     validate_experiment_model_pair,
 )
 from examples.common.react_v2 import build_react_v2_strategy, resolve_template_family
+from examples.terminalbench.model_settings import (
+    terminalbench_decoding,
+    terminalbench_limits,
+    terminalbench_model_info,
+)
 from examples.terminalbench.reflection import ComponentActionReflectionLM
+from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, observe_optimizer
 from gepa import optimize
 from gepa.adapters.terminal_bench_adapter import (
     HarborCLI,
@@ -263,8 +267,8 @@ def build_run_contract(
     controller_policy = (
         UNIFORM_RANDOM_CONTROLLER_POLICY_CONTRACT if condition == "react_v2_random" else CONTROLLER_POLICY_CONTRACT
     )
-    proposer_decoding = experiment_decoding(args.proposer_model, agentic=False)
-    react_decoding = experiment_decoding(args.proposer_model, agentic=True)
+    proposer_decoding = terminalbench_decoding(args.proposer_model, agentic=False)
+    react_decoding = terminalbench_decoding(args.proposer_model, agentic=True)
     reflection_role_decoding = None
     if operated:
         reflection_role_decoding = {
@@ -279,7 +283,9 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 16,
+        "schema_version": 17,
+        "token_limits": terminalbench_limits(args.student_model),
+        "token_usage_policy": deepcopy(TOKEN_USAGE_POLICY),
         "experiment": manifest.experiment,
         "optimization_target": "agent_text",
         "condition": condition,
@@ -338,11 +344,11 @@ def build_run_contract(
         ),
         "seed": args.seed,
         "student_api_base": args.student_api_base,
-        "student_decoding": experiment_decoding(args.student_model, agentic=True),
+        "student_decoding": terminalbench_decoding(args.student_model, agentic=True),
         "student_model": args.student_model,
         "student_model_version": experiment_model_version(args.student_model),
         "student_request_overrides": experiment_request_overrides(args.student_model, explicit_reasoning=True),
-        "student_model_info": experiment_model_info(args.student_model),
+        "student_model_info": terminalbench_model_info(args.student_model),
         "student_num_retries": EXPERIMENT_NUM_RETRIES,
         "template_family": resolved_family,
         "train_task_ids": [task.task_id for task in trainset],
@@ -380,13 +386,14 @@ def main() -> None:
     ensure_run_contract(args.run_dir, contract)
 
     student_agent_kwargs: dict[str, Any] = {
+        "token_limits": contract["token_limits"],
+        "model_info": contract["student_model_info"],
         "llm_kwargs": {
             "num_retries": EXPERIMENT_NUM_RETRIES,
-            **experiment_decoding(args.student_model, agentic=True),
-            **experiment_request_overrides(args.student_model, explicit_reasoning=True),
-        }
+            **contract["student_decoding"],
+            **contract["student_request_overrides"],
+        },
     }
-    student_agent_kwargs["model_info"] = experiment_model_info(args.student_model)
 
     harbor = HarborCLI(
         manifest=manifest,
@@ -405,12 +412,16 @@ def main() -> None:
 
     reflection_lm_kwargs: dict[str, Any] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
-        **experiment_decoding(args.proposer_model, agentic=False),
+        **terminalbench_decoding(args.proposer_model, agentic=False),
         **experiment_request_overrides(args.proposer_model, explicit_reasoning=True),
     }
     if args.proposer_api_base is not None:
         reflection_lm_kwargs["api_base"] = args.proposer_api_base
 
+    usage_path = args.run_dir / "token-usage.jsonl"
+    reflection_lm = observe_optimizer(
+        LM(args.proposer_model, **reflection_lm_kwargs), usage_path, "stateless_proposer", contract["token_limits"]
+    )
     reflection_strategy = None
     if condition in FOREST_CONDITIONS:
         reflection_strategy, _ = build_react_v2_strategy(
@@ -427,10 +438,22 @@ def main() -> None:
             manifestor_temperature=contract["manifestor_temperature"],
             react_top_p=float(contract["reflection_role_decoding"]["react_v2_proposer"]["requested"]["top_p"]),
         )
+        shared_controller = reflection_strategy.controller_lm is reflection_strategy.base_lm
+        observe_optimizer(
+            reflection_strategy.base_lm,
+            usage_path,
+            "controller-proposer" if shared_controller and condition == "react_v2" else "react_v2_proposer",
+            contract["token_limits"],
+        )
+        if not shared_controller:
+            observe_optimizer(reflection_strategy.controller_lm, usage_path, "controller", contract["token_limits"])
+        observe_optimizer(reflection_strategy.manifestor_lm, usage_path, "manifestor", contract["token_limits"])
     elif condition == "action":
         reflection_strategy = ComponentActionReflectionLM(
-            lm=LM(args.proposer_model, **reflection_lm_kwargs),
-            selector_lm=LM(args.proposer_model, **reflection_lm_kwargs),
+            lm=reflection_lm,
+            selector_lm=observe_optimizer(
+                LM(args.proposer_model, **reflection_lm_kwargs), usage_path, "action_selector", contract["token_limits"]
+            ),
             component_kinds=manifest.component_kinds,
             template_family=resolved_family,
             rng=random.Random(args.seed),
@@ -440,7 +463,7 @@ def main() -> None:
         trainset=trainset,
         valset=valset,
         adapter=adapter,
-        reflection_lm=args.proposer_model,
+        reflection_lm=reflection_lm,
         reflection_lm_kwargs=reflection_lm_kwargs,
         reflection_strategy=reflection_strategy,
         max_metric_calls=args.max_metric_calls,
