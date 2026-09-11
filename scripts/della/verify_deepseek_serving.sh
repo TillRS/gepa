@@ -67,8 +67,11 @@ if [[ ! -f "${SOLVER_MODEL_PATH}/config.json" ]]; then
     echo "ERROR: ${SOLVER_MODEL_PATH} is not staged; run scripts/della/build_env.sh first" >&2
     exit 1
 fi
+# build_env.sh writes the integrity manifest only after every shard is downloaded and
+# hashed, so its absence means the checkpoint may still be incomplete.
 if [[ ! -s "${SOLVER_MODEL_PATH}/.gepa-model-integrity.json" ]]; then
-    echo "WARNING: ${SOLVER_MODEL_PATH} has no .gepa-model-integrity.json yet; campaign jobs refuse the checkpoint until build_env.sh completes" >&2
+    echo "ERROR: ${SOLVER_MODEL_PATH} has no .gepa-model-integrity.json; wait for build_env.sh to finish" >&2
+    exit 1
 fi
 if ! command -v nvidia-smi >/dev/null 2>&1 || [[ "$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')" != "8" ]]; then
     echo "ERROR: run this on an allocated node with eight visible GPUs (salloc --partition=ailab --gres=gpu:8)" >&2
