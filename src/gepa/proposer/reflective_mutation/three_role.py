@@ -400,7 +400,7 @@ class ThreeRoleReflectionLM:
     """Controller/Manifestor reflection with a ReAct V2 proposer.
 
     Args:
-        base_lm: Reflection model used by ReAct V2 and by verbalized Controller
+        base_lm: Reflection model used by ReAct V2 and, by default, Controller
             selection.
         level: ``0`` vanilla GEPA, ``1`` region plus edit basis, or ``2`` region
             plus semantic action and Manifestor steering.
@@ -424,9 +424,12 @@ class ThreeRoleReflectionLM:
         max_menu: Optional level-1 region bound. Level 2 requires it to retain
             every cataloged region/action pair; semantic choices are never subsampled.
         max_chars: Maximum completed component size.
+        controller_lm: Optional separate LM for verbalized Controller selection.
         manifestor_lm: LM used to manifest level-2 actions.
         base_lm_run_identity: Optional stable, non-secret configuration identity
-            for a custom Controller/ReAct callable.
+            for a custom ReAct callable.
+        controller_lm_run_identity: Optional stable, non-secret configuration
+            identity for a custom Controller callable.
         manifestor_lm_run_identity: Optional stable, non-secret configuration
             identity for a custom Manifestor callable.
         manifestor_traces_chars: Trace budget for the Manifestor.
@@ -457,8 +460,10 @@ class ThreeRoleReflectionLM:
         reflection_prompt_template: str | dict[str, str] | None = None,
         max_menu: int | None = None,
         max_chars: int = MAX_PROPOSAL_CHARS,
+        controller_lm: LanguageModel | None = None,
         manifestor_lm: LanguageModel | None = None,
         base_lm_run_identity: Mapping[str, Any] | None = None,
+        controller_lm_run_identity: Mapping[str, Any] | None = None,
         manifestor_lm_run_identity: Mapping[str, Any] | None = None,
         manifestor_traces_chars: int | None = MAX_TRACES_CHARS,
         proposer_model: str | None = None,
@@ -468,7 +473,7 @@ class ThreeRoleReflectionLM:
         """Validate and store the complete three-role strategy configuration.
 
         Args:
-            base_lm: ReAct V2 model, also used for verbalized Controller selection.
+            base_lm: ReAct V2 model, also the default Controller model.
             level: Reflection level: vanilla, region-only, or region/action.
             edit_tool_set: Named atomic or broad execution basis.
             component_kinds: Optional component-to-template-kind overrides.
@@ -485,9 +490,13 @@ class ThreeRoleReflectionLM:
             reflection_prompt_template: Vanilla level-0 reflection template.
             max_menu: Optional level-1 region-menu bound.
             max_chars: Maximum reconstructed component length.
+            controller_lm: Separate Controller model, or ``None`` to share the
+                base model.
             manifestor_lm: Separate Manifestor model, or ``None`` to share the
                 base model.
             base_lm_run_identity: Stable public identity for a custom base model.
+            controller_lm_run_identity: Stable public identity for a custom
+                Controller model.
             manifestor_lm_run_identity: Stable public identity for a custom
                 Manifestor model.
             manifestor_traces_chars: Maximum trace characters shown to the
@@ -532,8 +541,14 @@ class ThreeRoleReflectionLM:
         self.reflection_prompt_template = reflection_prompt_template
         self.max_menu = max_menu
         self.max_chars = max_chars
+        self.controller_lm = controller_lm if controller_lm is not None else base_lm
         self.manifestor_lm = manifestor_lm if manifestor_lm is not None else base_lm
         self.base_lm_run_identity = base_lm_run_identity
+        self.controller_lm_run_identity = (
+            base_lm_run_identity
+            if controller_lm is None and controller_lm_run_identity is None
+            else controller_lm_run_identity
+        )
         self.manifestor_lm_run_identity = (
             base_lm_run_identity
             if manifestor_lm is None and manifestor_lm_run_identity is None
@@ -621,7 +636,12 @@ class ThreeRoleReflectionLM:
                 "tau": self.tau,
                 "max_menu": self.max_menu,
             }
-        controller_lm_identity = _language_model_run_identity(self.base_lm, self.base_lm_run_identity)
+        proposer_lm_identity = _language_model_run_identity(self.base_lm, self.base_lm_run_identity)
+        controller_lm_identity = (
+            _language_model_run_identity(self.controller_lm, self.controller_lm_run_identity)
+            if self.level >= 1 and self.controller_selection == "verbalized"
+            else None
+        )
         manifestor_lm_identity = (
             _language_model_run_identity(self.manifestor_lm, self.manifestor_lm_run_identity)
             if self.level >= 2
@@ -630,7 +650,8 @@ class ThreeRoleReflectionLM:
         unstable_roles = [
             role
             for role, identity in (
-                ("Controller/Proposer", controller_lm_identity),
+                ("Proposer", proposer_lm_identity),
+                ("Controller", controller_lm_identity),
                 ("Manifestor", manifestor_lm_identity),
             )
             if identity is not None and identity["configuration_source"] in {"opaque", "partial"}
@@ -638,11 +659,12 @@ class ThreeRoleReflectionLM:
         if unstable_roles:
             roles = " and ".join(unstable_roles)
             raise ValueError(
-                f"A stable run identity is required for the {roles} LM. Pass base_lm_run_identity and/or "
-                "manifestor_lm_run_identity when constructing ThreeRoleReflectionLM with custom callables."
+                f"A stable run identity is required for the {roles} LM. Pass the corresponding "
+                "base_lm_run_identity, controller_lm_run_identity, or manifestor_lm_run_identity "
+                "when constructing ThreeRoleReflectionLM with custom callables."
             )
         return {
-            "schema_version": 5,
+            "schema_version": 6,
             "strategy": "three_role_reflection",
             "reflection_level": self.level,
             "edit_tool_set": self.edit_tool_set,
@@ -668,7 +690,8 @@ class ThreeRoleReflectionLM:
             },
             "proposer_model": self.proposer_model,
             "proposer_backend": "react_v2",
-            "controller_react_lm": controller_lm_identity,
+            "proposer_lm": proposer_lm_identity,
+            "controller_lm": controller_lm_identity,
             "manifestor_lm": manifestor_lm_identity,
             "max_proposer_model_calls": self.react_max_iterations,
             "react_max_iterations": self.react_max_iterations,
@@ -733,8 +756,8 @@ class ThreeRoleReflectionLM:
         """Snapshot role-local state before a batched reflection attempt.
 
         Returns:
-            Controller RNG state and response-journal cursors for the shared
-            Controller/ReAct model and the Manifestor model.
+            Controller RNG state and response-journal cursors for each
+            distinct role model.
         """
         if self._stateless is not None:
             return self._stateless.get_batch_retry_state()
@@ -742,7 +765,11 @@ class ThreeRoleReflectionLM:
         base_cursor = getattr(self.base_lm, "response_journal_cursor_state", None)
         if callable(base_cursor):
             state["base_lm_cursor"] = base_cursor()
-        if self.manifestor_lm is not self.base_lm:
+        if self.controller_lm is not self.base_lm:
+            controller_cursor = getattr(self.controller_lm, "response_journal_cursor_state", None)
+            if callable(controller_cursor):
+                state["controller_lm_cursor"] = controller_cursor()
+        if self.manifestor_lm is not self.base_lm and self.manifestor_lm is not self.controller_lm:
             manifestor_cursor = getattr(self.manifestor_lm, "response_journal_cursor_state", None)
             if callable(manifestor_cursor):
                 state["manifestor_lm_cursor"] = manifestor_cursor()
@@ -769,8 +796,14 @@ class ThreeRoleReflectionLM:
         if base_cursor is not None:
             restore = getattr(self.base_lm, "restore_response_journal_cursor_state", None)
             if not callable(restore):
-                raise TypeError("Controller/ReAct LM cannot restore its response-journal cursor.")
+                raise TypeError("ReAct LM cannot restore its response-journal cursor.")
             restore(base_cursor)
+        controller_cursor = state.get("controller_lm_cursor")
+        if controller_cursor is not None:
+            restore = getattr(self.controller_lm, "restore_response_journal_cursor_state", None)
+            if not callable(restore):
+                raise TypeError("Controller LM cannot restore its response-journal cursor.")
+            restore(controller_cursor)
         manifestor_cursor = state.get("manifestor_lm_cursor")
         if manifestor_cursor is not None:
             restore = getattr(self.manifestor_lm, "restore_response_journal_cursor_state", None)
@@ -824,13 +857,15 @@ class ThreeRoleReflectionLM:
 
     @property
     def total_cost(self) -> float:
-        """Return provider spend without double-counting a shared Manifestor LM.
+        """Return provider spend without double-counting shared role models.
 
         Returns:
             Combined tracked cost.
         """
         cost = float(getattr(self.base_lm, "total_cost", 0.0))
-        if self.manifestor_lm is not self.base_lm:
+        if self.controller_lm is not self.base_lm:
+            cost += float(getattr(self.controller_lm, "total_cost", 0.0))
+        if self.manifestor_lm is not self.base_lm and self.manifestor_lm is not self.controller_lm:
             cost += float(getattr(self.manifestor_lm, "total_cost", 0.0))
         return cost
 
@@ -955,7 +990,7 @@ class ThreeRoleReflectionLM:
             else:
                 controller = Controller(
                     menu,
-                    self.base_lm,
+                    self.controller_lm,
                     k=len(menu) if self.level >= 2 else self.k,
                     tau=self.tau,
                     rng=self.rng,

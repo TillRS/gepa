@@ -200,6 +200,7 @@ def build_react_v2_strategy(
     rng: random.Random | None = None,
     manifestor_traces_chars: int | None = MAX_TRACES_CHARS,
     manifestor_temperature: float = 0.0,
+    react_top_p: float | None = None,
 ) -> tuple[ThreeRoleReflectionLM, str]:
     """Build Controller -> Manifestor -> ReAct V2 with explicit role settings.
 
@@ -221,16 +222,24 @@ def build_react_v2_strategy(
         manifestor_temperature: Manifestor sampling temperature. Benchmarks
             following provider guidance pass their model's recommended value;
             the default preserves other callers' existing configuration.
+        react_top_p: Optional ReAct-only top-p override. When it differs from
+            the shared settings, verbalized Controller selection uses a
+            separate client with the original settings.
 
     Returns:
         Configured three-role strategy and its resolved template family.
     """
     resolved_family = resolve_template_family(template_family, task_model)
+    controller_kwargs = dict(lm_kwargs)
     proposer_kwargs = dict(lm_kwargs)
+    if react_top_p is not None:
+        proposer_kwargs["top_p"] = react_top_p
+    separate_controller = proposer_kwargs != controller_kwargs and level >= 1 and controller_selection == "verbalized"
     manifestor_kwargs = dict(lm_kwargs)
     manifestor_kwargs["temperature"] = manifestor_temperature
     if "response_journal_path" in lm_kwargs:
-        proposer_kwargs["response_journal_namespace"] = "controller-proposer"
+        controller_kwargs["response_journal_namespace"] = "controller"
+        proposer_kwargs["response_journal_namespace"] = "proposer" if separate_controller else "controller-proposer"
         manifestor_kwargs["response_journal_namespace"] = "manifestor"
     strategy = ThreeRoleReflectionLM(
         base_lm=LM(reflection_model, **proposer_kwargs),
@@ -239,6 +248,7 @@ def build_react_v2_strategy(
         component_kinds=component_kinds,
         template_family=resolved_family,
         controller_selection=controller_selection,
+        controller_lm=LM(reflection_model, **controller_kwargs) if separate_controller else None,
         manifestor_lm=LM(reflection_model, **manifestor_kwargs),
         proposer_model=proposer_model or reflection_model,
         rng=rng,

@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gepa.lm import LM, LMProviderError, NativeToolCall, ProviderIdentityMismatchError, ToolCompletion
+from gepa.proposer.reflective_mutation.three_role import ThreeRoleReflectionLM
 from gepa.response_journal import ResponseJournalError, response_journal_scope
 
 
@@ -63,6 +64,38 @@ def journal_lm(path: Path, namespace: str = "reflection-proposer", **kwargs: obj
         response_journal_namespace=namespace,
         **kwargs,
     )
+
+
+@pytest.mark.parametrize("shared_guidance", [False, True])
+def test_three_role_retry_replays_each_distinct_client_without_duplicate_spend(
+    tmp_path: Path, shared_guidance: bool
+) -> None:
+    """Rewind every role journal after a failed batch, including a separate Controller."""
+    path = tmp_path / "responses.sqlite3"
+    editor = journal_lm(path, "proposer", top_p=0.95)
+    controller = journal_lm(path, "controller", top_p=1.0)
+    manifestor = controller if shared_guidance else journal_lm(path, "manifestor", top_p=1.0)
+    strategy = ThreeRoleReflectionLM(editor, 2, controller_lm=controller, manifestor_lm=manifestor)
+    clients = [controller, manifestor, editor]
+    responses = [completion_response(text) for text in ("select", "guide", "edit")]
+    for response in responses:
+        response.usage = MagicMock(prompt_tokens=11, completion_tokens=7)
+    snapshot = strategy.get_batch_retry_state()
+    assert ("manifestor_lm_cursor" in snapshot) is not shared_guidance
+    with (
+        patch("litellm.completion", side_effect=responses) as provider,
+        patch("litellm.completion_cost", return_value=0.25),
+        response_journal_scope("optimizer-iteration-7"),
+    ):
+        first = [client(f"request-{index}") for index, client in enumerate(clients)]
+    assert provider.call_count == 3
+    assert strategy.total_cost == 0.75
+    strategy.set_batch_retry_state(snapshot)
+    with patch("litellm.completion") as replay_provider, response_journal_scope("optimizer-iteration-7"):
+        replayed = [client(f"request-{index}") for index, client in enumerate(clients)]
+    assert replayed == first == ["select", "guide", "edit"]
+    replay_provider.assert_not_called()
+    assert strategy.total_cost == 0.75
 
 
 def test_replays_by_logical_occurrence_without_collapsing_duplicate_prompts(tmp_path: Path) -> None:
@@ -199,16 +232,20 @@ def test_native_tools_replay_reasoning_ids_and_arguments_exactly(tmp_path: Path)
         with response_journal_scope("optimizer-iteration-4"):
             replayed = journal_lm(journal_path, "controller-proposer").complete_with_tools(messages, tools)
 
-    assert recorded == replayed == ToolCompletion(
-        content="",
-        tool_calls=(
-            NativeToolCall(
-                id="call-exact-7",
-                name="REPLACE_TEXT",
-                arguments='{"target":"old","text":"new"}',
+    assert (
+        recorded
+        == replayed
+        == ToolCompletion(
+            content="",
+            tool_calls=(
+                NativeToolCall(
+                    id="call-exact-7",
+                    name="REPLACE_TEXT",
+                    arguments='{"target":"old","text":"new"}',
+                ),
             ),
-        ),
-        reasoning_content="private chain state",
+            reasoning_content="private chain state",
+        )
     )
     provider.assert_not_called()
 
@@ -380,9 +417,9 @@ def test_usage_totals_survive_replay_cursor_rewind_and_process_restart(tmp_path:
         with response_journal_scope("plain-scope"):
             assert resumed("plain request") == "plain"
         with response_journal_scope("tool-scope"):
-            assert resumed.complete_with_tools(
-                [{"role": "user", "content": "native request"}], tools
-            ).content == "native"
+            assert (
+                resumed.complete_with_tools([{"role": "user", "content": "native request"}], tools).content == "native"
+            )
         with response_journal_scope("batch-scope"):
             assert resumed.batch_complete(messages, max_workers=2) == ["first", "second"]
 

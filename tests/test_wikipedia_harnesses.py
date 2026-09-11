@@ -97,7 +97,7 @@ def test_hotpot_lm_uses_local_campaign_decoding(monkeypatch, model: str) -> None
     assert calls[0]["messages"] == [{"role": "user", "content": "question"}]
     expected_request = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
-        **experiment_decoding(model),
+        **experiment_decoding(model, agentic=False),
         **experiment_request_overrides(model),
     }
     expected_request["seed"] = hotpot_utils.HOTPOTQA_SCIENTIFIC_REQUEST_SEED

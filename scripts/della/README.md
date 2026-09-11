@@ -14,7 +14,8 @@ tokenizer, reasoning parser, and tool parser. The launcher uses eight H200 GPUs,
 TP8/EP8, one API server, FP8 KV cache, and no speculative decoding.
 The serving environment and checkpoint bytes are frozen before a campaign.
 
-DeepSeek uses temperature 1.0, top-p 0.95, and maximum reasoning through
+DeepSeek uses temperature 1.0, top-p 0.95 for iterative tool use and 1.0 for
+single-call text generation or action selection, and maximum reasoning through
 `chat_template_kwargs`. The context limit is 393,216 tokens; the shared
 experiment output limit remains 16,384 tokens per call. This output budget is
 smaller than the model author's recommendation for unrestricted maximum reasoning.
@@ -22,7 +23,9 @@ See the [model card](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731)
 and [vLLM recipe](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash).
 
 HotPotQA uses provider-recommended thinking-mode temperatures for every role,
-including the Manifestor: 1.0 for both pinned models. The temperature policy
+including the Manifestor: 1.0 for both pinned models. Qwen uses top-p 0.95
+throughout. DeepSeek uses top-p 1.0 for HotPotQA execution, stateless rewriting,
+the Controller, and the Manifestor; its ReAct editor uses 0.95. The sampling policy
 prefers applicable task-specific provider guidance and otherwise uses the
 model/mode default. The [source review](../../examples/common/temperature_policy.md)
 records the factual-QA, terminal-agent, and optimizer-role decisions, with links

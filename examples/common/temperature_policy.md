@@ -1,4 +1,4 @@
-# Provider temperature policy
+# Provider sampling policy
 
 Reviewed on 2026-09-10 for HotPotQA, Terminal-Bench 2, and Terminal-Bench 4.
 Use an applicable task-specific recommendation from the model author for the
@@ -44,10 +44,27 @@ experiments; HotPotQA and Terminal-Bench pass the provider value explicitly.
   not determine the local-vLLM experiment; the checkpoint's local-deployment
   guidance is the applicable source here.
 
-## Separate sampling settings
+## Top-p by role
 
-This decision changes temperature only. DeepSeek's July 31 card also recommends
-top-p 0.95 for agentic work and 1.0 otherwise. The existing shared experiment
-profile currently uses 0.95; applying that task distinction is a separate
-sampling decision to review interactively. Output-token limits and reasoning
-budgets are separate settings too.
+Qwen's pinned card recommends top-p 0.95 in thinking mode. DeepSeek's pinned
+July 31 card recommends 0.95 for agentic work and 1.0 otherwise. We classify
+iterative tool use as agentic, and single-call text generation or action
+selection under the general recommendation. This role classification is our
+application of the guidance; neither provider names the FOREST roles.
+
+| Work performed | Qwen3.8-27B | DeepSeek-V4-Flash-0731 |
+| --- | ---: | ---: |
+| HotPotQA: summaries, retrieval queries, factual answers | 0.95 | 1.0 |
+| TB2 and TB4: terminal-agent execution | 0.95 | 0.95 |
+| GEPA/stateless action proposer: prompt and skill rewriting | 0.95 | 1.0 |
+| Stateless action selector and FOREST Controller | 0.95 | 1.0 |
+| FOREST Manifestor: action-specific edit guidance | 0.95 | 1.0 |
+| FOREST ReAct editor: editing through tools | 0.95 | 0.95 |
+
+These settings apply to both budgets and to final task evaluation. Separate
+DeepSeek Controller and ReAct clients preserve each role's sampling, cost
+accounting, and response-journal replay. Contracts record the actual role
+settings and reject old or mismatched profiles on resume and final comparison.
+The shared decoding helper preserves its existing default for other callers;
+these three benchmarks choose their role profiles explicitly. Output-token
+limits and reasoning budgets remain separate settings.

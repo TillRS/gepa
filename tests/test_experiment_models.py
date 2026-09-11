@@ -52,6 +52,18 @@ def test_deepseek_profile_uses_fixed_sampling_and_maximum_reasoning() -> None:
     }
 
 
+@pytest.mark.parametrize("model", [QWEN3_8_27B_MODEL, DEEPSEEK_V4_FLASH_MODEL])
+@pytest.mark.parametrize("agentic", [False, True])
+def test_provider_sampling_depends_on_the_work_without_mutating_other_profiles(model: str, agentic: bool) -> None:
+    """Keep Qwen fixed while applying DeepSeek's general and agentic recommendations."""
+    decoding = experiment_decoding(model, agentic=agentic)
+    assert decoding["top_p"] == (1.0 if model == DEEPSEEK_V4_FLASH_MODEL and not agentic else 0.95)
+    assert decoding["temperature"] == 1.0
+    decoding["top_p"] = 0.5
+    assert experiment_decoding(model)["top_p"] == 0.95
+    assert experiment_decoding(model, agentic=agentic)["top_p"] != 0.5
+
+
 @pytest.mark.parametrize("version", ["0.25.0", "0.28.0", "0.29.1.dev1"])
 def test_deepseek_accepts_supported_vllm_versions(version: str) -> None:
     """Allow vLLM releases that support the July 31 checkpoint."""

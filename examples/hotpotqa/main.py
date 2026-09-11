@@ -475,11 +475,11 @@ def build_run_contract(condition: str, args) -> dict:
     _validate_scientific_contract(args)
     solver_lm_kwargs = resolve_hotpotqa_lm_kwargs(args.solver_model, None)
     reflection_lm_kwargs = resolve_hotpotqa_lm_kwargs(args.reflection_model, None)
-    solver_decoding_fields = list(experiment_decoding(args.solver_model))
+    solver_decoding_fields = list(experiment_decoding(args.solver_model, agentic=False))
     if "seed" in solver_lm_kwargs:
         solver_decoding_fields.append("seed")
     solver_request_fields = experiment_request_overrides(args.solver_model)
-    reflection_decoding_fields = list(experiment_decoding(args.reflection_model))
+    reflection_decoding_fields = list(experiment_decoding(args.reflection_model, agentic=False))
     if "seed" in reflection_lm_kwargs:
         reflection_decoding_fields.append("seed")
     reflection_request_fields = experiment_request_overrides(args.reflection_model)
@@ -488,7 +488,11 @@ def build_run_contract(condition: str, args) -> dict:
     reflection_role_decoding = None
     if condition in _REACT_V2_CONDITIONS:
         manifestor_decoding = deepcopy(reflection_decoding)
-        manifestor_decoding["temperature"] = float(experiment_decoding(args.reflection_model)["temperature"])
+        manifestor_decoding["temperature"] = float(
+            experiment_decoding(args.reflection_model, agentic=False)["temperature"]
+        )
+        react_decoding = deepcopy(reflection_decoding)
+        react_decoding["top_p"] = experiment_decoding(args.reflection_model, agentic=True)["top_p"]
         reflection_role_decoding = {
             "controller": (
                 {
@@ -507,7 +511,7 @@ def build_run_contract(condition: str, args) -> dict:
                 else None
             ),
             "react_v2_proposer": {
-                "requested": deepcopy(reflection_decoding),
+                "requested": react_decoding,
                 "provider_ignored_fields": [],
             },
         }
@@ -549,7 +553,7 @@ def build_run_contract(condition: str, args) -> dict:
         else:
             semantic_controller_policy = deepcopy(CONTROLLER_POLICY_CONTRACT)
     return {
-        "schema_version": 17,
+        "schema_version": 18,
         "benchmark": "hotpotqa-fullwiki-wiki17",
         "reference_artifact_commit": GEPA_ARTIFACT_COMMIT,
         "scientific_contract_enforced": scientific_contract,
@@ -1178,7 +1182,8 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
             controller_selection="uniform_random" if condition == "react_v2_random" else "verbalized",
             rng=random.Random(args.seed),
             manifestor_traces_chars=None,
-            manifestor_temperature=float(experiment_decoding(args.reflection_model)["temperature"]),
+            manifestor_temperature=float(experiment_decoding(args.reflection_model, agentic=False)["temperature"]),
+            react_top_p=float(experiment_decoding(args.reflection_model, agentic=True)["top_p"]),
         )
 
     merge_config = None
