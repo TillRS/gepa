@@ -176,7 +176,11 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 17
+    assert contract["schema_version"] == 18
+    assert contract["max_proposer_model_calls"] is None
+    assert contract["react_execution"]["completion"] == "explicit_finish"
+    assert contract["react_execution"]["max_iterations"] is None
+    assert contract["react_execution"]["max_tool_calls"] is None
     assert contract["manifestor_traces_chars"] is None
     assert contract["manifestor_temperature"] == 1.0
     assert contract["reflection_context"]["version"] == 1
@@ -521,6 +525,13 @@ def test_six_cell_matrix_pins_methods_budgets_and_resume_identity(tmp_path: Path
         assert contract["condition"] == condition
         assert contract["optimization_budget"]["max_iterations"] == (64 if budget == "double" else 32)
         assert contract["module_selector"] == "all"
+        assert contract["max_proposer_model_calls"] is None
+        if condition in terminalbench_main.FOREST_CONDITIONS:
+            assert contract["react_execution"]["completion"] == "explicit_finish"
+            assert contract["react_execution"]["max_iterations"] is None
+            assert contract["react_execution"]["max_tool_calls"] is None
+        else:
+            assert contract["react_execution"] is None
     ensure_run_contract(tmp_path / "resume", contracts[1])
     for contract in contracts[:1] + contracts[2:]:
         with pytest.raises(ValueError, match="different Terminal-Bench configuration"):

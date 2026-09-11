@@ -115,11 +115,14 @@ def test_cli_gives_both_methods_the_same_documents_and_runtime(
         "trainset",
         "valset",
         "max_metric_calls",
-        "reflection_lm",
         "reflection_lm_kwargs",
         "template_family",
     ):
         assert vanilla[key] == forest[key]
+    assert vanilla["reflection_lm"].model == forest["reflection_lm"].model
+    assert vanilla["reflection_lm"].completion_kwargs == forest["reflection_lm"].completion_kwargs
+    assert forest["reflection_strategy"].react_max_iterations is None
+    assert forest["reflection_strategy"].react_max_tool_calls is None
     assert vanilla["reflection_level"] == 0
     assert forest["reflection_level"] == 2
     expected = COMPONENT_KINDS

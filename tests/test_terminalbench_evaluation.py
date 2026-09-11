@@ -402,6 +402,29 @@ def test_changed_output_budget_or_usage_policy_cannot_resume_or_enter_final_test
         evaluate.freeze_comparison(run_dirs)
 
 
+@pytest.mark.parametrize("experiment", EXPERIMENT_MANIFESTS)
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("max_iterations", 8),
+        ("max_tool_calls", 4),
+        ("completion", "first_successful_edit"),
+        ("scope", "whole_document"),
+    ],
+)
+def test_old_editor_limits_or_scope_cannot_enter_final_comparison(
+    tmp_path: Path, experiment: str, field: str, value: object
+) -> None:
+    """Reject completion or scope drift even though editor policy is method-specific."""
+    run_dirs = _write_comparison(tmp_path, experiment)
+    path = run_dirs["react_v2"] / RUN_CONTRACT_FILENAME
+    contract = json.loads(path.read_text())
+    contract["react_execution"][field] = value
+    path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError):
+        evaluate.freeze_comparison(run_dirs)
+
+
 def test_frozen_output_rejects_a_changed_validation_winner(tmp_path: Path) -> None:
     """Prevent replacing an optimized harness after test feedback has been observed."""
     run_dirs = _write_comparison(tmp_path, "tb4")

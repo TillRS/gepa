@@ -54,6 +54,7 @@ from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import (
     REFLECTION_FEEDBACK_CONTRACT,
 )
 from gepa.lm import LM
+from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT
 from gepa.strategies.action_space import stateless_selector_policy_contract
 from gepa.strategies.intervention import (
     CONTROLLER_POLICY_CONTRACT,
@@ -283,7 +284,7 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 17,
+        "schema_version": 18,
         "token_limits": terminalbench_limits(args.student_model),
         "token_usage_policy": deepcopy(TOKEN_USAGE_POLICY),
         "experiment": manifest.experiment,
@@ -333,6 +334,7 @@ def build_run_contract(
         "reflection_level": reflection_level,
         "reflection_minibatch_size": args.reflection_minibatch_size,
         "max_proposer_model_calls": None,
+        "react_execution": deepcopy(REACT_V2_EXECUTION_CONTRACT) if operated else None,
         "semantic_action_space": (
             deepcopy(SEMANTIC_ACTION_CATALOGS) if reflection_level == 2 or condition == "action" else None
         ),

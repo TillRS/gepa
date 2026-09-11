@@ -35,6 +35,15 @@ the same parent harness and combine into one child candidate. `action` is no
 longer an alias for full FOREST. Controller randomness is seeded, separate from
 task sampling, and restored on resume.
 
+Both FOREST variants use the same completion policy as HotPotQA: the ReAct
+editor may make multiple edits within the selected section under one fixed
+semantic action and Manifestor instruction, then emit `<finish>`. Assistant
+turns and valid tool calls have no count limit. The editor receives the latest
+section text after each edit; an atomic delete/insert pair must be complete
+before another operation or submission. Run contracts record this policy and
+reject earlier checkpoints. This changes the optimizer editor's stopping rule;
+the approved per-call token budgets and benchmark task timeouts are unchanged.
+
 HotPotQA's budget levels are 6,871 and 13,742 metric calls. Terminal-Bench retains
 the approved epoch-based rule: four and eight training epochs. Thus the method
 matrix and 2× budget multiplier match HotPotQA; the budget unit differs.

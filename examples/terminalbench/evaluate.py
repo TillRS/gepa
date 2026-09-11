@@ -34,6 +34,7 @@ METHOD_SPECIFIC_FIELDS = {
     "reflection_level",
     "reflection_role_decoding",
     "max_proposer_model_calls",
+    "react_execution",
     "semantic_action_space",
     "semantic_controller_policy",
     "stateless_selector_policy",
