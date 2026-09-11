@@ -68,6 +68,11 @@ matrix and 2× budget multiplier match HotPotQA; the budget unit differs.
 | Completion and recovery | `completion`, `timeout`, `parse_error`, `output_limit` |
 | Reusable skills | `skill_debugging`, `skill_verification` |
 
+The approved component set stays fixed at 14 prompts and two skill files for
+both benchmarks, all methods, and both budgets. Optimizers cannot add or remove
+components or change their stable file identities. All component text remains
+editable, including each skill's name, description, instructions, and examples.
+
 Prompts use the selected provider's `user_prompt` template. Skills use the `skill`
 template: Name, Description, Instructions, and Examples. Their metadata appears
 in the initial context, and the agent reads each full `SKILL.md` through the
