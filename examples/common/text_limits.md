@@ -1,6 +1,6 @@
 # Optional character limits
 
-HotPotQA, Terminal-Bench 2, and Terminal-Bench 4 use the same `TextLimits`
+HotPotQA and Terminal-Bench 2.1 use the same `TextLimits`
 configuration. Every field defaults to `None` in Python or `null` in JSON,
 meaning **unlimited**. These settings are separate from model output-token
 budgets and context capacity.
