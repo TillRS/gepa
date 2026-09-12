@@ -39,6 +39,7 @@ from examples.terminalbench.model_settings import (
 )
 from examples.terminalbench.pilot import PILOT_PROTOCOL, review_pilot, validate_review
 from examples.terminalbench.reflection import ComponentActionReflectionLM
+from examples.terminalbench.runtime import load_role_runtimes
 from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, observe_optimizer
 from gepa import optimize
 from gepa.adapters.terminal_bench_adapter import (
@@ -209,6 +210,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--student-api-base", default=None)
     parser.add_argument("--proposer-api-base", default=None)
     parser.add_argument(
+        "--runtime-record", type=Path, help="Current local task-server record from the runtime launcher"
+    )
+    parser.add_argument(
+        "--proposer-runtime-record",
+        type=Path,
+        help="Current optimizer-server record, if it uses a different server; otherwise reuse --runtime-record",
+    )
+    parser.add_argument(
         "--max-metric-calls",
         type=int,
         default=None,
@@ -322,7 +331,8 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 30,
+        "schema_version": 31,
+        "execution_runtime": deepcopy(getattr(args, "execution_runtime", None)),
         "pilot_protocol": deepcopy(PILOT_PROTOCOL),
         "pilot_review": deepcopy(getattr(args, "pilot_review", None)),
         "adapter": deepcopy(TERMINUS_ADAPTER_CONTRACT),
@@ -450,8 +460,9 @@ def main() -> None:
     scope = TerminalBenchTextScope(args.optimization_scope, resolved_family)
     condition = args.condition
     try:
+        args.execution_runtime = load_role_runtimes(args)
         contract = build_run_contract(args, manifest, trainset, valset, condition, resolved_family)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         parser.error(str(exc))
     try:
         if args.reviewed_pilot is not None:

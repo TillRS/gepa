@@ -26,6 +26,7 @@ from examples.terminalbench.pilot import (
     load_completed_pilot,
     validate_runtime,
 )
+from examples.terminalbench.runtime import load_runtime_record
 from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, summarize_usage
 from gepa.adapters.terminal_bench_adapter import (
     TERMINUS_ADAPTER_CONTRACT,
@@ -50,6 +51,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--optimization-scope", choices=OPTIMIZATION_SCOPES, default=DEFAULT_OPTIMIZATION_SCOPE)
     parser.add_argument("--model", choices=EXPERIMENT_MODELS, default=QWEN3_8_27B_MODEL)
     parser.add_argument("--api-base", required=True)
+    parser.add_argument("--runtime-record", type=Path, help="Current local server record from the runtime launcher")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--stage", choices=("smoke", "full", "calibration"), default="smoke")
     parser.add_argument("--train-limit", type=int, default=None, help="Custom training coverage for calibration only")
@@ -75,6 +77,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.stage != "full" and args.smoke_dir is not None:
         parser.error("--smoke-dir is only used by the full stage")
     tasks = manifest.tasks("train", train_limit)
+    try:
+        execution_runtime = load_runtime_record(args.runtime_record, args.model, args.api_base)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     candidate, family = seed_candidate(args.model, "auto", args.experiment, args.optimization_scope)
     scope = TerminalBenchTextScope(args.optimization_scope, family)
     limits = terminalbench_limits(args.model)
@@ -89,6 +95,7 @@ def main(argv: list[str] | None = None) -> None:
     }
     config = {
         "schema_version": PILOT_SCHEMA_VERSION,
+        "execution_runtime": execution_runtime,
         "pilot_protocol": PILOT_PROTOCOL,
         "stage": args.stage,
         "adapter": TERMINUS_ADAPTER_CONTRACT,

@@ -39,7 +39,7 @@ Optimization, training pilots, and final evaluation all instantiate
 `gepa.adapters.terminal_bench_adapter.TerminusAdapter`; `TerminalBenchAdapter`
 remains an alias for existing callers. Final evaluation uses the adapter's
 evaluation path without constructing reflection feedback. There is no fallback
-to the legacy runner. Run contract version 30 and pilot configuration version 8
+to the legacy runner. Run contract version 31 and pilot configuration version 9
 record the adapter entry point, the explicit `harbor_port` implementation, and
 upstream provenance. Missing or changed adapter identity prevents optimization
 resume and final comparison; use fresh run directories for older contracts.
@@ -306,8 +306,8 @@ separate policies above.
 Every physical attempt is recorded in `provider-attempts.jsonl` and in the
 existing `token-usage.jsonl` files, including failures with unknown usage.
 The two files describe the same requests, so their totals must not be added.
-The policy is pinned in run contract version 30 and pilot configuration version
-8; older or changed policies cannot resume or enter final evaluation.
+The policy is pinned in run contract version 31 and pilot configuration version
+9; older or changed policies cannot resume or enter final evaluation.
 
 #### Reference protocol and pending confirmation
 
@@ -396,7 +396,7 @@ minibatch size, and seed produce identical task order across methods, models, an
 text scopes. Eight-epoch runs share the first four epochs with standard runs,
 then continue the shuffle sequence. Checkpoints save the permutation, cursor,
 and private RNG state so a resumed run retains every later epoch's task order.
-Run contract version 30 records this policy; older checkpoints require fresh
+Run contract version 31 records this policy; older checkpoints require fresh
 runs. HotPotQA uses the same sampler, with its existing metric-call budgets.
 
 Each iteration samples one minibatch for one mutation attempt; merging is off.
@@ -430,7 +430,7 @@ counted for these fresh executions.
 Completed checkpoint records and optimizer response journals remain available
 for recovery of the same logical work. They do not supply results for unrelated
 new evaluations, and completed held-out repetitions remain resumable. Run
-contract version 30 records `cache_evaluation=false`, forwards it to GEPA, and
+contract version 31 records `cache_evaluation=false`, forwards it to GEPA, and
 rejects missing or changed policies on resume and before final comparison.
 
 #### Parent selection
@@ -450,7 +450,7 @@ The final winner remains the harness with the highest mean validation score.
 
 `candidate_selection_strategy="pareto"` and `frontier_type="instance"` are
 explicit run contract fields forwarded to the optimizer for every method and
-budget. Run contract version 30 rejects missing or changed parent-selection
+budget. Run contract version 31 rejects missing or changed parent-selection
 policies on resume and before final comparison.
 
 #### Proposal acceptance and validation
@@ -470,7 +470,7 @@ improvement or automatically replace the existing best harness.
 
 `acceptance_criterion="strict_improvement"`, `validation_evaluation="full_eval"`,
 `skip_perfect_score=true`, and `perfect_score=1.0` are explicit run contract
-fields forwarded to the optimizer. Run contract version 30 rejects missing or
+fields forwarded to the optimizer. Run contract version 31 rejects missing or
 changed policies on resume and before final comparison. This preserves the
 prior runtime defaults while recording the approved experiment identity.
 
@@ -512,6 +512,7 @@ Run final testing only after all twelve matching optimization runs have complete
 
 ```bash
 uv run python -m examples.terminalbench.evaluate \
+  --runtime-record runs/servers/qwen.json \
   --run-dir system_prompt__vanilla=runs/tb2.1/qwen/system_prompt/vanilla \
   --run-dir system_prompt__react_v2=runs/tb2.1/qwen/system_prompt/react_v2 \
   --run-dir system_prompt__react_v2_random=runs/tb2.1/qwen/system_prompt/react_v2_random \
@@ -549,6 +550,80 @@ evaluation instead of becoming fabricated zero scores.
 This aligns the repetition protocol with the paper; the previously documented
 TB2.1 dataset, task-assignment, harness, and model differences still apply.
 
+#### Record the local serving runtime
+
+Launch the model through `examples.terminalbench.runtime` on the Linux GPU node,
+using the prepared **serving environment's Python**. It verifies every checkpoint
+file with the same model-snapshot verifier as HotPotQA, captures the installed
+vLLM/PyTorch/CUDA/Transformers and Python versions, an installed-package fingerprint,
+visible GPU models/counts/memory/compute capabilities and driver, precision,
+parallelism, the exact forwarded launch arguments, and relevant vLLM/NCCL settings.
+Credentials are excluded. It then executes vLLM with that same interpreter and
+arguments, preserving the process identity recorded in the JSON file.
+
+For the existing Qwen TP1/DP8 profile, set `VLLM_PY` to the prepared serving
+interpreter and `SOLVER_MODEL_PATH` to its verified checkpoint, then run from this
+repository root:
+
+```bash
+uv run --no-project --python "$VLLM_PY" python -m examples.terminalbench.runtime \
+  --model hosted_vllm/Qwen/Qwen3.8-27B \
+  --model-path "$SOLVER_MODEL_PATH" \
+  --runtime-record runs/servers/qwen.json --port 8000 -- \
+  --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --tensor-parallel-size 1 --data-parallel-size 8 --api-server-count 8 \
+  --gpu-memory-utilization 0.92 --max-model-len 262144 \
+  --max-num-seqs 1 --max-num-batched-tokens 16384 \
+  --dtype bfloat16 --kv-cache-dtype auto --seed 0 \
+  --no-enable-prefix-caching --language-model-only
+```
+
+For DeepSeek, use its prepared checkpoint and interpreter, with its TP8/EP8 flags:
+
+```bash
+uv run --no-project --python "$VLLM_PY" python -m examples.terminalbench.runtime \
+  --model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
+  --model-path "$SOLVER_MODEL_PATH" \
+  --runtime-record runs/servers/deepseek.json --port 8000 -- \
+  --trust-remote-code --tokenizer-mode deepseek_v4 \
+  --reasoning-parser deepseek_v4 --enable-auto-tool-choice --tool-call-parser deepseek_v4 \
+  --tensor-parallel-size 8 --enable-expert-parallel --data-parallel-size 1 --api-server-count 1 \
+  --gpu-memory-utilization 0.92 --max-model-len 393216 \
+  --max-num-seqs 8 --max-num-batched-tokens 16384 \
+  --dtype auto --kv-cache-dtype fp8 --block-size 256 --seed 0 --no-enable-prefix-caching
+```
+
+Keep the existing [Della serving environment](../../../../scripts/della/README.md)
+and its environment settings. The launcher owns the checkpoint, served model
+name, loopback host, and port; pass the remaining serving flags after `--`.
+Numerical dtype, KV-cache dtype, tensor parallelism, and data parallelism must
+be explicit. The examples do not pick concurrency or replace training calibration.
+Wait for the model server to become ready before starting benchmark commands.
+
+Pass `--runtime-record` on **every** pilot, optimization, resume, and final-test
+invocation. If optimizer roles use a separate local server, launch it the same
+way and supply `--proposer-runtime-record`; otherwise the task-server record is
+used for both roles. Each role's endpoint must match its recorded local port.
+Final evaluation only needs the task server because no optimizer runs there.
+
+The entry points verify that the record belongs to a live process on the current
+node using hostname, Linux boot ID, PID, and process start time, and that this
+process or its API workers owns the listening socket. Recreate the
+record after a server restart; a previous pilot's saved identity cannot substitute
+for this live check. This is trusted local launcher evidence, not remote server
+attestation, and does not support tunneled or remote model endpoints.
+
+Only the material configuration enters pilot/run/frozen-comparison contracts.
+Node names, job IDs, GPU device numbers, PIDs, and checkpoint/record paths do not
+enter that comparison, so fresh servers on equivalent nodes remain compatible.
+Endpoint URLs remain subject to the existing run contract. Material settings are
+compared exactly, including launch-argument order. Missing or changed runtime
+evidence stops execution before Harbor. A changed task runtime requires new
+matching pilot evidence and a fresh campaign; changes to either role also reject
+resume and mixed final comparisons. All twelve cells in a model arm must share
+both role configurations. Historical contracts lacking this evidence are rejected
+by run schema 31 and pilot schema 9.
+
 #### Run
 
 From the repository root, after completing and reviewing both pilot stages below,
@@ -565,6 +640,7 @@ uv run python -m examples.terminalbench.main \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
   --reviewed-pilot runs/canaries/tb2.1/qwen/full \
+  --runtime-record runs/servers/qwen.json \
   --run-dir runs/tb2.1/qwen/system_prompt/vanilla \
   --harbor-work-dir runs/tb2.1/qwen/system_prompt/vanilla/harbor
 ```
@@ -582,6 +658,7 @@ uv run python -m examples.terminalbench.main \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
   --reviewed-pilot runs/canaries/tb2.1/qwen/full \
+  --runtime-record runs/servers/qwen.json \
   --run-dir runs/tb2.1/qwen/system_prompt/vanilla_2x \
   --harbor-work-dir runs/tb2.1/qwen/system_prompt/vanilla_2x/harbor
 ```
@@ -600,6 +677,7 @@ Run the complete twelve-cell matrix for one model with the batch launcher:
 uv run --no-sync python -m examples.terminalbench.run_ablations \
   --run-root runs/tb2.1/qwen \
   --reviewed-pilot runs/canaries/tb2.1/qwen/full \
+  --runtime-record runs/servers/qwen.json \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
   --dry-run
@@ -613,7 +691,8 @@ has its own directory. Rerunning forwards to the existing run-contract and
 checkpoint checks; it does not grant extra epochs or run held-out tests.
 
 Other optimization options, including homogeneous student/proposer models,
-endpoints, reviewed pilot, concurrency, seed, and text limits, are forwarded to every cell.
+endpoints, runtime records, reviewed pilot, concurrency, seed, and text limits,
+are forwarded to every cell.
 Scope, condition, budget, and per-run directories are owned by the matrix.
 Use a separate `--run-root runs/tb2.1/deepseek` with both DeepSeek model flags
 and its endpoints for that model's campaign. Every model's campaign starts
@@ -638,6 +717,7 @@ uv run python -m examples.terminalbench.main \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
   --reviewed-pilot runs/canaries/tb2.1/deepseek/full \
+  --runtime-record runs/servers/deepseek.json \
   --run-dir runs/tb2.1/deepseek/vanilla \
   --harbor-work-dir runs/tb2.1/deepseek/vanilla/harbor
 ```
@@ -710,6 +790,7 @@ uv run --no-sync python -m examples.terminalbench.canary \
   --stage smoke \
   --model hosted_vllm/Qwen/Qwen3.8-27B \
   --api-base http://localhost:8000/v1 \
+  --runtime-record runs/servers/qwen.json \
   --output-dir runs/canaries/tb2.1/qwen/smoke
 
 uv run --no-sync python -m examples.terminalbench.canary \
@@ -717,12 +798,14 @@ uv run --no-sync python -m examples.terminalbench.canary \
   --smoke-dir runs/canaries/tb2.1/qwen/smoke \
   --model hosted_vllm/Qwen/Qwen3.8-27B \
   --api-base http://localhost:8000/v1 \
+  --runtime-record runs/servers/qwen.json \
   --n-concurrent 1 \
   --output-dir runs/canaries/tb2.1/qwen/full
 ```
 
 Repeat both stages with `--model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731`
-and separate directories under `runs/canaries/tb2.1/deepseek`. This is 33 task
+with `--runtime-record runs/servers/deepseek.json` and separate directories under
+`runs/canaries/tb2.1/deepseek`. This is 33 task
 attempts per model: **60 full-stage attempts plus six smoke attempts** across
 both arms, before any additional calibration runs. All tasks come from training;
 no optimization, validation, or held-out testing runs in these pilots. This
@@ -742,8 +825,8 @@ launcher. Supplying this flag explicitly records that review. The campaign
 verifies the stage chain, complete task coverage, artifact hashes, and matching
 runtime settings before contacting Harbor. The evidence is embedded in run
 contracts, reused on resume without another review flag, and required again
-at final comparison. Run contract version 30 and
-pilot configuration version 8 reject older or changed policies; use fresh runs.
+at final comparison. Run contract version 31 and
+pilot configuration version 9 reject older or changed policies; use fresh runs.
 Partial-data diagnostic optimizations can still run without qualifying a final
 comparison. A dry run only prints commands and does not attest review.
 

@@ -43,6 +43,10 @@ def test_campaign_runs_prompt_only_first_and_forwards_shared_settings(
             "3",
             "--reviewed-pilot",
             str(tmp_path / "reviewed full pilot"),
+            "--runtime-record",
+            str(tmp_path / "task server.json"),
+            "--proposer-runtime-record",
+            str(tmp_path / "optimizer server.json"),
         ]
     )
     commands = [shlex.split(line) for line in capsys.readouterr().out.splitlines()]
@@ -68,6 +72,8 @@ def test_campaign_runs_prompt_only_first_and_forwards_shared_settings(
         assert cell.run_dir.parent == root / cell.optimization_scope
         assert cell.harbor_work_dir == cell.run_dir / "harbor"
         assert cell.student_model == cell.proposer_model == model
+        assert cell.runtime_record == tmp_path / "task server.json"
+        assert cell.proposer_runtime_record == tmp_path / "optimizer server.json"
         assert cell.student_api_base == cell.proposer_api_base == "http://localhost:8000/v1"
         assert cell.seed == 17 and cell.n_concurrent == 3
         assert cell.reviewed_pilot == tmp_path / "reviewed full pilot"

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from terminalbench_pilot_helpers import offline_runtime as offline_runtime
 from terminalbench_pilot_helpers import write_pilot_fixture
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -25,6 +26,7 @@ from examples.terminalbench.main import (
     seed_candidate,
 )
 from examples.terminalbench.pilot import review_pilot
+from examples.terminalbench.runtime import _digest
 from gepa.adapters.terminal_bench_adapter import (
     HarborEvaluation,
     HarborExecutionError,
@@ -116,6 +118,23 @@ def _write_comparison(
         label: _write_run(root, experiment, condition, model, budget, text_limits, n_concurrent, scope)
         for label, (scope, condition, budget) in SCOPE_CAMPAIGN_CELLS.items()
     }
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed_proposer"])
+def test_final_matrix_requires_matching_material_runtimes(tmp_path: Path, damage: str) -> None:
+    """Reject old runtime-free runs and different optimizer-server configurations."""
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
+    path = run_dirs["all_text__react_v2"] / RUN_CONTRACT_FILENAME
+    contract = json.loads(path.read_text())
+    if damage == "missing":
+        contract.pop("execution_runtime")
+    else:
+        identity = contract["execution_runtime"]["proposer"]
+        identity["parallelism"]["data"] = 2
+        identity["sha256"] = _digest({key: value for key, value in identity.items() if key != "sha256"})
+    path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError):
+        evaluate.freeze_comparison(run_dirs)
 
 
 def _fake_runner(manifest, comparison, output_dir: Path, *, fail_on_call: int | None = None) -> Mock:

@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import litellm
 import pytest
+from terminalbench_pilot_helpers import offline_runtime as offline_runtime
 
 from examples.common.experiment_models import (
     EXPERIMENT_MODELS,
@@ -183,7 +184,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     else:
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
-    assert config["schema_version"] == 8
+    assert config["schema_version"] == 9
     assert config["stage"] == "smoke"
     assert (output_dir / "pilot-complete.json").exists() is not fails
     assert config["optimization_scope"] == (optimization_scope or "system_prompt")

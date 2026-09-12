@@ -8,10 +8,11 @@ import math
 from pathlib import Path
 from typing import Any
 
+from examples.terminalbench.runtime import validate_identity
 from gepa.adapters.terminal_bench_adapter import TerminalBenchManifest
 from gepa.adapters.terminal_bench_adapter.text_scope import TerminalBenchTextScope
 
-PILOT_SCHEMA_VERSION = 8
+PILOT_SCHEMA_VERSION = 9
 PILOT_PROTOCOL = {
     "version": 1,
     "smoke_tasks": 3,
@@ -22,6 +23,7 @@ PILOT_PROTOCOL = {
     "scope_reuse": "identical_initial_runtime_text",
 }
 RUNTIME_FIELDS = (
+    "execution_runtime",
     "adapter",
     "provider_retry_policy",
     "experiment",
@@ -50,6 +52,7 @@ def run_runtime(contract: dict[str, Any]) -> dict[str, Any]:
     """Extract the task runtime actually recorded by an optimization run."""
     return {
         **{key: contract[key] for key in RUNTIME_FIELDS if key in contract},
+        "execution_runtime": (contract.get("execution_runtime") or {}).get("student"),
         "model": contract["student_model"],
         "model_version": contract["student_model_version"],
         "api_base": contract["student_api_base"],
@@ -98,6 +101,7 @@ def validate_snapshot(evidence: dict[str, Any], manifest: TerminalBenchManifest,
     ):
         raise ValueError(f"A completed {stage} pilot on exactly {len(expected_ids)} training tasks is required")
     scope = TerminalBenchTextScope(config["optimization_scope"], config["template_family"])
+    validate_identity(config.get("execution_runtime"), config["model"])
     if config.get("text_scope") != scope.contract() or config.get("candidate_digest") != manifest.candidate_digest(
         scope.materialize(scope.seed_candidate())
     ):

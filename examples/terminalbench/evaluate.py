@@ -21,6 +21,7 @@ from examples.terminalbench.main import (
     build_run_contract,
 )
 from examples.terminalbench.pilot import validate_review
+from examples.terminalbench.runtime import load_runtime_record, validate_identity
 from gepa.adapters.terminal_bench_adapter import (
     HarborCLI,
     TerminalBenchManifest,
@@ -103,6 +104,8 @@ def load_completed_run(
             f"{run_dir}: expected a matching {condition} run on the complete training and validation splits"
         )
     validate_review(contract.get("pilot_review"), contract, manifest)
+    for role in ("student", "proposer"):
+        validate_identity((contract.get("execution_runtime") or {}).get(role), contract[f"{role}_model"])
     state = GEPAState.load(str(run_dir))
     completed_iterations = state.i + 1
     if completed_iterations != contract["optimization_budget"]["max_iterations"]:
@@ -301,6 +304,9 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--harbor-executable", default="harbor")
     parser.add_argument("--docker-executable", default="docker")
+    parser.add_argument(
+        "--runtime-record", type=Path, help="Current local task-server record from the runtime launcher"
+    )
     args = parser.parse_args()
     run_dirs = {}
     for specification in args.run_dir:
@@ -310,6 +316,12 @@ def main() -> None:
         run_dirs[label] = Path(path)
     manifest, comparison = freeze_comparison(run_dirs)
     contract = comparison["shared_configuration"]
+    try:
+        runtime = load_runtime_record(args.runtime_record, contract["student_model"], contract["student_api_base"])
+        if runtime != contract["execution_runtime"]["student"]:
+            raise ValueError("Final evaluation runtime differs from the pilot and optimization; collect a new pilot")
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     harbor = HarborCLI(
         manifest=manifest,
         student_model=contract["student_model"],

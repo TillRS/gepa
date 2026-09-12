@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import litellm
 import pytest
+from terminalbench_pilot_helpers import offline_runtime as offline_runtime
 from terminalbench_pilot_helpers import write_pilot_fixture
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -188,7 +189,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 30
+    assert contract["schema_version"] == 31
     assert contract["skip_perfect_score"] is True
     assert contract["perfect_score"] == 1.0
     assert contract["adapter"] == TERMINUS_ADAPTER_CONTRACT

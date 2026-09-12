@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from terminalbench_pilot_helpers import write_pilot_fixture
+from terminalbench_pilot_helpers import offline_runtime as offline_runtime
+from terminalbench_pilot_helpers import runtime_fixture, write_pilot_fixture
 
 from examples.common.experiment_models import EXPERIMENT_MODELS
 from examples.terminalbench import canary
@@ -42,6 +43,7 @@ def run_contract(root: Path, model: str = EXPERIMENT_MODELS[0], scope: str = "sy
     )
     manifest = load_terminalbench_manifest(campaign.EXPERIMENT_MANIFESTS["tb2.1"])
     _, family = campaign.seed_candidate(model, "auto", "tb2.1", scope)
+    args.execution_runtime = {role: runtime_fixture(model) for role in ("student", "proposer")}
     contract = campaign.build_run_contract(
         args, manifest, manifest.tasks("train"), manifest.tasks("val"), "vanilla", family
     )
