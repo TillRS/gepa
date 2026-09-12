@@ -89,6 +89,7 @@ from gepa.strategies.action_space import (
     VerbalizedActionSelector,
     stateless_selector_policy_contract,
 )
+from gepa.strategies.batch_sampler import IndependentEpochShuffledBatchSampler
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.instruction_proposal import InstructionProposalSignature
 from gepa.strategies.intervention import (
@@ -557,7 +558,7 @@ def build_run_contract(condition: str, args) -> dict:
         else:
             semantic_controller_policy = deepcopy(CONTROLLER_POLICY_CONTRACT)
     return {
-        "schema_version": 23,
+        "schema_version": 24,
         "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "benchmark": "hotpotqa-fullwiki-wiki17",
         "reference_artifact_commit": GEPA_ARTIFACT_COMMIT,
@@ -595,6 +596,7 @@ def build_run_contract(condition: str, args) -> dict:
             "acceptance_criterion": "strict_improvement",
             "raise_on_exception": True,
             "batch_sampler": "epoch_shuffled",
+            "training_batch_order": IndependentEpochShuffledBatchSampler(3, args.seed).contract(),
             "reflection_minibatch_size": 3,
             "component_selector": "round_robin",
             "reflection_context": deepcopy(REFLECTION_CONTEXT_CONTRACT),
@@ -1228,7 +1230,7 @@ def build_config(condition: str, args, reflection_lm_kwargs: dict, run_dir: str 
         reflection=ReflectionConfig(
             skip_perfect_score=True,
             perfect_score=1.0,
-            batch_sampler="epoch_shuffled",
+            batch_sampler=IndependentEpochShuffledBatchSampler(3, args.seed),
             reflection_minibatch_size=3,
             module_selector="round_robin",
             reflection_lm=args.reflection_model,
