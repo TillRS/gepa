@@ -27,7 +27,7 @@ from gepa.adapters.terminal_bench_adapter import (
     load_terminalbench_manifest,
 )
 from gepa.adapters.terminal_bench_adapter.documents import seed_documents
-from gepa.adapters.terminal_bench_adapter.text_scope import TerminalBenchTextScope
+from gepa.adapters.terminal_bench_adapter.text_scope import DEFAULT_OPTIMIZATION_SCOPE, TerminalBenchTextScope
 from gepa.core.result import GEPAResult
 from gepa.core.state import GEPAState
 from gepa.strategies.text_limits import resolve_text_limits
@@ -62,7 +62,7 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def load_completed_run(
-    run_dir: Path, condition: str, budget: str, optimization_scope: str = "all_text"
+    run_dir: Path, condition: str, budget: str, optimization_scope: str = DEFAULT_OPTIMIZATION_SCOPE
 ) -> tuple[TerminalBenchManifest, dict[str, Any]]:
     """Select the validation winner from one completed, trusted local checkpoint.
 
@@ -147,7 +147,7 @@ def freeze_comparison(run_dirs: dict[str, Path]) -> tuple[TerminalBenchManifest,
     runs = {}
     for label, (scope_name, condition, budget) in SCOPE_CAMPAIGN_CELLS.items():
         manifest, runs[label] = load_completed_run(run_dirs[label], condition, budget, scope_name)
-    vanilla = runs["all_text__vanilla"]
+    vanilla = runs[f"{DEFAULT_OPTIMIZATION_SCOPE}__vanilla"]
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[vanilla["contract"]["experiment"]])
     shared = {key: value for key, value in vanilla["contract"].items() if key not in METHOD_SPECIFIC_FIELDS}
     for label, run in runs.items():
@@ -204,7 +204,8 @@ def evaluate_comparison(
     Raises:
         ValueError: Frozen identity changed or saved test results are invalid.
     """
-    adapter = TerminusAdapter(manifest, harbor)
+    # Winners are already materialized into complete runtime bundles in both scopes.
+    adapter = TerminusAdapter(manifest, harbor, text_scope=TerminalBenchTextScope("all_text"))
     output_dir.mkdir(parents=True, exist_ok=True)
     frozen_path = output_dir / FROZEN_COMPARISON_FILENAME
     if frozen_path.exists():

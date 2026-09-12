@@ -29,6 +29,7 @@ from gepa.adapters.terminal_bench_adapter.documents import (
     render_initial_instructions,
     seed_documents,
 )
+from gepa.adapters.terminal_bench_adapter.text_scope import TerminalBenchTextScope
 from gepa.proposer.reflective_mutation.reflection_lm import StatelessReflectionLM
 from gepa.strategies.intervention import summarize_feedback
 from gepa.strategies.text_limits import TextLimits, clip_text
@@ -420,7 +421,7 @@ def test_tb21_evaluation_keeps_literal_prompt_and_reports_its_own_evidence(
         return subprocess.CompletedProcess(command, 0, "complete", "")
 
     monkeypatch.setattr(terminalbench_module.subprocess, "run", run)
-    adapter = TerminalBenchAdapter(manifest, runner)
+    adapter = TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text"))
     with pytest.raises(ValueError, match="complete document bundle"):
         adapter.evaluate(manifest.tasks("train", 1), {"system_prompt": "old experiment"})
     result = adapter.evaluate(manifest.tasks("train", 1), candidate, capture_traces=True)
@@ -552,7 +553,7 @@ def test_runner_isolates_candidates_and_adapter_maps_complete_evidence_by_task_i
 
     monkeypatch.setattr(terminalbench_module.subprocess, "run", fake_run)
     batch = [manifest.tasks("train")[1], manifest.tasks("train")[0]]
-    adapter = TerminalBenchAdapter(manifest, runner)
+    adapter = TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text"))
     evaluated = adapter.evaluate(batch, _candidate(instruction_prompt=SEED_PROMPT), capture_traces=True)
 
     assert [output["task_id"] for output in evaluated.outputs] == [task.task_id for task in batch]
@@ -659,7 +660,7 @@ def test_runner_rejects_incomplete_or_failed_harbor_evidence(
         )
 
     monkeypatch.setattr(terminalbench_module.subprocess, "run", fake_run)
-    adapter = TerminalBenchAdapter(manifest, runner)
+    adapter = TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text"))
 
     with pytest.raises(HarborExecutionError, match=match):
         adapter.evaluate([task], _candidate(instruction_prompt=SEED_PROMPT), capture_traces=True)
@@ -696,7 +697,7 @@ def test_runner_preserves_valid_verified_zero_reward(tmp_path: Path, monkeypatch
         return subprocess.CompletedProcess(command, 0, stdout="complete", stderr="")
 
     monkeypatch.setattr(terminalbench_module.subprocess, "run", fake_run)
-    evaluated = TerminalBenchAdapter(manifest, runner).evaluate(
+    evaluated = TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text")).evaluate(
         [task],
         _candidate(instruction_prompt=SEED_PROMPT),
         capture_traces=True,
@@ -746,7 +747,7 @@ def test_verified_agent_timeout_counts_once_and_reaches_reflection(
 
     process = Mock(side_effect=run)
     monkeypatch.setattr(terminalbench_module.subprocess, "run", process)
-    adapter = TerminalBenchAdapter(manifest, runner)
+    adapter = TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text"))
     candidate = _candidate()
     evaluated = adapter.evaluate([task], candidate, capture_traces=True)
 
@@ -803,7 +804,9 @@ def test_timeout_policy_rejects_unverified_infrastructure_and_extra_attempts(
     process = Mock(side_effect=run)
     monkeypatch.setattr(terminalbench_module.subprocess, "run", process)
     with pytest.raises(HarborExecutionError):
-        TerminalBenchAdapter(runner.manifest, runner).evaluate([task], _candidate(), capture_traces=True)
+        TerminalBenchAdapter(runner.manifest, runner, text_scope=TerminalBenchTextScope("all_text")).evaluate(
+            [task], _candidate(), capture_traces=True
+        )
     process.assert_called_once()
     assert len(list(tmp_path.glob("evaluations/*/jobs/*/trial-0/result.json"))) == 1
 
@@ -848,7 +851,7 @@ def test_verifier_console_output_is_textual_feedback_for_every_component(
         return subprocess.CompletedProcess(command, 0, "complete", "")
 
     monkeypatch.setattr(terminalbench_module.subprocess, "run", run)
-    adapter = TerminalBenchAdapter(manifest, runner)
+    adapter = TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text"))
     candidate = _candidate()
     evaluated = adapter.evaluate([task], candidate, capture_traces=True)
     assert evaluated.scores == [reward]
@@ -1013,7 +1016,7 @@ def test_runner_rejects_malformed_or_structurally_invalid_atif(
     monkeypatch.setattr(terminalbench_module.subprocess, "run", fake_run)
 
     with pytest.raises(HarborExecutionError, match=match):
-        TerminalBenchAdapter(manifest, runner).evaluate(
+        TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text")).evaluate(
             [task],
             _candidate(instruction_prompt=SEED_PROMPT),
             capture_traces=True,
@@ -1055,7 +1058,7 @@ def test_runner_wraps_atif_file_read_errors(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr(terminalbench_module.subprocess, "run", fake_run)
 
     with pytest.raises(HarborExecutionError, match="unreadable or invalid JSON"):
-        TerminalBenchAdapter(manifest, runner).evaluate(
+        TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text")).evaluate(
             [task],
             _candidate(instruction_prompt=SEED_PROMPT),
             capture_traces=True,
@@ -1083,7 +1086,7 @@ def test_real_harbor_terminalbench_single_task_smoke(tmp_path: Path) -> None:
         agent_python_path=REPO_ROOT,
         n_concurrent=1,
     )
-    adapter = TerminalBenchAdapter(manifest, runner)
+    adapter = TerminalBenchAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text"))
     evaluated = adapter.evaluate(
         manifest.tasks("val", 1),
         _candidate(instruction_prompt=SEED_PROMPT),

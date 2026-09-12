@@ -2,7 +2,7 @@
 
 This fork's `TerminusAdapter` is a Harbor port of GEPA's published adapter for
 Terminal-Bench 2.1. It supports two editable scopes: one unified initial
-instruction prompt, or all 14 prompts and two skills. Both start with identical
+instruction prompt (the default), or all 14 prompts and two skills. Both start with identical
 model input and skill files; the smaller scope fixes later prompts and skills.
 The upstream legacy
 `tb run` implementation and constructor are not used unchanged. The

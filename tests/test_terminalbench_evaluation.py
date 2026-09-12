@@ -30,6 +30,7 @@ from gepa.adapters.terminal_bench_adapter import (
     load_terminalbench_manifest,
 )
 from gepa.adapters.terminal_bench_adapter.documents import render_instruction
+from gepa.adapters.terminal_bench_adapter.text_scope import TerminalBenchTextScope
 from gepa.core.state import GEPAState, ValsetEvaluation
 from gepa.strategies.text_limits import TextLimits
 
@@ -175,7 +176,7 @@ def test_evaluation_cli_freezes_validation_winners_and_repeats_test_only(
         assert any(f"{condition}-winner" in text for text in comparison["harnesses"][condition]["documents"].values())
     output_dir = tmp_path / "test"
     runner = _fake_runner(manifest, comparison, output_dir)
-    adapter = evaluate.TerminusAdapter(manifest, runner)
+    adapter = evaluate.TerminusAdapter(manifest, runner, text_scope=TerminalBenchTextScope("all_text"))
     adapter_evaluate = Mock(wraps=adapter.evaluate)
     monkeypatch.setattr(adapter, "evaluate", adapter_evaluate)
     monkeypatch.setattr(evaluate, "TerminusAdapter", Mock(return_value=adapter))

@@ -25,6 +25,14 @@ from gepa.strategies.document_template import TEMPLATE_FAMILIES
 MANIFEST_PATH = Path(__file__).parents[1] / "examples/terminalbench/terminalbench-v2.1-manifest.json"
 
 
+def test_adapter_defaults_to_the_unified_initial_prompt() -> None:
+    """Make default API evaluations enforce the same prompt-only scope as the CLI."""
+    manifest = load_terminalbench_manifest(MANIFEST_PATH)
+    adapter = TerminusAdapter(manifest, Mock(manifest=manifest))
+    assert adapter.text_scope == TerminalBenchTextScope("system_prompt")
+    assert set(adapter.text_scope.seed_candidate()) == {"instruction_prompt"}
+
+
 @pytest.mark.parametrize("family", TEMPLATE_FAMILIES)
 def test_scopes_start_with_identical_model_text_and_skill_files(tmp_path: Path, family: str) -> None:
     """Keep runtime inputs equal while exposing sixteen artifacts or one valid prompt."""

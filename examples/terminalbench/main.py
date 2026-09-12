@@ -57,7 +57,11 @@ from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import (
     REFLECTION_FEEDBACK_CONTRACT,
     TASK_CONTEXT_SETTINGS,
 )
-from gepa.adapters.terminal_bench_adapter.text_scope import OPTIMIZATION_SCOPES, TerminalBenchTextScope
+from gepa.adapters.terminal_bench_adapter.text_scope import (
+    DEFAULT_OPTIMIZATION_SCOPE,
+    OPTIMIZATION_SCOPES,
+    TerminalBenchTextScope,
+)
 from gepa.lm import LM
 from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT
 from gepa.strategies.action_space import stateless_selector_policy_contract
@@ -105,7 +109,7 @@ TemplateFamily = Literal["generic", "openai", "anthropic", "google", "alibaba"]
 
 
 def seed_candidate(
-    student_model: str, template_family: str, experiment: str, optimization_scope: str = "all_text"
+    student_model: str, template_family: str, experiment: str, optimization_scope: str = DEFAULT_OPTIMIZATION_SCOPE
 ) -> tuple[dict[str, str], TemplateFamily]:
     """Build the experiment's seed with the selected provider template.
 
@@ -175,8 +179,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--optimization-scope",
         choices=OPTIMIZATION_SCOPES,
-        default="all_text",
-        help="Edit all 16 text artifacts, or only the unified initial system prompt",
+        default=DEFAULT_OPTIMIZATION_SCOPE,
+        help="Edit the unified initial system prompt (default), or all 16 text artifacts",
     )
     parser.add_argument(
         "--condition",
@@ -280,7 +284,7 @@ def build_run_contract(
     training_epochs = TRAINING_EPOCHS_BY_BUDGET[args.budget]
     iterations_per_epoch = (len(trainset) + args.reflection_minibatch_size - 1) // args.reflection_minibatch_size
     sampled_tasks_per_epoch = iterations_per_epoch * args.reflection_minibatch_size
-    scope = TerminalBenchTextScope(getattr(args, "optimization_scope", "all_text"), resolved_family)
+    scope = TerminalBenchTextScope(getattr(args, "optimization_scope", DEFAULT_OPTIMIZATION_SCOPE), resolved_family)
     candidate = scope.seed_candidate()
     operated = condition in FOREST_CONDITIONS
     reflection_level = args.reflection_level if operated else 0

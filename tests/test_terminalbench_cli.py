@@ -134,6 +134,7 @@ def test_parser_defaults_both_roles_to_qwen3_8_27b(tmp_path: Path) -> None:
 
     assert args.student_model == QWEN3_8_27B_MODEL
     assert args.proposer_model == QWEN3_8_27B_MODEL
+    assert args.optimization_scope == "system_prompt"
 
 
 def test_run_contract_allows_exact_resume_and_rejects_drift(tmp_path: Path) -> None:
@@ -203,7 +204,9 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     assert contract["failure_policy"]["harbor_max_retries"] == 0
     assert contract["reflection_feedback"]["reflection_split"] == "train"
     assert contract["reflection_feedback"]["max_chars_per_verifier_log"] is None
-    assert contract["component_kinds"] == COMPONENT_KINDS
+    assert contract["optimization_scope"] == "system_prompt"
+    assert contract["component_kinds"] == {"instruction_prompt": "user_prompt"}
+    assert contract["runtime_component_kinds"] == COMPONENT_KINDS
     assert contract["student_model"] == QWEN3_8_27B_MODEL
     assert contract["proposer_model"] == QWEN3_8_27B_MODEL
     assert contract["student_decoding"] == terminalbench_decoding(QWEN3_8_27B_MODEL)
@@ -747,7 +750,7 @@ def test_removed_experiments_are_rejected(tmp_path: Path, experiment: str) -> No
 @pytest.mark.parametrize("family", TEMPLATE_FAMILIES)
 def test_tb21_starts_from_the_approved_full_text_and_skills(family: str) -> None:
     """Preserve all 16 editable components when migrating the task dataset."""
-    candidate, resolved_family = seed_candidate(QWEN3_8_27B_MODEL, family, "tb2.1")
+    candidate, resolved_family = seed_candidate(QWEN3_8_27B_MODEL, family, "tb2.1", "all_text")
     assert resolved_family == family
     assert set(candidate) == set(COMPONENT_KINDS)
     assert len(candidate) == 16

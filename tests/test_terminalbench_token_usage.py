@@ -123,7 +123,7 @@ def test_optimizer_usage_records_live_responses_once_and_excludes_journal_replay
 @pytest.mark.parametrize("model", EXPERIMENT_MODELS)
 @pytest.mark.parametrize("fails", [False, True])
 @pytest.mark.parametrize("n_concurrent", [None, 2])
-@pytest.mark.parametrize("optimization_scope", OPTIMIZATION_SCOPES)
+@pytest.mark.parametrize("optimization_scope", [None, *OPTIMIZATION_SCOPES])
 def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -131,7 +131,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     model: str,
     fails: bool,
     n_concurrent: int | None,
-    optimization_scope: str,
+    optimization_scope: str | None,
 ) -> None:
     """Retain pilot evidence while excluding validation and held-out test tasks."""
     factory = Mock(wraps=canary.HarborCLI)
@@ -144,7 +144,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
         assert [task.task_id for task in tasks] == adapter.manifest.splits["train"][:3]
         assert not {task.task_id for task in tasks}.intersection(adapter.manifest.splits["val"])
         assert not {task.task_id for task in tasks}.intersection(adapter.manifest.splits["test"])
-        assert adapter.text_scope.name == optimization_scope
+        assert adapter.text_scope.name == (optimization_scope or "system_prompt")
         assert set(candidate) == set(adapter.text_scope.component_kinds)
         record_usage(
             output_dir / "harbor" / "token-usage.jsonl",
@@ -163,8 +163,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
         "argv",
         [
             "canary",
-            "--optimization-scope",
-            optimization_scope,
+            *(["--optimization-scope", optimization_scope] if optimization_scope is not None else []),
             *(["--experiment", experiment] if experiment is not None else []),
             "--model",
             model,
@@ -182,7 +181,7 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
     assert config["schema_version"] == 7
-    assert config["optimization_scope"] == optimization_scope
+    assert config["optimization_scope"] == (optimization_scope or "system_prompt")
     assert config["adapter"] == TERMINUS_ADAPTER_CONTRACT
     assert config["experiment"] == "tb2.1"
     assert config["task_context_settings"] == {

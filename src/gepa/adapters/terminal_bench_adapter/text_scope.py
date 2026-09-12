@@ -13,14 +13,15 @@ from gepa.adapters.terminal_bench_adapter.documents import (
 )
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 
-OPTIMIZATION_SCOPES = ("all_text", "system_prompt")
+DEFAULT_OPTIMIZATION_SCOPE = "system_prompt"
+OPTIMIZATION_SCOPES = (DEFAULT_OPTIMIZATION_SCOPE, "all_text")
 
 
 @dataclass(frozen=True)
 class TerminalBenchTextScope:
     """Map editable candidates to a complete harness with fixed auxiliary text."""
 
-    name: str = "all_text"
+    name: str = DEFAULT_OPTIMIZATION_SCOPE
     template_family: str = "generic"
 
     def __post_init__(self) -> None:

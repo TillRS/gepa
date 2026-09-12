@@ -130,7 +130,7 @@ def test_cli_gives_both_methods_the_same_documents_and_runtime(
     assert forest["reflection_strategy"].react_max_tool_calls is None
     assert vanilla["reflection_level"] == 0
     assert forest["reflection_level"] == 2
-    expected = COMPONENT_KINDS
+    expected = {"instruction_prompt": "user_prompt"}
     assert vanilla["module_selector"] == "all"
     assert vanilla["component_kinds"] == expected
     assert set(vanilla["seed_candidate"]) == set(expected)

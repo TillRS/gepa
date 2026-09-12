@@ -27,7 +27,11 @@ from gepa.adapters.terminal_bench_adapter import (
 )
 from gepa.adapters.terminal_bench_adapter.documents import seed_documents
 from gepa.adapters.terminal_bench_adapter.terminal_bench_adapter import TASK_CONTEXT_SETTINGS
-from gepa.adapters.terminal_bench_adapter.text_scope import OPTIMIZATION_SCOPES, TerminalBenchTextScope
+from gepa.adapters.terminal_bench_adapter.text_scope import (
+    DEFAULT_OPTIMIZATION_SCOPE,
+    OPTIMIZATION_SCOPES,
+    TerminalBenchTextScope,
+)
 from gepa.strategies.text_limits import parse_text_limits, resolve_text_limits
 
 
@@ -35,7 +39,7 @@ def main() -> None:
     """Run a separate training-only pilot and retain usage even if its job fails."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment", choices=EXPERIMENT_MANIFESTS, default="tb2.1")
-    parser.add_argument("--optimization-scope", choices=OPTIMIZATION_SCOPES, default="all_text")
+    parser.add_argument("--optimization-scope", choices=OPTIMIZATION_SCOPES, default=DEFAULT_OPTIMIZATION_SCOPE)
     parser.add_argument("--model", choices=EXPERIMENT_MODELS, default=QWEN3_8_27B_MODEL)
     parser.add_argument("--api-base", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

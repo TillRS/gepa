@@ -7,9 +7,11 @@ and task/proposer models. Methods within a scope receive the same editable
 components.
 
 The pinned dataset has **89 tasks**, split into **30 training, 19 validation,
-and 40 test tasks**. `--optimization-scope all_text` (the default) exposes all
-14 prompts and two skill files. `--optimization-scope system_prompt` exposes
-the whole initial instruction block as one editable prompt.
+and 40 test tasks**. `--optimization-scope system_prompt` (the default)
+exposes the whole initial instruction block as one editable prompt.
+`--optimization-scope all_text` exposes all 14 prompts and two skill files.
+Pass that flag explicitly when resuming an existing all-text run. The recorded
+scope still prevents an old directory from silently switching experiments.
 
 #### GEPA adapter provenance and TB2.1 compatibility
 
@@ -113,8 +115,8 @@ matrix and 2× budget multiplier match HotPotQA; the budget unit differs.
 
 | `--optimization-scope` | Editable candidate | Fixed auxiliary text |
 | --- | --- | --- |
-| `all_text` (default) | 14 prompts and two skills, edited as 16 separate components | None |
-| `system_prompt` | One `instruction_prompt` containing the whole initial instruction block | Ten later prompts and both skills, including skill metadata |
+| `system_prompt` (default; runs first) | One `instruction_prompt` containing the whole initial instruction block | Ten later prompts and both skills, including skill metadata |
+| `all_text` | 14 prompts and two skills, edited as 16 separate components | None |
 
 The smaller scope combines `instruction_prompt`, `terminal_tool`,
 `skill_discovery`, and `command_format` into one editable component. It is not
@@ -501,18 +503,18 @@ Run final testing only after all twelve matching optimization runs have complete
 
 ```bash
 uv run python -m examples.terminalbench.evaluate \
-  --run-dir all_text__vanilla=runs/tb2.1/qwen/all_text/vanilla \
-  --run-dir all_text__react_v2=runs/tb2.1/qwen/all_text/react_v2 \
-  --run-dir all_text__react_v2_random=runs/tb2.1/qwen/all_text/react_v2_random \
-  --run-dir all_text__action=runs/tb2.1/qwen/all_text/action \
-  --run-dir all_text__vanilla_2x=runs/tb2.1/qwen/all_text/vanilla_2x \
-  --run-dir all_text__react_v2_2x=runs/tb2.1/qwen/all_text/react_v2_2x \
   --run-dir system_prompt__vanilla=runs/tb2.1/qwen/system_prompt/vanilla \
   --run-dir system_prompt__react_v2=runs/tb2.1/qwen/system_prompt/react_v2 \
   --run-dir system_prompt__react_v2_random=runs/tb2.1/qwen/system_prompt/react_v2_random \
   --run-dir system_prompt__action=runs/tb2.1/qwen/system_prompt/action \
   --run-dir system_prompt__vanilla_2x=runs/tb2.1/qwen/system_prompt/vanilla_2x \
   --run-dir system_prompt__react_v2_2x=runs/tb2.1/qwen/system_prompt/react_v2_2x \
+  --run-dir all_text__vanilla=runs/tb2.1/qwen/all_text/vanilla \
+  --run-dir all_text__react_v2=runs/tb2.1/qwen/all_text/react_v2 \
+  --run-dir all_text__react_v2_random=runs/tb2.1/qwen/all_text/react_v2_random \
+  --run-dir all_text__action=runs/tb2.1/qwen/all_text/action \
+  --run-dir all_text__vanilla_2x=runs/tb2.1/qwen/all_text/vanilla_2x \
+  --run-dir all_text__react_v2_2x=runs/tb2.1/qwen/all_text/react_v2_2x \
   --output-dir runs/tb2.1/qwen/test
 ```
 
@@ -548,10 +550,10 @@ uv tool install --python 3.12 harbor==0.22.0
 
 uv run python -m examples.terminalbench.main \
   --experiment tb2.1 \
-  --optimization-scope all_text \
+  --optimization-scope system_prompt \
   --condition vanilla \
-  --run-dir runs/tb2.1/qwen/all_text/vanilla \
-  --harbor-work-dir runs/tb2.1/qwen/all_text/vanilla/harbor
+  --run-dir runs/tb2.1/qwen/system_prompt/vanilla \
+  --harbor-work-dir runs/tb2.1/qwen/system_prompt/vanilla/harbor
 ```
 
 Use `--condition react_v2`, `--condition react_v2_random`, and `--condition action`
@@ -562,19 +564,43 @@ Launch each larger-budget run in its own fresh directory, for example:
 ```bash
 uv run python -m examples.terminalbench.main \
   --experiment tb2.1 \
-  --optimization-scope all_text \
+  --optimization-scope system_prompt \
   --condition vanilla --budget double \
-  --run-dir runs/tb2.1/qwen/all_text/vanilla_2x \
-  --harbor-work-dir runs/tb2.1/qwen/all_text/vanilla_2x/harbor
+  --run-dir runs/tb2.1/qwen/system_prompt/vanilla_2x \
+  --harbor-work-dir runs/tb2.1/qwen/system_prompt/vanilla_2x/harbor
 ```
 
 Use `--condition react_v2 --budget double` and
-`runs/tb2.1/qwen/all_text/react_v2_2x` for the larger-budget FOREST run. Repeat
-all six configurations with `--optimization-scope system_prompt` and paths
-under `runs/tb2.1/qwen/system_prompt/`. Use the same twelve configurations for
+`runs/tb2.1/qwen/system_prompt/react_v2_2x` for the larger-budget FOREST run. Repeat
+all six configurations with `--optimization-scope all_text` and paths
+under `runs/tb2.1/qwen/all_text/`. Use the same twelve configurations for
 the DeepSeek model arm, with separate paths under `runs/tb2.1/deepseek/`.
 The CLI rejects double-budget ablations outside the approved pair.
 An optional `--manifest` must match the pinned TB2.1 experiment.
+
+Run the complete twelve-cell matrix for one model with the batch launcher:
+
+```bash
+uv run --no-sync python -m examples.terminalbench.run_ablations \
+  --run-root runs/tb2.1/qwen \
+  --student-api-base http://localhost:8000/v1 \
+  --proposer-api-base http://localhost:8000/v1 \
+  --dry-run
+```
+
+`--dry-run` prints commands without creating runs or invoking Harbor. Omit it
+to execute sequentially: all six `system_prompt` configurations first, then all
+six `all_text` configurations. The launcher uses the same ordered campaign
+matrix as final evaluation and stops if a command fails. Each scope and cell
+has its own directory. Rerunning forwards to the existing run-contract and
+checkpoint checks; it does not grant extra epochs or run held-out tests.
+
+Other optimization options, including homogeneous student/proposer models,
+endpoints, concurrency, seed, and text limits, are forwarded to every cell.
+Scope, condition, budget, and per-run directories are owned by the matrix.
+Use a separate `--run-root runs/tb2.1/deepseek` with both DeepSeek model flags
+and its endpoints for that model's campaign. Every model's campaign starts
+with system-prompt optimization.
 
 The campaign supports two separate model arms: Qwen3.8-27B with Qwen3.8-27B
 (the model default), and DeepSeek V4 Flash with DeepSeek V4 Flash. Student,
@@ -657,12 +683,12 @@ tasks only**, separately for both model arms:
 ```bash
 uv run python -m examples.terminalbench.canary \
   --experiment tb2.1 \
-  --optimization-scope all_text \
+  --optimization-scope system_prompt \
   --model hosted_vllm/Qwen/Qwen3.8-27B \
   --api-base http://localhost:8000/v1 \
   --train-limit 3 \
   --n-concurrent 1 \
-  --output-dir runs/canaries/tb2.1/qwen/all_text
+  --output-dir runs/canaries/tb2.1/qwen/system_prompt
 ```
 
 Repeat with
@@ -672,7 +698,7 @@ suits the entire benchmark; increase `--train-limit` to cover more training
 tasks. The command evaluates the initial harness without optimization and
 cannot select validation or test tasks. It saves exact configuration/task
 identities, editable scope, official task results, and `token-usage-summary.json`.
-It also supports `--optimization-scope system_prompt`; the initial runtime text
+It also supports `--optimization-scope all_text`; the initial runtime text
 is identical, so changing scope alone does not require another budget pilot.
 Use separate output directories when checking either materialization path. Failed jobs
 retain available usage too. Inspect usage and cutoffs before deciding whether
