@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from terminalbench_pilot_helpers import write_pilot_fixture
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -23,6 +24,7 @@ from examples.terminalbench.main import (
     ensure_run_contract,
     seed_candidate,
 )
+from examples.terminalbench.pilot import review_pilot
 from gepa.adapters.terminal_bench_adapter import (
     HarborEvaluation,
     HarborExecutionError,
@@ -79,6 +81,8 @@ def _write_run(
     manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
     initial, family = seed_candidate(model, "auto", experiment, optimization_scope)
     contract = build_run_contract(args, manifest, manifest.tasks("train"), manifest.tasks("val"), condition, family)
+    pilot_dir = write_pilot_fixture(root / "pilot", contract, manifest)
+    contract["pilot_review"] = review_pilot(pilot_dir, contract, manifest)
     ensure_run_contract(run_dir, contract)
     count = len(manifest.splits["val"])
     state = GEPAState(initial, ValsetEvaluation({}, dict.fromkeys(range(count), 0.0)))
@@ -502,6 +506,7 @@ def test_final_comparison_enforces_both_scope_boundaries(tmp_path: Path, damage:
         ("perfect_score", 0.5),
         ("validation_evaluation", "partial"),
         ("training_batch_order", {"rng_stream": "shared"}),
+        ("pilot_protocol", {}),
     ],
 )
 @pytest.mark.parametrize("missing", [False, True])
@@ -534,6 +539,25 @@ def test_removed_benchmark_cannot_enter_final_comparison(tmp_path: Path, experim
     contract["experiment"] = experiment
     path.write_text(json.dumps(contract))
     with pytest.raises(ValueError, match=r"only Terminal-Bench 2\.1 runs"):
+        evaluate.freeze_comparison(run_dirs)
+
+
+@pytest.mark.parametrize("damage", ["missing", "unreviewed", "partial", "missing_smoke"])
+def test_final_comparison_requires_both_reviewed_pilot_stages(tmp_path: Path, damage: str) -> None:
+    """Reject completed optimization checkpoints without the agreed training pilot evidence."""
+    run_dirs = _write_comparison(tmp_path, "tb2.1")
+    path = run_dirs["system_prompt__vanilla"] / RUN_CONTRACT_FILENAME
+    contract = json.loads(path.read_text())
+    if damage == "missing":
+        contract["pilot_review"] = None
+    elif damage == "unreviewed":
+        contract["pilot_review"]["reviewed_metrics"] = []
+    elif damage == "partial":
+        contract["pilot_review"]["full_pilot"]["config"]["task_ids"].pop()
+    else:
+        contract["pilot_review"]["full_pilot"]["config"]["smoke_evidence"] = None
+    path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError):
         evaluate.freeze_comparison(run_dirs)
 
 

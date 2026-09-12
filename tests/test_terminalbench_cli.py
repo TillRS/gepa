@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import litellm
 import pytest
+from terminalbench_pilot_helpers import write_pilot_fixture
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -187,7 +188,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 29
+    assert contract["schema_version"] == 30
     assert contract["skip_perfect_score"] is True
     assert contract["perfect_score"] == 1.0
     assert contract["adapter"] == TERMINUS_ADAPTER_CONTRACT
@@ -544,8 +545,16 @@ def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
         ],
     )
 
+    args = build_parser().parse_args()
+    manifest = load_terminalbench_manifest(EXPERIMENT_MANIFESTS[experiment])
+    _, family = seed_candidate(args.student_model, "auto", experiment, optimization_scope)
+    initial_contract = build_run_contract(args, manifest, trainset, manifest.tasks("val"), "vanilla", family)
+    pilot_dir = write_pilot_fixture(tmp_path / "pilot", initial_contract, manifest)
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--reviewed-pilot", str(pilot_dir)])
+
     terminalbench_main.main()
     assert len(parent_batches) == 5
+    monkeypatch.setattr(sys, "argv", sys.argv[:-2])
     stop_file.unlink()
     terminalbench_main.main()
     assert len(parent_batches) == iterations

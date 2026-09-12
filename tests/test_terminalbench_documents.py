@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from terminalbench_pilot_helpers import write_pilot_fixture
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -106,6 +107,14 @@ def test_cli_gives_both_methods_the_same_documents_and_runtime(
                 str(tmp_path / "harbor"),
             ],
         )
+        args = cli.build_parser().parse_args()
+        manifest = cli.load_terminalbench_manifest(cli.EXPERIMENT_MANIFESTS[experiment])
+        _, family = cli.seed_candidate(args.student_model, "auto", experiment)
+        contract = cli.build_run_contract(
+            args, manifest, manifest.tasks("train"), manifest.tasks("val"), condition, family
+        )
+        pilot_dir = write_pilot_fixture(tmp_path / "pilot", contract, manifest)
+        monkeypatch.setattr(sys, "argv", [*sys.argv, "--reviewed-pilot", str(pilot_dir)])
         cli.main()
     vanilla, forest = [call.kwargs for call in optimize.call_args_list]
     for key in (

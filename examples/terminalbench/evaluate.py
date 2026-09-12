@@ -20,6 +20,7 @@ from examples.terminalbench.main import (
     TEST_REPETITIONS,
     build_run_contract,
 )
+from examples.terminalbench.pilot import validate_review
 from gepa.adapters.terminal_bench_adapter import (
     HarborCLI,
     TerminalBenchManifest,
@@ -101,6 +102,7 @@ def load_completed_run(
         raise ValueError(
             f"{run_dir}: expected a matching {condition} run on the complete training and validation splits"
         )
+    validate_review(contract.get("pilot_review"), contract, manifest)
     state = GEPAState.load(str(run_dir))
     completed_iterations = state.i + 1
     if completed_iterations != contract["optimization_budget"]["max_iterations"]:

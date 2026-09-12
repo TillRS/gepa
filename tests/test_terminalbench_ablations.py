@@ -41,6 +41,8 @@ def test_campaign_runs_prompt_only_first_and_forwards_shared_settings(
             "17",
             "--n-concurrent",
             "3",
+            "--reviewed-pilot",
+            str(tmp_path / "reviewed full pilot"),
         ]
     )
     commands = [shlex.split(line) for line in capsys.readouterr().out.splitlines()]
@@ -68,6 +70,7 @@ def test_campaign_runs_prompt_only_first_and_forwards_shared_settings(
         assert cell.student_model == cell.proposer_model == model
         assert cell.student_api_base == cell.proposer_api_base == "http://localhost:8000/v1"
         assert cell.seed == 17 and cell.n_concurrent == 3
+        assert cell.reviewed_pilot == tmp_path / "reviewed full pilot"
     assert not root.exists()
     if dry_run:
         runner.assert_not_called()

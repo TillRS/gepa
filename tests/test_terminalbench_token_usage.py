@@ -155,7 +155,10 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
         )
         if fails:
             raise RuntimeError("failed pilot")
-        return EvaluationBatch(outputs=[{"task_id": task.task_id} for task in tasks], scores=[0.0] * len(tasks))
+        return EvaluationBatch(
+            outputs=[{"task_id": task.task_id, "reward": 0.0, "errors": []} for task in tasks],
+            scores=[0.0] * len(tasks),
+        )
 
     monkeypatch.setattr(canary.TerminusAdapter, "evaluate", evaluate)
     monkeypatch.setattr(
@@ -180,7 +183,9 @@ def test_canary_uses_only_training_tasks_and_saves_usage_on_failure(
     else:
         canary.main()
     config = json.loads((output_dir / "canary-config.json").read_text())
-    assert config["schema_version"] == 7
+    assert config["schema_version"] == 8
+    assert config["stage"] == "smoke"
+    assert (output_dir / "pilot-complete.json").exists() is not fails
     assert config["optimization_scope"] == (optimization_scope or "system_prompt")
     assert config["adapter"] == TERMINUS_ADAPTER_CONTRACT
     assert config["experiment"] == "tb2.1"

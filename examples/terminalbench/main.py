@@ -37,6 +37,7 @@ from examples.terminalbench.model_settings import (
     terminalbench_limits,
     terminalbench_model_info,
 )
+from examples.terminalbench.pilot import PILOT_PROTOCOL, review_pilot, validate_review
 from examples.terminalbench.reflection import ComponentActionReflectionLM
 from examples.terminalbench.token_usage import TOKEN_USAGE_POLICY, observe_optimizer
 from gepa import optimize
@@ -215,6 +216,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--reflection-minibatch-size", type=int, default=3)
     parser.add_argument("--n-concurrent", type=int, default=1)
+    parser.add_argument(
+        "--reviewed-pilot",
+        type=Path,
+        help="Completed full pilot directory; supplying it attests review of usage, cutoffs, timeouts, and throughput",
+    )
     parser.add_argument("--train-limit", type=int, default=None)
     parser.add_argument("--val-limit", type=int, default=None)
     parser.add_argument("--seed", type=int, default=0)
@@ -316,7 +322,9 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 29,
+        "schema_version": 30,
+        "pilot_protocol": deepcopy(PILOT_PROTOCOL),
+        "pilot_review": deepcopy(getattr(args, "pilot_review", None)),
         "adapter": deepcopy(TERMINUS_ADAPTER_CONTRACT),
         "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
@@ -332,7 +340,9 @@ def build_run_contract(
         "component_kinds": scope.component_kinds,
         "runtime_component_kinds": manifest.component_kinds,
         "module_selector": "all",
-        "training_batch_order": IndependentEpochShuffledBatchSampler(args.reflection_minibatch_size, args.seed).contract(),
+        "training_batch_order": IndependentEpochShuffledBatchSampler(
+            args.reflection_minibatch_size, args.seed
+        ).contract(),
         "cache_evaluation": False,
         "candidate_selection_strategy": "pareto",
         "frontier_type": "instance",
@@ -442,6 +452,16 @@ def main() -> None:
     try:
         contract = build_run_contract(args, manifest, trainset, valset, condition, resolved_family)
     except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        if args.reviewed_pilot is not None:
+            contract["pilot_review"] = review_pilot(args.reviewed_pilot, contract, manifest)
+        elif (args.run_dir / RUN_CONTRACT_FILENAME).exists():
+            saved_contract = json.loads((args.run_dir / RUN_CONTRACT_FILENAME).read_text())
+            contract["pilot_review"] = saved_contract.get("pilot_review")
+        if len(trainset) == len(manifest.splits["train"]):
+            validate_review(contract["pilot_review"], contract, manifest)
+    except (ValueError, OSError) as exc:
         parser.error(str(exc))
     ensure_run_contract(args.run_dir, contract)
     text_limits = resolve_text_limits(contract["text_limits"])

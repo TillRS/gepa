@@ -39,7 +39,7 @@ Optimization, training pilots, and final evaluation all instantiate
 `gepa.adapters.terminal_bench_adapter.TerminusAdapter`; `TerminalBenchAdapter`
 remains an alias for existing callers. Final evaluation uses the adapter's
 evaluation path without constructing reflection feedback. There is no fallback
-to the legacy runner. Run contract version 29 and pilot configuration version 7
+to the legacy runner. Run contract version 30 and pilot configuration version 8
 record the adapter entry point, the explicit `harbor_port` implementation, and
 upstream provenance. Missing or changed adapter identity prevents optimization
 resume and final comparison; use fresh run directories for older contracts.
@@ -306,8 +306,8 @@ separate policies above.
 Every physical attempt is recorded in `provider-attempts.jsonl` and in the
 existing `token-usage.jsonl` files, including failures with unknown usage.
 The two files describe the same requests, so their totals must not be added.
-The policy is pinned in run contract version 29 and pilot configuration version
-7; older or changed policies cannot resume or enter final evaluation.
+The policy is pinned in run contract version 30 and pilot configuration version
+8; older or changed policies cannot resume or enter final evaluation.
 
 #### Reference protocol and pending confirmation
 
@@ -396,7 +396,7 @@ minibatch size, and seed produce identical task order across methods, models, an
 text scopes. Eight-epoch runs share the first four epochs with standard runs,
 then continue the shuffle sequence. Checkpoints save the permutation, cursor,
 and private RNG state so a resumed run retains every later epoch's task order.
-Run contract version 29 records this policy; older checkpoints require fresh
+Run contract version 30 records this policy; older checkpoints require fresh
 runs. HotPotQA uses the same sampler, with its existing metric-call budgets.
 
 Each iteration samples one minibatch for one mutation attempt; merging is off.
@@ -430,7 +430,7 @@ counted for these fresh executions.
 Completed checkpoint records and optimizer response journals remain available
 for recovery of the same logical work. They do not supply results for unrelated
 new evaluations, and completed held-out repetitions remain resumable. Run
-contract version 29 records `cache_evaluation=false`, forwards it to GEPA, and
+contract version 30 records `cache_evaluation=false`, forwards it to GEPA, and
 rejects missing or changed policies on resume and before final comparison.
 
 #### Parent selection
@@ -450,7 +450,7 @@ The final winner remains the harness with the highest mean validation score.
 
 `candidate_selection_strategy="pareto"` and `frontier_type="instance"` are
 explicit run contract fields forwarded to the optimizer for every method and
-budget. Run contract version 29 rejects missing or changed parent-selection
+budget. Run contract version 30 rejects missing or changed parent-selection
 policies on resume and before final comparison.
 
 #### Proposal acceptance and validation
@@ -470,7 +470,7 @@ improvement or automatically replace the existing best harness.
 
 `acceptance_criterion="strict_improvement"`, `validation_evaluation="full_eval"`,
 `skip_perfect_score=true`, and `perfect_score=1.0` are explicit run contract
-fields forwarded to the optimizer. Run contract version 29 rejects missing or
+fields forwarded to the optimizer. Run contract version 30 rejects missing or
 changed policies on resume and before final comparison. This preserves the
 prior runtime defaults while recording the approved experiment identity.
 
@@ -551,7 +551,8 @@ TB2.1 dataset, task-assignment, harness, and model differences still apply.
 
 #### Run
 
-From the repository root, with Docker and the selected model endpoint available:
+From the repository root, after completing and reviewing both pilot stages below,
+with Docker and the same model endpoint available:
 
 ```bash
 uv sync --extra dev
@@ -561,6 +562,9 @@ uv run python -m examples.terminalbench.main \
   --experiment tb2.1 \
   --optimization-scope system_prompt \
   --condition vanilla \
+  --student-api-base http://localhost:8000/v1 \
+  --proposer-api-base http://localhost:8000/v1 \
+  --reviewed-pilot runs/canaries/tb2.1/qwen/full \
   --run-dir runs/tb2.1/qwen/system_prompt/vanilla \
   --harbor-work-dir runs/tb2.1/qwen/system_prompt/vanilla/harbor
 ```
@@ -575,6 +579,9 @@ uv run python -m examples.terminalbench.main \
   --experiment tb2.1 \
   --optimization-scope system_prompt \
   --condition vanilla --budget double \
+  --student-api-base http://localhost:8000/v1 \
+  --proposer-api-base http://localhost:8000/v1 \
+  --reviewed-pilot runs/canaries/tb2.1/qwen/full \
   --run-dir runs/tb2.1/qwen/system_prompt/vanilla_2x \
   --harbor-work-dir runs/tb2.1/qwen/system_prompt/vanilla_2x/harbor
 ```
@@ -592,6 +599,7 @@ Run the complete twelve-cell matrix for one model with the batch launcher:
 ```bash
 uv run --no-sync python -m examples.terminalbench.run_ablations \
   --run-root runs/tb2.1/qwen \
+  --reviewed-pilot runs/canaries/tb2.1/qwen/full \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
   --dry-run
@@ -605,7 +613,7 @@ has its own directory. Rerunning forwards to the existing run-contract and
 checkpoint checks; it does not grant extra epochs or run held-out tests.
 
 Other optimization options, including homogeneous student/proposer models,
-endpoints, concurrency, seed, and text limits, are forwarded to every cell.
+endpoints, reviewed pilot, concurrency, seed, and text limits, are forwarded to every cell.
 Scope, condition, budget, and per-run directories are owned by the matrix.
 Use a separate `--run-root runs/tb2.1/deepseek` with both DeepSeek model flags
 and its endpoints for that model's campaign. Every model's campaign starts
@@ -629,6 +637,7 @@ uv run python -m examples.terminalbench.main \
   --proposer-model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731 \
   --student-api-base http://localhost:8000/v1 \
   --proposer-api-base http://localhost:8000/v1 \
+  --reviewed-pilot runs/canaries/tb2.1/deepseek/full \
   --run-dir runs/tb2.1/deepseek/vanilla \
   --harbor-work-dir runs/tb2.1/deepseek/vanilla/harbor
 ```
@@ -673,8 +682,9 @@ Choose task concurrency using training-only measurements before freezing each
 benchmark/model comparison. Start the pilot with `--n-concurrent 1`, then test
 higher values on the actual hardware with the same tasks, initial harness,
 model settings, and serving configuration. Use a fresh output directory for
-each pilot and a `--train-limit` at least as large as the concurrency being
-tested. Record throughput, response latency, and task timeouts; compare Harbor
+each pilot. Additional probes use `--stage calibration` and a `--train-limit`
+at least as large as the concurrency being tested; these probes do not replace
+the full stage at the selected settings. Record throughput, response latency, and task timeouts; compare Harbor
 timing and exception artifacts alongside the model server's latency metrics.
 The pilot records its concurrency in `canary-config.json`.
 
@@ -684,35 +694,65 @@ resume rejects changes, and final evaluation requires matching source runs and
 reuses their concurrency. Calibration does not use validation or test results.
 The default remains one until the training measurements justify another value.
 
-#### Output budget review
+#### Two-stage training pilot and runtime review
 
-Before freezing experiment settings, run the initial harness on **training
-tasks only**, separately for both model arms:
+Before freezing settings, run the initial harness in two stages for each model:
+
+1. **Smoke:** exactly three training tasks to check setup (the default stage).
+2. **Full:** all 30 training tasks, using a completed smoke check from the same
+   model, endpoint, initial harness, and runtime settings. Concurrency may change
+   after calibration; the full stage must use the final selected value.
+
+For Qwen, with the default concurrency of one:
 
 ```bash
-uv run python -m examples.terminalbench.canary \
-  --experiment tb2.1 \
-  --optimization-scope system_prompt \
+uv run --no-sync python -m examples.terminalbench.canary \
+  --stage smoke \
   --model hosted_vllm/Qwen/Qwen3.8-27B \
   --api-base http://localhost:8000/v1 \
-  --train-limit 3 \
+  --output-dir runs/canaries/tb2.1/qwen/smoke
+
+uv run --no-sync python -m examples.terminalbench.canary \
+  --stage full \
+  --smoke-dir runs/canaries/tb2.1/qwen/smoke \
+  --model hosted_vllm/Qwen/Qwen3.8-27B \
+  --api-base http://localhost:8000/v1 \
   --n-concurrent 1 \
-  --output-dir runs/canaries/tb2.1/qwen/system_prompt
+  --output-dir runs/canaries/tb2.1/qwen/full
 ```
 
-Repeat with
-`--model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731`, each in a fresh output
-directory. The default three tasks are a smoke pilot, not proof that the cap
-suits the entire benchmark; increase `--train-limit` to cover more training
-tasks. The command evaluates the initial harness without optimization and
-cannot select validation or test tasks. It saves exact configuration/task
-identities, editable scope, official task results, and `token-usage-summary.json`.
-It also supports `--optimization-scope all_text`; the initial runtime text
-is identical, so changing scope alone does not require another budget pilot.
-Use separate output directories when checking either materialization path. Failed jobs
-retain available usage too. Inspect usage and cutoffs before deciding whether
-to keep 32,768 or revise it for a new campaign; no automatic cap escalation or
-additional retry is introduced. The pilot does not freeze or approve a budget.
+Repeat both stages with `--model hosted_vllm/deepseek-ai/DeepSeek-V4-Flash-0731`
+and separate directories under `runs/canaries/tb2.1/deepseek`. This is 33 task
+attempts per model: **60 full-stage attempts plus six smoke attempts** across
+both arms, before any additional calibration runs. All tasks come from training;
+no optimization, validation, or held-out testing runs in these pilots. This
+coverage is our experimental choice, not a requirement from the reference paper.
+
+Review `pilot-summary.json` for elapsed time, tasks/hour, and verified task
+timeouts; inspect `token-usage-summary.json` for actual usage, missing counts,
+and cutoffs. `task-results.json` links the original trial/job evidence, including
+Harbor timings. Successful pilot completion means complete measured coverage,
+not that the model solved every task or never hit a cap. Keep official zero
+rewards and verified timeouts visible. Provider/infrastructure errors or missing
+results prevent completion, while available usage remains saved.
+
+After reviewing token usage, cutoffs, timeouts, and throughput, pass the full
+stage's directory as `--reviewed-pilot` to the optimization CLI or ablation
+launcher. Supplying this flag explicitly records that review. The campaign
+verifies the stage chain, complete task coverage, artifact hashes, and matching
+runtime settings before contacting Harbor. The evidence is embedded in run
+contracts, reused on resume without another review flag, and required again
+at final comparison. Run contract version 30 and
+pilot configuration version 8 reject older or changed policies; use fresh runs.
+Partial-data diagnostic optimizations can still run without qualifying a final
+comparison. A dry run only prints commands and does not attest review.
+
+Both text scopes start with identical runtime text, so the same reviewed pilot
+serves every method, budget, and scope within a model arm. The pilot defaults to
+`system_prompt`; `all_text` is also supported. Keep the same hardware and model
+server configuration between calibration, the full stage, and the campaign.
+The command does not adjust caps or concurrency automatically. If settings need
+to change, collect matching pilot evidence and start a fresh campaign.
 
 Optimization writes `token-usage.jsonl` beside the run contract. Every Harbor
 trial writes another in its agent log directory, including main-agent and
