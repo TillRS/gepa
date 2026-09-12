@@ -18,19 +18,17 @@ from dataclasses import dataclass
 from typing import Any, Callable, Generic, Literal, Protocol, TypeVar, cast
 
 from gepa.proposer.reflective_mutation.base import LanguageModel
+from gepa.strategies.text_limits import TextLimits, resolve_text_limits
 
 SelectableItemT = TypeVar("SelectableItemT")
 
 
 logger = logging.getLogger(__name__)
 
-# Length pressure for evolved prompts. The selector communicates this soft
-# budget while the proposer paths enforce their configured hard caps.
-SOFT_PROMPT_CHAR_BUDGET = 8000
-MAX_PROPOSAL_CHARS = 10000
+DOCUMENT_LENGTH_CONTRACT: dict[str, Any] = TextLimits().document_contract()
 FULL_SUPPORT_EXPLORATION_EPSILON = 0.1
 DEFAULT_VERBALIZED_ACTION_K = 5
-STATELESS_SELECTOR_POLICY_VERSION = 1
+STATELESS_SELECTOR_POLICY_VERSION = 3
 
 
 def stateless_selector_policy_contract(
@@ -40,6 +38,7 @@ def stateless_selector_policy_contract(
     k: int = DEFAULT_VERBALIZED_ACTION_K,
     tau: float | None = None,
     require_full_support: bool = False,
+    text_limits: TextLimits | None = None,
 ) -> dict[str, Any]:
     """Return the reproducibility contract for a stateless selection policy.
 
@@ -53,8 +52,9 @@ def stateless_selector_policy_contract(
             action instead of sharing one batch-level action.
         k: Number of candidates requested from the verbalized selector.
         tau: Explicit tail-sampling threshold; ``None`` resolves to ``1 / k``.
-        require_full_support: Whether verbalized sampling mixes the complete
-            distribution with uniform exploration.
+        require_full_support: Whether verbalized sampling scores the complete
+            menu and mixes uniform exploration within positive support.
+        text_limits: Optional character limits recorded with this policy.
 
     Returns:
         JSON-serializable policy fields used for reproducible runs.
@@ -79,11 +79,12 @@ def stateless_selector_policy_contract(
         "selector": selector,
         "selection_granularity": selection_granularity,
         "context": "per_job" if per_job_action_selection else "first_parent_and_aggregated_feedback",
-        "sampling": "full_distribution_uniform_mixture" if require_full_support else "tail",
+        "sampling": "positive_support_uniform_mixture" if require_full_support else "tail",
         "k": k,
         "tau": resolved_tau,
         "require_full_support": require_full_support,
         "exploration_epsilon": FULL_SUPPORT_EXPLORATION_EPSILON if require_full_support else 0.0,
+        "text_limits": resolve_text_limits(text_limits).to_dict(),
     }
 
 
@@ -185,7 +186,7 @@ Choose edit actions that address the document's observed failures.
 ```
 {current_prompt}
 ```
-Current component length: {prompt_chars} characters (budget: ~{char_budget}).
+Current component length: {prompt_chars} characters.
 
 ## Recent feedback summary
 {feedback_summary}
@@ -197,9 +198,8 @@ Score {k} candidate actions by how likely each is to improve the document given 
 the feedback. Probabilities must sum to 1.0.
 {support_rule}
 
-Consider less obvious actions when the feedback supports them. If the component \
-is near or over its length budget, favor actions that shorten or replace existing \
-text over actions that add content.
+Consider less obvious actions when the feedback supports them. Preserve useful \
+detail and avoid unnecessary repetition.
 
 Return:
 <response>
@@ -219,6 +219,10 @@ class ActionDistribution(Generic[SelectableItemT]):
 
     entries: list[tuple[SelectableItemT, float, str]]  # (action, probability, reasoning)
     is_fallback: bool = False  # True when parsing failed and a uniform fallback was used
+
+
+class IncompleteActionDistributionError(RuntimeError):
+    """A full-support selector could not obtain one complete model distribution."""
 
 
 @dataclass(frozen=True)
@@ -313,9 +317,9 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
             ``None`` defaults to ``1 / k`` so the threshold scales with ``k``.
         rng: RNG for tail sampling; ``random.Random(0)`` when ``None``.
         require_full_support: Whether the LM must score every configured action
-            exactly once and sampling must retain nonzero support for all of
-            them through a uniform-exploration mixture. Invalid output falls
-            back to the uniform full menu.
+            exactly once and sampling mixes uniform exploration among choices
+            the LM assigns positive probability. Invalid output is retried once
+            before selection fails.
 
     Raises:
         ValueError: The menu is empty or contains an empty, padded, or
@@ -331,6 +335,7 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
         tau: float | None = None,
         rng: random.Random | None = None,
         require_full_support: bool = False,
+        text_limits: TextLimits | None = None,
     ):
         """Configure verbalized selection without calling the language model.
 
@@ -342,7 +347,9 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
             rng: Default RNG for sampling; a seed-zero RNG is created when
                 omitted.
             require_full_support: Whether model output must score every action
-                and sampling mixes in uniform exploration.
+                and sampling mixes uniform exploration among positive-probability
+                choices.
+            text_limits: Optional soft size target and complete-prompt cap.
 
         Raises:
             ValueError: The menu is empty or contains an empty, padded, or
@@ -361,6 +368,7 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
         self.tau = tau if tau is not None else 1.0 / k
         self.rng = rng if rng is not None else random.Random(0)
         self.require_full_support = require_full_support
+        self.text_limits = resolve_text_limits(text_limits)
         self._action_by_id: dict[str, SelectableItemT] = {cast(Any, action).menu_id: action for action in actions}
         self.history: list[dict] = []
 
@@ -389,6 +397,10 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
             The sampled actions in draw order. When either context argument is
             omitted, the draw is uniform over the menu, no LM call is made, and
             nothing is recorded in :attr:`history`.
+
+        Raises:
+            IncompleteActionDistributionError: Two full-support responses fail
+                to score every declared action exactly once.
         """
         rng = rng if rng is not None else self.rng
         if candidate is None or feedback_summary is None:
@@ -400,8 +412,11 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
             epsilon = FULL_SUPPORT_EXPLORATION_EPSILON
             actions = [action for action, _, _ in distribution.entries]
             probabilities = [probability for _, probability, _ in distribution.entries]
+            positive_count = sum(probability > 0 for probability in probabilities)
+            assert positive_count > 0
             mixed_probabilities = [
-                (1.0 - epsilon) * probability + epsilon / len(actions) for probability in probabilities
+                (1.0 - epsilon) * probability + (epsilon / positive_count if probability > 0 else 0.0)
+                for probability in probabilities
             ]
             result = rng.choices(actions, weights=mixed_probabilities, k=n)
             sampled_probability_by_id = {
@@ -417,7 +432,7 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
                     probability * math.log2(probability) for probability in probabilities if probability > 0
                 ),
             )
-            sampling_policy = "full_distribution_uniform_mixture"
+            sampling_policy = "positive_support_uniform_mixture"
         else:
             epsilon = 0.0
             result, stats = _sample_from_tails(distribution, n, self.tau, rng)
@@ -486,6 +501,10 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
 
         Returns:
             Parsed and normalized action distribution.
+
+        Raises:
+            IncompleteActionDistributionError: Two full-support responses fail
+                to score every declared action exactly once.
         """
         action_menu = "\n".join(
             f"- {cast(Any, action).menu_id}: {cast(Any, action).menu_description}" for action in self.actions
@@ -493,21 +512,42 @@ class VerbalizedActionSelector(Generic[SelectableItemT]):
         prompt = VERBALIZED_ACTION_PROMPT.format(
             current_prompt=candidate,
             prompt_chars=len(candidate),
-            char_budget=SOFT_PROMPT_CHAR_BUDGET,
             feedback_summary=feedback_summary,
             action_menu=action_menu,
             k=self.k,
             support_rule=(
                 "Score every available action exactly once; do not omit or repeat an action. Assign probability 0 "
                 "when an action's stated precondition is not supported by the region and feedback; the sampler "
-                "reserves a small uniform exploration probability. This is the sole applicability judgment; "
+                "reserves a small uniform exploration probability only among choices with positive probability. "
+                "This is the sole applicability judgment; "
                 "downstream roles realize whichever action is sampled without reclassifying it."
                 if self.require_full_support
                 else ""
             ),
         )
+        if self.text_limits.selector_target_chars is not None:
+            prompt += (
+                f"\n\nComponent size target: ~{self.text_limits.selector_target_chars} characters. "
+                "If the component is near or over this target, favor actions that shorten or replace "
+                "existing text over actions that add content. This is a preference, not a hard cutoff."
+            )
+        self.text_limits.check_prompt(prompt)
         raw_output = self.lm(prompt)
-        return self._parse_distribution(raw_output, rng)
+        distribution = self._parse_distribution(raw_output, rng)
+        if self.require_full_support and distribution.is_fallback:
+            retry_prompt = (
+                f"{prompt}\n\n"
+                "Your previous response was incomplete or malformed. Return one complete <response> now, "
+                "with every available action exactly once and probabilities summing to 1.0."
+            )
+            self.text_limits.check_prompt(retry_prompt)
+            retry_output = self.lm(retry_prompt)
+            distribution = self._parse_distribution(retry_output, rng)
+            if distribution.is_fallback:
+                raise IncompleteActionDistributionError(
+                    "Controller did not return a complete action distribution after two attempts."
+                )
+        return distribution
 
     def _parse_distribution(self, raw_output: str, rng: random.Random) -> ActionDistribution[SelectableItemT]:
         """Parse and normalize an XML-formatted action distribution.

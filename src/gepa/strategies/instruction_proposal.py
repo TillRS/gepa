@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from gepa.image import Image
 from gepa.proposer.reflective_mutation.base import Signature
+from gepa.strategies.reflection_context import compact_reflection_records
 
 
 class InstructionProposalSignature(Signature):
@@ -100,7 +101,9 @@ Provide the new instructions within ``` blocks."""
 
         cls.validate_prompt_template(prompt_template)
 
-        formatted_text, images = format_samples(dataset)
+        formatted_text, images = format_samples(
+            compact_reflection_records(dataset, current_instruction=current_instruction)
+        )
 
         if images:
             formatted_text = (

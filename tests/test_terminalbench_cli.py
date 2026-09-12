@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from examples.common.experiment_models import (
     DEEPSEEK_V4_FLASH_MODEL,
+    DEEPSEEK_V4_FLASH_MODEL_INFO,
     EXPERIMENT_NUM_RETRIES,
     QWEN3_8_27B_MODEL,
     QWEN3_8_27B_MODEL_INFO,
@@ -191,7 +192,7 @@ def test_deepseek_run_contract_uses_the_separate_same_model_condition(tmp_path: 
     assert contract["student_model"] == DEEPSEEK_V4_FLASH_MODEL
     assert contract["proposer_model"] == DEEPSEEK_V4_FLASH_MODEL
     assert contract["student_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL)
-    assert contract["student_model_info"] is None
+    assert contract["student_model_info"] == DEEPSEEK_V4_FLASH_MODEL_INFO
     assert contract["proposer_decoding"] == experiment_decoding(DEEPSEEK_V4_FLASH_MODEL)
 
 

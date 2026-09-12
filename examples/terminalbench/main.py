@@ -20,8 +20,10 @@ from typing import Any
 from examples.common.experiment_models import (
     EXPERIMENT_NUM_RETRIES,
     QWEN3_8_27B_MODEL,
-    QWEN3_8_27B_MODEL_INFO,
     experiment_decoding,
+    experiment_model_info,
+    experiment_model_version,
+    experiment_request_overrides,
     validate_experiment_model_pair,
 )
 from examples.common.react_v2 import resolve_template_family, structured_prompt
@@ -190,17 +192,21 @@ def build_run_contract(
         "proposer_backend": "react_v2" if operated else "stateless",
         "proposer_decoding": experiment_decoding(args.proposer_model),
         "proposer_model": args.proposer_model,
+        "proposer_model_version": experiment_model_version(args.proposer_model),
+        "proposer_request_overrides": experiment_request_overrides(args.proposer_model),
         "proposer_num_retries": EXPERIMENT_NUM_RETRIES,
         "reflection_level": reflection_level,
         "reflection_minibatch_size": args.reflection_minibatch_size,
-        "max_proposer_model_calls": 8 if operated else None,
+        "max_proposer_model_calls": None,
         "semantic_action_space": deepcopy(SEMANTIC_ACTION_CATALOGS["prompt"]) if reflection_level == 2 else None,
         "semantic_controller_policy": deepcopy(CONTROLLER_POLICY_CONTRACT) if reflection_level == 2 else None,
         "seed": args.seed,
         "student_api_base": args.student_api_base,
         "student_decoding": experiment_decoding(args.student_model),
         "student_model": args.student_model,
-        "student_model_info": dict(QWEN3_8_27B_MODEL_INFO) if args.student_model == QWEN3_8_27B_MODEL else None,
+        "student_model_version": experiment_model_version(args.student_model),
+        "student_request_overrides": experiment_request_overrides(args.student_model),
+        "student_model_info": experiment_model_info(args.student_model),
         "student_num_retries": EXPERIMENT_NUM_RETRIES,
         "template_family": resolved_family,
         "train_task_ids": [task.task_id for task in trainset],
@@ -232,10 +238,13 @@ def main() -> None:
     ensure_run_contract(args.run_dir, contract)
 
     student_agent_kwargs: dict[str, Any] = {
-        "llm_kwargs": {"num_retries": EXPERIMENT_NUM_RETRIES, **experiment_decoding(args.student_model)}
+        "llm_kwargs": {
+            "num_retries": EXPERIMENT_NUM_RETRIES,
+            **experiment_decoding(args.student_model),
+            **experiment_request_overrides(args.student_model),
+        }
     }
-    if args.student_model == QWEN3_8_27B_MODEL:
-        student_agent_kwargs["model_info"] = dict(QWEN3_8_27B_MODEL_INFO)
+    student_agent_kwargs["model_info"] = experiment_model_info(args.student_model)
 
     harbor = HarborCLI(
         student_model=args.student_model,
@@ -254,6 +263,7 @@ def main() -> None:
     reflection_lm_kwargs: dict[str, Any] = {
         "num_retries": EXPERIMENT_NUM_RETRIES,
         **experiment_decoding(args.proposer_model),
+        **experiment_request_overrides(args.proposer_model),
     }
     if args.proposer_api_base is not None:
         reflection_lm_kwargs["api_base"] = args.proposer_api_base

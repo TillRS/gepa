@@ -9,9 +9,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from examples.common.provider_retries import PROVIDER_RETRY_KEY
 from gepa.lm import LM
 from gepa.proposer.reflective_mutation.three_role import ThreeRoleReflectionLM
 from gepa.strategies.document_template import TEMPLATE_FAMILIES, infer_template_family
+from gepa.strategies.text_limits import TextLimits
 
 _TASK_SECTIONS = {
     "system_prompt": {
@@ -104,7 +106,7 @@ def experiment_run_key(
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:10]
     axes = template_family
-    if condition == "react_v2":
+    if condition in {"react_v2", "react_v2_random"}:
         axes = f"{axes}-l{reflection_level}-{edit_tool_set}"
     return f"{axes}-{digest}"
 
@@ -189,39 +191,78 @@ def build_react_v2_strategy(
     *,
     reflection_model: str,
     task_model: str,
+    proposer_model: str | None = None,
     lm_kwargs: dict[str, Any],
     level: int,
     edit_tool_set: str,
     template_family: str,
     component_kinds: dict[str, str] | None = None,
+    controller_selection: str = "verbalized",
     rng: random.Random | None = None,
+    manifestor_traces_chars: int | None = None,
+    manifestor_temperature: float = 0.0,
+    react_top_p: float | None = None,
+    text_limits: TextLimits | None = None,
 ) -> tuple[ThreeRoleReflectionLM, str]:
-    """Build Controller -> Manifestor -> ReAct V2 with deterministic guidance.
+    """Build Controller -> Manifestor -> ReAct V2 with explicit role settings.
 
     Args:
-        reflection_model: Model used by the Controller, Manifestor, and proposer.
+        reflection_model: Runtime model used by Manifestor and proposer, plus
+            verbalized Controller selection when enabled.
         task_model: Student model whose provider determines automatic templates.
+        proposer_model: Optional canonical proposer identity recorded separately
+            from its API runtime model.
         lm_kwargs: Shared reflection-model client settings.
         level: Reflection level used to build the Controller menu.
         edit_tool_set: Named edit-operator basis exposed to the proposer.
         template_family: Explicit provider family or ``"auto"``.
         component_kinds: Optional message role for each optimized component.
+        controller_selection: ``"verbalized"`` or ``"uniform_random"``.
         rng: Optional Controller RNG kept separate from GEPA's engine RNG.
+        manifestor_traces_chars: Trace character cap, or ``None`` to rely on
+            the configured model's context window.
+        manifestor_temperature: Manifestor sampling temperature. Benchmarks
+            following provider guidance pass their model's recommended value;
+            the default preserves other callers' existing configuration.
+        react_top_p: Optional ReAct-only top-p override. When it differs from
+            the shared settings, verbalized Controller selection uses a
+            separate client with the original settings.
+        text_limits: Optional character limits shared across all optimizer roles.
 
     Returns:
         Configured three-role strategy and its resolved template family.
     """
     resolved_family = resolve_template_family(template_family, task_model)
+    controller_kwargs = dict(lm_kwargs)
+    proposer_kwargs = dict(lm_kwargs)
+    if react_top_p is not None:
+        proposer_kwargs["top_p"] = react_top_p
+    separate_controller = proposer_kwargs != controller_kwargs and level >= 1 and controller_selection == "verbalized"
     manifestor_kwargs = dict(lm_kwargs)
-    manifestor_kwargs["temperature"] = 0
+    manifestor_kwargs["temperature"] = manifestor_temperature
+    if "response_journal_path" in lm_kwargs:
+        controller_kwargs["response_journal_namespace"] = "controller"
+        proposer_kwargs["response_journal_namespace"] = "proposer" if separate_controller else "controller-proposer"
+        manifestor_kwargs["response_journal_namespace"] = "manifestor"
+    if PROVIDER_RETRY_KEY in lm_kwargs:
+        for kwargs, role in (
+            (controller_kwargs, "controller"),
+            (proposer_kwargs, "editor" if separate_controller else "controller_editor"),
+            (manifestor_kwargs, "manifestor"),
+        ):
+            kwargs[PROVIDER_RETRY_KEY] = {**kwargs[PROVIDER_RETRY_KEY], "role": role}
     strategy = ThreeRoleReflectionLM(
-        base_lm=LM(reflection_model, **lm_kwargs),
+        base_lm=LM(reflection_model, **proposer_kwargs),
         level=level,
         edit_tool_set=edit_tool_set,
         component_kinds=component_kinds,
         template_family=resolved_family,
+        controller_selection=controller_selection,
+        controller_lm=LM(reflection_model, **controller_kwargs) if separate_controller else None,
         manifestor_lm=LM(reflection_model, **manifestor_kwargs),
-        proposer_model=reflection_model,
+        proposer_model=proposer_model or reflection_model,
         rng=rng,
+        manifestor_traces_chars=manifestor_traces_chars,
+        text_limits=text_limits,
     )
     return strategy, resolved_family

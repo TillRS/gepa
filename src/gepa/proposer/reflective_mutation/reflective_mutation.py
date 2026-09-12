@@ -6,7 +6,7 @@ import random
 import traceback
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from typing import Any
+from typing import Any, cast
 
 from gepa.core.adapter import (
     DataInst,
@@ -31,19 +31,23 @@ from gepa.core.callbacks import (
 )
 from gepa.core.data_loader import DataId, DataLoader, ensure_loader
 from gepa.core.state import TRAINSET_CACHE_SPLIT, GEPAState, _candidate_hash
+from gepa.lm import LMProviderError, ProviderIdentityMismatchError
 from gepa.proposer.base import CandidateProposal, SubsampleEvaluation
 from gepa.proposer.reflective_mutation.base import (
     CandidateSelector,
     LanguageModel,
     ReflectionComponentSelector,
 )
-from gepa.proposer.reflective_mutation.react_v2_proposer import ReActV2ContextError
 from gepa.proposer.reflective_mutation.reflection_lm import ReflectionLM, StatelessReflectionLM
+from gepa.response_journal import ResponseJournalError, response_journal_scope
 from gepa.strategies.action_space import ActionSelector
 from gepa.strategies.batch_sampler import BatchSampler
 from gepa.strategies.instruction_proposal import InstructionProposalSignature
 from gepa.strategies.intervention import StatelessActionConstraint
 from gepa.strategies.proposal_sampling import ProposalTask, SamplingStrategy, SingleMutationSampling
+from gepa.strategies.text_limits import TextLimitError, TextLimits, resolve_text_limits
+
+_FATAL_REFLECTION_EXCEPTIONS = (LMProviderError, ProviderIdentityMismatchError, ResponseJournalError, TextLimitError)
 
 
 class ReflectiveMutationProposer:
@@ -81,6 +85,7 @@ class ReflectiveMutationProposer:
         sampling_strategy: SamplingStrategy | None = None,
         reflection_strategy: ReflectionLM | None = None,
         action_selector: ActionSelector[StatelessActionConstraint] | None = None,
+        text_limits: TextLimits | None = None,
     ):
         """Configure reflective proposal generation and minibatch evaluation.
 
@@ -103,6 +108,8 @@ class ReflectiveMutationProposer:
                 default when omitted.
             reflection_strategy: Optional stateful or custom reflection owner.
             action_selector: Optional stateless semantic-action selector.
+            text_limits: Optional shared character limits; defaults to the
+                supplied strategy's limits, or unlimited.
 
         Raises:
             ValueError: Prompt templates are invalid or a reflection strategy
@@ -123,6 +130,16 @@ class ReflectiveMutationProposer:
         self.callbacks = callbacks
         self.sampling_strategy: SamplingStrategy = sampling_strategy or SingleMutationSampling()
         self.action_selector = action_selector
+        inherited_limits = getattr(reflection_strategy, "text_limits", None)
+        self.text_limits = resolve_text_limits(
+            text_limits if text_limits is not None else (
+                inherited_limits if isinstance(inherited_limits, TextLimits) else None
+            )
+        )
+        if text_limits is not None and reflection_strategy is not None:
+            strategy_limits = getattr(reflection_strategy, "text_limits", None)
+            if strategy_limits is not None and resolve_text_limits(strategy_limits) != self.text_limits:
+                raise ValueError("text_limits must match the supplied reflection_strategy configuration.")
 
         self.reflection_prompt_template = reflection_prompt_template
 
@@ -158,6 +175,7 @@ class ReflectiveMutationProposer:
                 reflection_prompt_template,
                 logger,
                 action_selector=self.action_selector,
+                text_limits=self.text_limits,
             )
             if reflection_lm is not None
             else None
@@ -354,18 +372,39 @@ class ReflectiveMutationProposer:
         Returns:
             Job-aligned proposal payloads with ``None`` for recoverable failures.
 
-        Raises:
-            ReActV2ContextError: Any job exceeds its non-recoverable ReAct
-                context budget.
         """
         if not jobs:
             return []
         mds: list[Mapping[str, Any] | None] = metadatas if metadatas is not None else [None] * len(jobs)
+        retry_state_getter = getattr(self._reflection_lm, "get_batch_retry_state", None)
+        retry_state_setter = getattr(self._reflection_lm, "set_batch_retry_state", None)
+        retry_state = retry_state_getter() if callable(retry_state_getter) else None
+        reflection_rng = getattr(self._reflection_lm, "rng", None)
+        rng_state = None
+        if retry_state is None and isinstance(reflection_rng, random.Random):
+            rng_state = reflection_rng.getstate()
         try:
             return list(self._propose_texts_batch(jobs, mds))
-        except ReActV2ContextError:
-            raise
         except Exception as e:
+            if isinstance(e, _FATAL_REFLECTION_EXCEPTIONS):
+                raise
+            if (
+                isinstance(self._reflection_lm, StatelessReflectionLM)
+                and self._reflection_lm.action_selector is not None
+            ):
+                # The stateless reflector already retries a failed batch
+                # transport with its selected actions. Retrying the whole
+                # operation here would select again and change its journaled
+                # Controller request at the same logical ordinal.
+                raise
+            if retry_state is not None:
+                if not callable(retry_state_setter):
+                    raise TypeError("Reflection strategy exposed retry state without a restore method.") from e
+                retry_state_setter(retry_state)
+            elif rng_state is not None:
+                # Retry transport failures without silently changing a random
+                # condition's already-sampled semantic intervention.
+                cast(random.Random, reflection_rng).setstate(rng_state)
             self.logger.log(f"Batched reflection failed ({e}); retrying per task.")
             self.logger.log(traceback.format_exc())
             out: list[
@@ -374,9 +413,9 @@ class ReflectiveMutationProposer:
             for (cand, refds, comps), md in zip(jobs, mds, strict=True):
                 try:
                     out.append(self.propose_new_texts(cand, refds, comps, metadata=md))
-                except ReActV2ContextError:
-                    raise
                 except Exception as e2:
+                    if isinstance(e2, _FATAL_REFLECTION_EXCEPTIONS):
+                        raise
                     self.logger.log(f"Per-task reflection failed: {e2}")
                     out.append(None)
             return out
@@ -413,9 +452,6 @@ class ReflectiveMutationProposer:
             The evaluated child proposals for this iteration; empty when no task
             was sampled or every reflection came back empty.
 
-        Raises:
-            ReActV2ContextError: A branch exceeds the configured ReAct context
-                budget.
         """
         i = state.i + 1
 
@@ -648,7 +684,9 @@ class ReflectiveMutationProposer:
             for p in prepared
             if p is not None
         ]
-        batch_texts = iter(self._propose_texts_batch_safe(jobs, job_metadatas))
+        with response_journal_scope(f"optimizer-iteration-{state.i}"):
+            reflected_batches = self._propose_texts_batch_safe(jobs, job_metadatas)
+        batch_texts = iter(reflected_batches)
         batch_contexts = iter(job_metadatas)
 
         # Stage 3c: Build each child candidate from its proposed texts.
@@ -664,6 +702,14 @@ class ReflectiveMutationProposer:
                 children.append(None)
                 continue
             new_texts, prompts, raw_outputs, reflection_metadata = texts
+            if new_texts:
+                try:
+                    self.text_limits.check_candidate({**task.parent_candidate, **new_texts})
+                except TextLimitError as exc:
+                    reflection_metadata = dict(reflection_metadata or {})
+                    reflection_metadata["length_capped_dropped"] = list(new_texts)
+                    reflection_metadata["text_limit_error"] = str(exc)
+                    new_texts = {}
 
             if not new_texts:
                 # Do not evaluate an unchanged child; retain metadata when an

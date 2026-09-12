@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Lakshya A Agrawal and the GEPA contributors
 # https://github.com/gepa-ai/gepa
 
-"""Tests for the bounded ReAct V2 text-tool loop."""
+"""Tests for the ReAct V2 text-tool loop and explicit completion."""
 
 import json
 from copy import deepcopy
@@ -11,7 +11,6 @@ import pytest
 
 from gepa.lm import NativeToolCall, ToolCompletion
 from gepa.proposer.reflective_mutation.react_v2_proposer import (
-    ReActV2ContextError,
     ReActV2Proposer,
     ReActV2ProtocolError,
     parse_tool_call,
@@ -130,10 +129,8 @@ def run(
     preferred_tool: EditTool | None = None,
     steering_message: str | None = None,
     history: list[dict[str, Any]] | None = None,
-    max_iterations: int = 8,
-    max_tool_calls: int = 4,
-    max_history_chars: int = 12_000,
-    max_initial_context_chars: int = 64_000,
+    max_iterations: int | None = None,
+    max_tool_calls: int | None = None,
     max_chars: int | None = None,
     component_text: str = PROMPT,
     edit_target: EditTarget = RULES,
@@ -149,8 +146,6 @@ def run(
         history: Parent-branch chat history.
         max_iterations: Assistant-turn budget.
         max_tool_calls: Valid tool-call budget.
-        max_history_chars: Serialized branch-history budget.
-        max_initial_context_chars: Total serialized request budget.
         max_chars: Optional completed-section length limit.
         component_text: Canonical component document.
         edit_target: Selected component section.
@@ -165,8 +160,6 @@ def run(
         allowed_tools or EDIT_TOOL_SETS["broad"],
         max_iterations=max_iterations,
         max_tool_calls=max_tool_calls,
-        max_history_chars=max_history_chars,
-        max_initial_context_chars=max_initial_context_chars,
     )
     region_text = TEMPLATE.parse(component_text)[edit_target.section]
     return proposer.propose(
@@ -259,13 +252,14 @@ def test_invalid_call_becomes_an_observation_and_can_be_corrected() -> None:
         [
             tool_call(EditTool.REPLACE_TEXT, target="not present", text="be kind"),
             tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"),
+            "<finish>Done.</finish>",
         ]
     )
     result = run(lm, preferred_tool=EditTool.REPLACE_TEXT)
     assert result.changed is True
-    assert result.iterations == 2
+    assert result.iterations == 3
     assert result.tool_calls == 1
-    assert [step.action for step in result.steps] == ["INVALID", "REPLACE_TEXT"]
+    assert [step.action for step in result.steps] == ["INVALID", "REPLACE_TEXT", "FINISH"]
     assert result.steps[0].region_text == RULES_TEXT
     second_turn = lm.calls[1]
     assert second_turn[-1]["role"] == "user"
@@ -274,16 +268,111 @@ def test_invalid_call_becomes_an_observation_and_can_be_corrected() -> None:
     assert "be kind" in result.new_text
 
 
-def test_direct_semantic_action_completes_after_exactly_one_bound_tool_call() -> None:
-    """Use a single REPLACE call for a directly coupled semantic action."""
-    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind")])
+def test_direct_semantic_action_waits_for_explicit_finish() -> None:
+    """Continue after a successful bound edit until the editor explicitly finishes."""
+    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"), "<finish>Done.</finish>"])
     result = run(lm, preferred_tool=EditTool.REPLACE_TEXT)
     assert result.changed is True
-    assert result.iterations == 1
+    assert result.iterations == 2
     assert result.tool_calls == 1
-    assert len(lm.calls) == 1
-    assert "Make exactly one valid REPLACE_TEXT call" in lm.calls[0][0]["content"]
+    assert len(lm.calls) == 2
+    assert "Make as many REPLACE_TEXT calls as needed" in lm.calls[0][0]["content"]
+    assert [step.action for step in result.steps] == ["REPLACE_TEXT", "FINISH"]
+    assert "Latest selected region" in lm.calls[1][-1]["content"]
     assert result.executed_edit == ["DELETE 'be nice'", "INSERT 'be kind'"]
+
+
+@pytest.mark.parametrize("native", [False, True], ids=["text", "native"])
+@pytest.mark.parametrize("tool", EDIT_TOOL_SETS["broad"])
+def test_multiple_edits_exceed_both_former_limits_and_finish(native: bool, tool: EditTool) -> None:
+    """Keep all ten selected-section edits and expose updated text until finish.
+
+    Args:
+        native: Whether to use provider-native tool calls.
+        tool: Controller-selected operator used for every edit.
+    """
+    targets = [f"item-{index}|" for index in range(10)]
+    region = "END" if tool is EditTool.INSERT_TEXT else "".join(targets) + "END"
+    arguments = []
+    for target in targets:
+        if tool is EditTool.INSERT_TEXT:
+            fields = {"anchor": "END", "where": "before", "text": target}
+        elif tool is EditTool.DELETE_TEXT:
+            fields = {"target": target}
+        elif tool is EditTool.REPLACE_TEXT:
+            fields = {"target": target, "text": target.upper()}
+        else:
+            fields = {"target": target, "anchor": "END", "where": "after"}
+        arguments.append(fields)
+    expected = {
+        EditTool.INSERT_TEXT: "".join(targets) + "END",
+        EditTool.DELETE_TEXT: "END",
+        EditTool.REPLACE_TEXT: "".join(targets).upper() + "END",
+        EditTool.MOVE_TEXT: "END" + "".join(reversed(targets)),
+    }[tool]
+    if native:
+        lm = NativeScriptedLM(
+            [
+                ToolCompletion("", (NativeToolCall(f"call-{index}", tool.value, json.dumps(fields)),))
+                for index, fields in enumerate(arguments)
+            ]
+            + [ToolCompletion("<finish>Done.</finish>", ())]
+        )
+    else:
+        lm = ScriptedLM([tool_call(tool, **fields) for fields in arguments] + ["<finish>Done.</finish>"])
+
+    result = run(lm, preferred_tool=tool, component_text=TEMPLATE.render({"Role": "helper", "Rules": region}))
+
+    assert result.new_text == expected
+    assert result.iterations == 11
+    assert result.tool_calls == 10
+    assert result.steps[-1].action == "FINISH"
+    assert all(step.error is None for step in result.steps)
+    assert expected in lm.calls[-1][-1]["content"]
+    assert "helper" not in json.dumps(lm.calls[0])
+
+
+@pytest.mark.parametrize("tool", [EditTool.REPLACE_TEXT, EditTool.MOVE_TEXT])
+def test_repeated_atomic_pairs_use_the_latest_region_without_a_call_limit(tool: EditTool) -> None:
+    """Complete ten faithful atomic operations before explicitly submitting.
+
+    Args:
+        tool: Semantic operator decomposed into delete/insert pairs.
+    """
+    targets = [f"item-{index}|" for index in range(10)]
+    replies = []
+    for index, target in enumerate(targets):
+        replies.append(tool_call(EditTool.DELETE_TEXT, target=target))
+        if tool is EditTool.REPLACE_TEXT:
+            anchor = targets[index + 1] if index < 9 else "END"
+            replies.append(tool_call(EditTool.INSERT_TEXT, anchor=anchor, where="before", text=target.upper()))
+        else:
+            replies.append(tool_call(EditTool.INSERT_TEXT, anchor="END", where="after", text=target))
+    replies.append("<finish>Done.</finish>")
+    result = run(
+        ScriptedLM(replies),
+        preferred_tool=tool,
+        allowed_tools=EDIT_TOOL_SETS["minimal"],
+        component_text=TEMPLATE.render({"Rules": "".join(targets) + "END"}),
+    )
+    expected = "".join(targets).upper() + "END" if tool is EditTool.REPLACE_TEXT else "END" + "".join(reversed(targets))
+    assert result.new_text == expected
+    assert result.iterations == 21
+    assert result.tool_calls == 20
+    assert all(step.error is None for step in result.steps)
+
+
+def test_successful_edit_without_finish_does_not_complete() -> None:
+    """Discard a direct edit if an explicitly bounded caller runs out of turns."""
+    result = run(
+        ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind")]),
+        preferred_tool=EditTool.REPLACE_TEXT,
+        max_iterations=1,
+    )
+    assert result.changed is False
+    assert result.new_text == RULES_TEXT
+    assert result.tool_calls == 1
+    assert result.dropped_reason
 
 
 def test_production_path_exposes_every_configured_tool_with_auto_choice() -> None:
@@ -299,12 +388,13 @@ def test_production_path_exposes_every_configured_tool_with_auto_choice() -> Non
                         json.dumps({"target": "be nice", "text": "be kind"}),
                     ),
                 ),
-            )
+            ),
+            ToolCompletion("<finish>Done.</finish>", ()),
         ]
     )
     result = run(lm, preferred_tool=EditTool.REPLACE_TEXT)
     assert result.changed is True
-    assert lm.tool_choices == ["auto"]
+    assert lm.tool_choices == ["auto", "auto"]
     assert {definition["function"]["name"] for definition in lm.tools[0]} == {
         tool.value for tool in EDIT_TOOL_SETS["broad"]
     }
@@ -318,7 +408,7 @@ def test_production_path_exposes_every_configured_tool_with_auto_choice() -> Non
 
 def test_custom_callable_uses_explicit_text_tool_compatibility_protocol() -> None:
     """Retain a documented fallback for callables without native-tool support."""
-    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind")])
+    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"), "<finish>Done.</finish>"])
     result = run(lm, preferred_tool=EditTool.REPLACE_TEXT)
     assert result.changed is True
     assert "compatibility text schema" in lm.calls[0][0]["content"]
@@ -343,6 +433,7 @@ def test_multiple_native_tool_calls_are_rejected_before_retry() -> None:
                         json.dumps({"target": "be nice", "text": "be wrong"}),
                     ),
                 ),
+                "reasoning that DeepSeek requires on the retry",
             ),
             ToolCompletion(
                 "",
@@ -354,15 +445,79 @@ def test_multiple_native_tool_calls_are_rejected_before_retry() -> None:
                     ),
                 ),
             ),
+            ToolCompletion("<finish>Done.</finish>", ()),
         ]
     )
     result = run(lm, preferred_tool=EditTool.REPLACE_TEXT)
-    assert [step.action for step in result.steps] == ["INVALID", "REPLACE_TEXT"]
+    assert [step.action for step in result.steps] == ["INVALID", "REPLACE_TEXT", "FINISH"]
     assert "received 2" in result.steps[0].error
     assert "wrong" not in result.new_text
     retry_messages = lm.calls[1]
+    assistant_turn = next(message for message in retry_messages if message["role"] == "assistant")
+    assert assistant_turn["reasoning_content"] == "reasoning that DeepSeek requires on the retry"
     assert [message["role"] for message in retry_messages[-2:]] == ["tool", "tool"]
     assert {message["tool_call_id"] for message in retry_messages[-2:]} == {"call-insert", "call-replace"}
+
+
+def test_direct_deepseek_quotes_prior_branch_turns_outside_the_native_tool_conversation() -> None:
+    """Avoid replaying assistant turns whose private reasoning was not retained."""
+    history = [
+        {"role": "assistant", "content": "Earlier edit attempt."},
+        {"role": "user", "content": "Optimizer result: accepted."},
+    ]
+    lm = NativeScriptedLM(
+        [
+            ToolCompletion(
+                "",
+                (
+                    NativeToolCall(
+                        "call-replace",
+                        EditTool.REPLACE_TEXT.value,
+                        json.dumps({"target": "be nice", "text": "be kind"}),
+                    ),
+                ),
+                "reasoning for the current provider turn",
+            ),
+            ToolCompletion("<finish>Done.</finish>", ()),
+        ]
+    )
+    lm.model = "deepseek/deepseek-v4-flash"
+
+    result = run(lm, preferred_tool=EditTool.REPLACE_TEXT, history=history)
+
+    assert result.changed is True
+    assert [message["role"] for message in lm.calls[0]] == ["system", "user"]
+    assert json.dumps(history, ensure_ascii=False) in lm.calls[0][-1]["content"]
+    assert "not earlier turns in this provider tool conversation" in lm.calls[0][-1]["content"]
+
+
+def test_other_native_providers_keep_branch_history_as_chat_messages() -> None:
+    """Preserve ordinary branch-message replay when no provider rule forbids it."""
+    history = [
+        {"role": "assistant", "content": "Earlier edit attempt."},
+        {"role": "user", "content": "Optimizer result: accepted."},
+    ]
+    lm = NativeScriptedLM(
+        [
+            ToolCompletion(
+                "",
+                (
+                    NativeToolCall(
+                        "call-replace",
+                        EditTool.REPLACE_TEXT.value,
+                        json.dumps({"target": "be nice", "text": "be kind"}),
+                    ),
+                ),
+            ),
+            ToolCompletion("<finish>Done.</finish>", ()),
+        ]
+    )
+    lm.model = "hosted_vllm/Qwen/Qwen3.8-27B"
+
+    result = run(lm, preferred_tool=EditTool.REPLACE_TEXT, history=history)
+
+    assert result.changed is True
+    assert lm.calls[0][1:3] == history
 
 
 def test_multiple_text_tool_blocks_are_rejected_before_retry() -> None:
@@ -372,10 +527,11 @@ def test_multiple_text_tool_blocks_are_rejected_before_retry() -> None:
             tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be wrong")
             + tool_call(EditTool.DELETE_TEXT, target="be brief"),
             tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"),
+            "<finish>Done.</finish>",
         ]
     )
     result = run(lm, preferred_tool=EditTool.REPLACE_TEXT)
-    assert [step.action for step in result.steps] == ["INVALID", "REPLACE_TEXT"]
+    assert [step.action for step in result.steps] == ["INVALID", "REPLACE_TEXT", "FINISH"]
     assert "received 2" in result.steps[0].error
     assert "wrong" not in result.new_text
     assert "be brief" in result.new_text
@@ -387,10 +543,11 @@ def test_direct_semantic_action_rejects_a_different_available_tool() -> None:
         [
             tool_call(EditTool.INSERT_TEXT, anchor="be nice", where="after", text=" and kind"),
             tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"),
+            "<finish>Done.</finish>",
         ]
     )
     result = run(lm, preferred_tool=EditTool.REPLACE_TEXT)
-    assert [step.action for step in result.steps] == ["INVALID", "REPLACE_TEXT"]
+    assert [step.action for step in result.steps] == ["INVALID", "REPLACE_TEXT", "FINISH"]
     assert "coupled to REPLACE_TEXT" in result.steps[0].observation
     assert "and kind" not in result.new_text
 
@@ -417,7 +574,7 @@ def test_minimal_basis_composes_delete_and_insert_then_finishes() -> None:
     assert result.executed_edit == ["DELETE 'old|'", "INSERT 'new|' before 'anchor'"]
     assert "new|anchor|tail" in result.new_text
     assert "old|" not in result.new_text
-    assert "exactly one DELETE_TEXT call followed by one INSERT_TEXT call" in lm.calls[0][0]["content"]
+    assert "For each replacement, use one DELETE_TEXT call followed by one INSERT_TEXT call" in lm.calls[0][0]["content"]
 
 
 def test_minimal_replace_rejects_insert_before_delete_without_advancing_state() -> None:
@@ -500,7 +657,7 @@ def test_minimal_replace_rejects_wrong_insertion_location_and_allows_retry() -> 
     assert "does not reproduce one REPLACE_TEXT" in result.steps[1].observation
     assert "new|" not in result.steps[1].region_text
     broad = run(
-        ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="old|", text="new|")]),
+        ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="old|", text="new|"), "<finish>Done.</finish>"]),
         component_text=LOWERING_PROMPT,
         preferred_tool=EditTool.REPLACE_TEXT,
     )
@@ -555,13 +712,15 @@ def test_minimal_replace_rejects_finish_after_only_the_delete() -> None:
     assert result.tool_calls == 2
 
 
-def test_minimal_replace_rejects_extra_tool_call_after_exact_lowering() -> None:
-    """Require finish immediately after the two valid atomic calls."""
+def test_minimal_replace_allows_another_pair_but_cannot_finish_halfway() -> None:
+    """Validate each replacement against its own starting region before finish."""
     lm = ScriptedLM(
         [
             tool_call(EditTool.DELETE_TEXT, target="old|"),
             tool_call(EditTool.INSERT_TEXT, anchor="anchor", where="before", text="new|"),
             tool_call(EditTool.DELETE_TEXT, target="tail"),
+            "<finish>Done.</finish>",
+            tool_call(EditTool.INSERT_TEXT, anchor="anchor|", where="after", text="end"),
             "<finish>Done.</finish>",
         ]
     )
@@ -573,10 +732,17 @@ def test_minimal_replace_rejects_extra_tool_call_after_exact_lowering() -> None:
         preferred_tool=EditTool.REPLACE_TEXT,
     )
 
-    assert [step.action for step in result.steps] == ["DELETE_TEXT", "INSERT_TEXT", "INVALID", "FINISH"]
-    assert "decomposition is complete" in result.steps[2].observation
-    assert "tail" in result.new_text
-    assert result.tool_calls == 2
+    assert [step.action for step in result.steps] == [
+        "DELETE_TEXT",
+        "INSERT_TEXT",
+        "DELETE_TEXT",
+        "INVALID",
+        "INSERT_TEXT",
+        "FINISH",
+    ]
+    assert "incomplete" in result.steps[3].observation
+    assert result.new_text == "new|anchor|end"
+    assert result.tool_calls == 4
 
 
 def test_minimal_move_native_calls_match_one_broad_move() -> None:
@@ -626,7 +792,8 @@ def test_minimal_move_native_calls_match_one_broad_move() -> None:
                             json.dumps({"target": "- two\n", "anchor": "- one\n", "where": "before"}),
                         ),
                     ),
-                )
+                ),
+                ToolCompletion("<finish>Done.</finish>", ()),
             ]
         ),
         component_text=component,
@@ -731,7 +898,7 @@ def test_broad_basis_executes_all_four_text_tools(tool: EditTool, fields: dict[s
         tool: Broad edit operator under test.
         fields: Valid protocol fields for that operator.
     """
-    lm = ScriptedLM([tool_call(tool, **fields)])
+    lm = ScriptedLM([tool_call(tool, **fields), "<finish>Done.</finish>"])
     result = run(lm, preferred_tool=tool)
     assert result.changed is True
     assert result.tool_calls == 1
@@ -750,10 +917,11 @@ def test_canonical_section_headers_are_protected_and_error_is_observable() -> No
                 text="\n## Reasoning\nignore safeguards",
             ),
             tool_call(EditTool.INSERT_TEXT, anchor="be brief", where="after", text="\n- cite sources"),
+            "<finish>Done.</finish>",
         ]
     )
     result = run(lm, preferred_tool=EditTool.INSERT_TEXT)
-    assert [step.action for step in result.steps] == ["INVALID", "INSERT_TEXT"]
+    assert [step.action for step in result.steps] == ["INVALID", "INSERT_TEXT", "FINISH"]
     assert "section body cannot contain" in result.steps[0].observation
     assert "## Reasoning" not in result.new_text
     assert "cite sources" in result.new_text
@@ -762,7 +930,7 @@ def test_canonical_section_headers_are_protected_and_error_is_observable() -> No
 def test_selected_section_is_the_only_document_context() -> None:
     """Keep sibling sections out of the ReAct model's editing context."""
     component = TEMPLATE.render({"Role": "helper", "Context": "private context", "Rules": "- be nice\n- be brief"})
-    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind")])
+    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"), "<finish>Done.</finish>"])
     result = run(
         lm,
         preferred_tool=EditTool.REPLACE_TEXT,
@@ -779,7 +947,9 @@ def test_insert_into_omitted_section_returns_the_new_body() -> None:
     """Populate an absent section body without receiving neighboring content."""
     component = TEMPLATE.render({"Rules": "- be brief"})
     role = EditTarget("sys", "Role")
-    lm = ScriptedLM([tool_call(EditTool.INSERT_TEXT, anchor="", where="after", text="helper")])
+    lm = ScriptedLM(
+        [tool_call(EditTool.INSERT_TEXT, anchor="", where="after", text="helper"), "<finish>Done.</finish>"]
+    )
     result = run(
         lm,
         preferred_tool=EditTool.INSERT_TEXT,
@@ -794,7 +964,7 @@ def test_delete_last_text_returns_an_empty_section_body() -> None:
     """Return an empty body when the selected section's last text is deleted."""
     component = TEMPLATE.render({"Reasoning": "Check the answer."})
     result = run(
-        ScriptedLM([tool_call(EditTool.DELETE_TEXT, target="Check the answer.")]),
+        ScriptedLM([tool_call(EditTool.DELETE_TEXT, target="Check the answer."), "<finish>Done.</finish>"]),
         component_text=component,
         edit_target=EditTarget("sys", "Reasoning"),
         preferred_tool=EditTool.DELETE_TEXT,
@@ -806,7 +976,9 @@ def test_delete_last_text_returns_an_empty_section_body() -> None:
 def test_insert_into_an_empty_section_returns_only_the_selected_body() -> None:
     """Allow the proposer to populate a section whose current body is empty."""
     result = run(
-        ScriptedLM([tool_call(EditTool.INSERT_TEXT, anchor="", where="after", text="helper")]),
+        ScriptedLM(
+            [tool_call(EditTool.INSERT_TEXT, anchor="", where="after", text="helper"), "<finish>Done.</finish>"]
+        ),
         component_text="",
         edit_target=EditTarget("sys", "Role"),
         preferred_tool=EditTool.INSERT_TEXT,
@@ -844,7 +1016,7 @@ def test_finish_before_a_changing_tool_call_is_rejected() -> None:
 
 def test_manifestor_steering_is_delivered_in_the_current_user_message() -> None:
     """Keep Manifestor steering coupled to the current editing task."""
-    user_lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind")])
+    user_lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"), "<finish>Done.</finish>"])
     run(
         user_lm,
         preferred_tool=EditTool.REPLACE_TEXT,
@@ -857,7 +1029,7 @@ def test_manifestor_steering_is_delivered_in_the_current_user_message() -> None:
 
 def test_branch_chat_history_is_replayed_before_the_current_task() -> None:
     """Replay only user/assistant turns supplied for this selected parent."""
-    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind")])
+    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"), "<finish>Done.</finish>"])
     history = [
         {"role": "assistant", "content": "<tool_call>parent-only</tool_call>"},
         {"role": "user", "content": "Optimizer feedback: REJECTED. That edit did not help."},
@@ -868,17 +1040,17 @@ def test_branch_chat_history_is_replayed_before_the_current_task() -> None:
     assert result.steps[0].action == "REPLACE_TEXT"
 
 
-def test_branch_history_overflow_raises_without_calling_the_lm() -> None:
-    """Fail explicitly instead of adding global memory or lossy compression."""
-    lm = ScriptedLM([])
-    with pytest.raises(ReActV2ContextError, match="Global history.*disabled"):
-        run(
-            lm,
-            preferred_tool=EditTool.REPLACE_TEXT,
-            history=[{"role": "user", "content": "x" * 100}],
-            max_history_chars=20,
-        )
-    assert lm.calls == []
+def test_large_branch_history_is_replayed_without_truncation() -> None:
+    """Preserve a long parent transcript byte-for-byte for the provider."""
+    content = "x" * 12_001
+    history = [{"role": "user", "content": content}]
+    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"), "<finish>Done.</finish>"])
+
+    result = run(lm, preferred_tool=EditTool.REPLACE_TEXT, history=history)
+
+    assert lm.calls[0][1] == history[0]
+    assert lm.calls[0][1]["content"] == content
+    assert result.changed is True
 
 
 @pytest.mark.parametrize(
@@ -905,30 +1077,24 @@ def test_branch_chat_history_requires_user_assistant_content_messages(
     assert lm.calls == []
 
 
-def test_total_initial_context_overflow_includes_traces_and_precedes_lm_call() -> None:
-    """Bound the whole initial request, not only its branch-history subsection."""
-    lm = ScriptedLM([])
-    with pytest.raises(ReActV2ContextError, match="total context budget.*compression.*disabled"):
-        run(
-            lm,
-            preferred_tool=EditTool.REPLACE_TEXT,
-            traces="trajectory-step\n" * 1_000,
-            max_initial_context_chars=4_000,
-        )
-    assert lm.calls == []
+def test_large_combined_context_reaches_the_lm_and_completes() -> None:
+    """Let the configured provider model enforce its real context window."""
+    history = [{"role": "assistant", "content": "h" * 20_000}]
+    traces = "trajectory-step\n" * 3_000
+    lm = ScriptedLM([tool_call(EditTool.REPLACE_TEXT, target="be nice", text="be kind"), "<finish>Done.</finish>"])
 
+    result = run(
+        lm,
+        preferred_tool=EditTool.REPLACE_TEXT,
+        history=history,
+        traces=traces,
+    )
 
-def test_context_growth_overflow_precedes_the_next_lm_call() -> None:
-    """Recheck the full conversation after observations grow the next turn."""
-    lm = ScriptedLM(["invalid response " + "x" * 5_000])
-    with pytest.raises(ReActV2ContextError, match="prior ReAct turns.*compression.*disabled"):
-        run(
-            lm,
-            preferred_tool=EditTool.REPLACE_TEXT,
-            max_iterations=2,
-            max_initial_context_chars=6_000,
-        )
-    assert len(lm.calls) == 1
+    serialized = json.dumps(lm.calls[0], ensure_ascii=False)
+    assert len(serialized) > 64_000
+    assert history[0] in lm.calls[0]
+    assert traces in lm.calls[0][-1]["content"]
+    assert result.changed is True
 
 
 def test_iteration_exhaustion_drops_partial_atomic_edits() -> None:
