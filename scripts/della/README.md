@@ -15,6 +15,14 @@ not serve unrelated new evaluations. Cache settings are part of run identity,
 so HotPotQA's earlier cache-enabled checkpoints require a fresh campaign. The
 6,871/13,742-call budgets remain unchanged and now fund uncached evaluations.
 
+HotPotQA training minibatches use a separate random stream initialized with the
+experiment seed. Every method and budget therefore sees the same sequence of
+shuffled training epochs for the same ordered dataset and seed, independent of
+parent selection or reflection draws. Larger budgets continue that sequence;
+metric-call budgets do not guarantee the same number of optimization iterations.
+Checkpoints save the permutation, cursor, and private RNG state. Run-contract
+schema 24 records this policy and requires a fresh campaign for older checkpoints.
+
 | Arm | Student and proposer | Serving |
 | --- | --- | --- |
 | Qwen | `Qwen/Qwen3.8-27B` | Local POSIT/vLLM |

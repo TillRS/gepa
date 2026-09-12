@@ -10,6 +10,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from gepa.core.data_loader import ListDataLoader
+from gepa.strategies.batch_sampler import IndependentEpochShuffledBatchSampler
 from gepa.strategies.text_limits import TextLimits
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -49,6 +51,9 @@ from examples.hotpotqa.main import (
 )
 from examples.hotpotqa.main import (
     dump_candidates as dump_hotpotqa_candidates,
+)
+from examples.hotpotqa.main import (
+    run_condition as run_hotpotqa_condition,
 )
 from examples.hotpotqa.main import (
     seed_candidate as hotpotqa_seed_candidate,
@@ -308,6 +313,22 @@ def test_hotpot_provider_sampling_reaches_every_model_role(model: str, budget: i
     config, selector = build_hotpotqa_config(condition, args, reflection_kwargs)
     contract = build_hotpotqa_run_contract(condition, args)
     assert config.engine.cache_evaluation is False
+    sampler = config.reflection.batch_sampler
+    assert isinstance(sampler, IndependentEpochShuffledBatchSampler)
+    assert contract["optimizer"]["training_batch_order"] == sampler.contract()
+    assert sampler.seed == args.seed
+    assert sampler.minibatch_size == config.reflection.reflection_minibatch_size == 3
+    expected_rng = random.Random(args.seed)
+    loader = ListDataLoader(list(range(150)))
+    for epoch in range(2):
+        expected_ids = list(range(150))
+        expected_rng.shuffle(expected_ids)
+        actual_ids = [
+            index
+            for iteration in range(epoch * 50, (epoch + 1) * 50)
+            for index in sampler.next_minibatch_ids(loader, SimpleNamespace(i=iteration))
+        ]
+        assert actual_ids == expected_ids
     assert contract["program"]["cache_evaluation"] is False
     assert contract["program"]["dspy_disk_cache"] is False
     assert contract["program"]["dspy_memory_cache"] is False
@@ -348,6 +369,73 @@ def test_hotpot_provider_sampling_reaches_every_model_role(model: str, budget: i
             assert roles["controller"]["requested"] == {**general, "seed": 0}
         else:
             assert roles["controller"] is None
+
+
+@pytest.mark.parametrize("damage", ["missing", "shared", "seed"])
+def test_hotpot_rejects_changed_training_batch_order(tmp_path: Path, damage: str) -> None:
+    """Require a fresh run after changing the training shuffle policy."""
+    contract = build_hotpotqa_run_contract("react_v2", _hotpot_args())
+    old = deepcopy(contract)
+    if damage == "missing":
+        del old["optimizer"]["training_batch_order"]
+    elif damage == "shared":
+        old["optimizer"]["training_batch_order"]["rng_stream"] = "shared"
+    else:
+        old["optimizer"]["training_batch_order"]["seed"] += 1
+    ensure_wikipedia_run_contract(tmp_path, old)
+    with pytest.raises(ValueError, match="different Wikipedia benchmark configuration"):
+        ensure_wikipedia_run_contract(tmp_path, contract)
+
+
+def test_hotpot_training_order_survives_real_engine_resume(tmp_path: Path) -> None:
+    """Exercise HotPotQA's launcher and checkpoints without making model requests."""
+    args = _hotpot_args(seed=19, max_metric_calls=1000)
+    run_dir = tmp_path / "run"
+    stop_file = run_dir / "gepa.stop"
+    batches = []
+
+    class Recorder:
+        """Capture training batches and request one durable pause."""
+
+        def on_minibatch_sampled(self, event):
+            """Stop after the fifth minibatch has finished its work."""
+            batches.append(event["minibatch_ids"])
+            if len(batches) == 5:
+                stop_file.touch()
+
+    def evaluate(candidate, example):
+        """Skip reflection so the test never contacts a model provider."""
+        return 1.0, {"feedback": "Perfect; no reflection needed"}
+
+    def run():
+        """Rebuild the entry-point configuration for each process restart."""
+        config, _ = build_hotpotqa_config("vanilla", args, {}, run_dir=str(run_dir))
+        config.engine.max_candidate_proposals = 110
+        config.engine.parallel = False
+        run_hotpotqa_condition(
+            "offline sampling",
+            {"system_prompt": "Answer the question"},
+            [{"id": index} for index in range(150)],
+            [{"id": "validation"}],
+            config,
+            evaluate,
+            callbacks=[Recorder()],
+        )
+
+    run()
+    assert len(batches) == 5
+    stop_file.unlink()
+    run()
+    assert len(batches) == 110
+    run()
+    assert len(batches) == 110
+    rng = random.Random(args.seed)
+    expected = []
+    for _ in range(3):
+        ids = list(range(150))
+        rng.shuffle(ids)
+        expected.extend(ids[start : start + 3] for start in range(0, 150, 3))
+    assert batches == expected[:110]
 
 
 def test_hotpot_rejects_resume_with_the_previous_manifestor_temperature(tmp_path: Path) -> None:
@@ -1074,7 +1162,7 @@ def test_hotpot_and_hover_contracts_record_exact_model_pair() -> None:
     assert hover["models"]["solver_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
     assert hover["models"]["reflection_decoding"] == experiment_decoding(QWEN3_8_27B_MODEL)
 
-    assert hotpot["schema_version"] == 23
+    assert hotpot["schema_version"] == 24
     assert hotpot["optimizer"]["react_execution"]["completion"] == "explicit_finish"
     assert hotpot["optimizer"]["react_execution"]["max_iterations"] is None
     assert hotpot["optimizer"]["react_execution"]["max_tool_calls"] is None
@@ -1509,7 +1597,7 @@ def test_stateless_action_menu_contract_matches_between_wikipedia_benchmarks() -
     expected = build_hotpotqa_run_contract("random", args)["optimizer"]["stateless_action_menu"]
 
     for build_contract, schema_version in (
-        (build_hotpotqa_run_contract, 23),
+        (build_hotpotqa_run_contract, 24),
         (build_hover_run_contract, 4),
     ):
         contract = build_contract("random", args)
