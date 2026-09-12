@@ -501,13 +501,14 @@ def test_final_comparison_enforces_both_scope_boundaries(tmp_path: Path, damage:
         ("skip_perfect_score", False),
         ("perfect_score", 0.5),
         ("validation_evaluation", "partial"),
+        ("training_batch_order", {"rng_stream": "shared"}),
     ],
 )
 @pytest.mark.parametrize("missing", [False, True])
 def test_optimizer_policy_drift_cannot_resume_or_enter_final_test(
-    tmp_path: Path, field: str, value: str | bool | float, missing: bool
+    tmp_path: Path, field: str, value: str | bool | float | dict, missing: bool
 ) -> None:
-    """Reject changed caching, parent selection, acceptance, or validation before held-out work."""
+    """Reject changed optimizer policies or training order before held-out work."""
     run_dirs = _write_comparison(tmp_path, "tb2.1")
     forest = run_dirs["all_text__react_v2"]
     path = forest / RUN_CONTRACT_FILENAME

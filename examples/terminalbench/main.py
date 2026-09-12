@@ -65,6 +65,7 @@ from gepa.adapters.terminal_bench_adapter.text_scope import (
 from gepa.lm import LM
 from gepa.proposer.reflective_mutation.react_v2_proposer import REACT_V2_EXECUTION_CONTRACT
 from gepa.strategies.action_space import stateless_selector_policy_contract
+from gepa.strategies.batch_sampler import IndependentEpochShuffledBatchSampler
 from gepa.strategies.intervention import (
     CONTROLLER_POLICY_CONTRACT,
     SEMANTIC_ACTION_CATALOGS,
@@ -315,7 +316,7 @@ def build_run_contract(
             "react_v2_proposer": {"requested": react_decoding, "provider_ignored_fields": []},
         }
     return {
-        "schema_version": 28,
+        "schema_version": 29,
         "adapter": deepcopy(TERMINUS_ADAPTER_CONTRACT),
         "provider_retry_policy": deepcopy(PROVIDER_RETRY_POLICY),
         "task_context_settings": dict(TASK_CONTEXT_SETTINGS),
@@ -331,6 +332,7 @@ def build_run_contract(
         "component_kinds": scope.component_kinds,
         "runtime_component_kinds": manifest.component_kinds,
         "module_selector": "all",
+        "training_batch_order": IndependentEpochShuffledBatchSampler(args.reflection_minibatch_size, args.seed).contract(),
         "cache_evaluation": False,
         "candidate_selection_strategy": "pareto",
         "frontier_type": "instance",
@@ -530,8 +532,8 @@ def main() -> None:
         reflection_strategy=reflection_strategy,
         max_metric_calls=args.max_metric_calls,
         stop_callbacks=MaxCandidateProposalsStopper(contract["optimization_budget"]["max_iterations"]),
-        batch_sampler="epoch_shuffled",
-        reflection_minibatch_size=args.reflection_minibatch_size,
+        batch_sampler=IndependentEpochShuffledBatchSampler(args.reflection_minibatch_size, args.seed),
+        reflection_minibatch_size=None,
         sampling_strategy=SingleMutationSampling(),
         module_selector=contract["module_selector"],
         cache_evaluation=contract["cache_evaluation"],

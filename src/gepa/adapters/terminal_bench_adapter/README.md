@@ -39,7 +39,7 @@ Optimization, training pilots, and final evaluation all instantiate
 `gepa.adapters.terminal_bench_adapter.TerminusAdapter`; `TerminalBenchAdapter`
 remains an alias for existing callers. Final evaluation uses the adapter's
 evaluation path without constructing reflection feedback. There is no fallback
-to the legacy runner. Run contract version 28 and pilot configuration version 7
+to the legacy runner. Run contract version 29 and pilot configuration version 7
 record the adapter entry point, the explicit `harbor_port` implementation, and
 upstream provenance. Missing or changed adapter identity prevents optimization
 resume and final comparison; use fresh run directories for older contracts.
@@ -306,7 +306,7 @@ separate policies above.
 Every physical attempt is recorded in `provider-attempts.jsonl` and in the
 existing `token-usage.jsonl` files, including failures with unknown usage.
 The two files describe the same requests, so their totals must not be added.
-The policy is pinned in run contract version 28 and pilot configuration version
+The policy is pinned in run contract version 29 and pilot configuration version
 7; older or changed policies cannot resume or enter final evaluation.
 
 #### Reference protocol and pending confirmation
@@ -390,6 +390,15 @@ A training limit or different minibatch size changes the iteration count using
 the same rule; GEPA pads an incomplete minibatch if needed. These counts describe
 sampled training tasks, not total task executions or model calls.
 
+Training shuffles use their own random stream initialized with `--seed`, separate
+from parent selection and reflection randomness. The same ordered training split,
+minibatch size, and seed produce identical task order across methods, models, and
+text scopes. Eight-epoch runs share the first four epochs with standard runs,
+then continue the shuffle sequence. Checkpoints save the permutation, cursor,
+and private RNG state so a resumed run retains every later epoch's task order.
+Run contract version 29 records this policy; older checkpoints require fresh
+runs. HotPotQA uses the same sampler, with its existing metric-call budgets.
+
 Each iteration samples one minibatch for one mutation attempt; merging is off.
 Perfect minibatches or unsuccessful proposals still consume their iteration.
 Parent and proposed-candidate evaluations, plus initial and conditional full
@@ -421,7 +430,7 @@ counted for these fresh executions.
 Completed checkpoint records and optimizer response journals remain available
 for recovery of the same logical work. They do not supply results for unrelated
 new evaluations, and completed held-out repetitions remain resumable. Run
-contract version 28 records `cache_evaluation=false`, forwards it to GEPA, and
+contract version 29 records `cache_evaluation=false`, forwards it to GEPA, and
 rejects missing or changed policies on resume and before final comparison.
 
 #### Parent selection
@@ -441,7 +450,7 @@ The final winner remains the harness with the highest mean validation score.
 
 `candidate_selection_strategy="pareto"` and `frontier_type="instance"` are
 explicit run contract fields forwarded to the optimizer for every method and
-budget. Run contract version 28 rejects missing or changed parent-selection
+budget. Run contract version 29 rejects missing or changed parent-selection
 policies on resume and before final comparison.
 
 #### Proposal acceptance and validation
@@ -461,7 +470,7 @@ improvement or automatically replace the existing best harness.
 
 `acceptance_criterion="strict_improvement"`, `validation_evaluation="full_eval"`,
 `skip_perfect_score=true`, and `perfect_score=1.0` are explicit run contract
-fields forwarded to the optimizer. Run contract version 28 rejects missing or
+fields forwarded to the optimizer. Run contract version 29 rejects missing or
 changed policies on resume and before final comparison. This preserves the
 prior runtime defaults while recording the approved experiment identity.
 

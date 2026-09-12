@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -37,6 +38,7 @@ from gepa.adapters.terminal_bench_adapter import (
 from gepa.adapters.terminal_bench_adapter.documents import COMPONENT_KINDS
 from gepa.adapters.terminal_bench_adapter.text_scope import OPTIMIZATION_SCOPES, TerminalBenchTextScope
 from gepa.core.adapter import EvaluationBatch
+from gepa.strategies.batch_sampler import IndependentEpochShuffledBatchSampler
 from gepa.strategies.document_template import TEMPLATE_FAMILIES
 from gepa.strategies.intervention import CONTROLLER_POLICY_CONTRACT, SEMANTIC_ACTION_CATALOGS
 from gepa.strategies.text_limits import TextLimits
@@ -185,7 +187,7 @@ def test_generated_run_contract_records_metric_call_budget(tmp_path: Path) -> No
     )
 
     assert contract["max_metric_calls"] == 400
-    assert contract["schema_version"] == 28
+    assert contract["schema_version"] == 29
     assert contract["skip_perfect_score"] is True
     assert contract["perfect_score"] == 1.0
     assert contract["adapter"] == TERMINUS_ADAPTER_CONTRACT
@@ -415,10 +417,15 @@ def test_provider_settings_reach_all_runtime_roles(
     assert all(record["length_finish"] and record["output_cap_reached"] for record in records)
     assert optimize_kwargs["stop_callbacks"].max_proposals == (8 if budget == "double" else 4)
     assert optimize_kwargs["max_metric_calls"] == 4
-    assert optimize_kwargs["batch_sampler"] == "epoch_shuffled"
+    sampler = optimize_kwargs["batch_sampler"]
+    assert isinstance(sampler, IndependentEpochShuffledBatchSampler)
+    assert optimize_kwargs["reflection_minibatch_size"] is None
     assert optimize_kwargs["module_selector"] == "all"
     assert optimize_kwargs["use_merge"] is False
     contract = json.loads((tmp_path / "run" / "terminalbench-run-contract.json").read_text())
+    assert contract["training_batch_order"] == sampler.contract()
+    assert sampler.seed == contract["seed"]
+    assert sampler.minibatch_size == contract["reflection_minibatch_size"] == 3
     assert contract["experiment"] == experiment
     assert contract["module_selector"] == optimize_kwargs["module_selector"]
     assert contract["cache_evaluation"] is optimize_kwargs["cache_evaluation"] is False
@@ -556,6 +563,13 @@ def test_epoch_cli_budget_stops_and_resumes_with_real_engine(
         epoch_ids = [task_id for batch in parent_batches[start : start + iterations // epochs] for task_id in batch]
         assert set(epoch_ids) == set(contract["train_task_ids"])
         assert len(epoch_ids) == len(contract["train_task_ids"]) + padding
+    rng = random.Random(contract["seed"])
+    expected_batches = []
+    for _ in range(epochs):
+        task_ids = [task.task_id for task in trainset]
+        rng.shuffle(task_ids)
+        expected_batches.extend(task_ids[start : start + 3] for start in range(0, len(task_ids), 3))
+    assert parent_batches == expected_batches
     assert not set(contract["test_task_ids"]).intersection(task_id for batch in evaluations for task_id in batch)
     per_iteration = 3 if outcome == "perfect" else 6
     if outcome == "accepted":
